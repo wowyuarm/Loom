@@ -26,6 +26,14 @@ _Avoid_: workspace root, shared state directory
 
 ## Boundaries
 
+**Runtime**:
+Loom 内部负责 input、时间、调度、turn、effect、delivery 与恢复的运行模块。它提供可靠的生命周期条件，不决定 Individual 的关注、表达或关系判断。
+_Avoid_: Agent Harness, daemon, scheduler
+
+**Agent Execution**:
+Loom 内部负责通过 Pi 组装和执行主 Agent 与认知器官运行、管理 context 并保留执行证据的模块。它是 Agent Harness 的一部分，不等于整个 Harness。
+_Avoid_: harness layer, runtime, executor abstraction
+
 **Agent Workspace**:
 Agent Individual 的高权限文件工作空间，存放身份、关系、认知材料、skills 和私人工作。它是工作边界，不是宿主机级安全隔离承诺。
 _Avoid_: runtime store, security sandbox, deployment root
@@ -35,8 +43,32 @@ _Avoid_: runtime store, security sandbox, deployment root
 _Avoid_: chat history, memory file, runtime store
 
 **Runtime Store**:
-Runtime Kernel 持久保存的运行事实，用于决定 input、turn、effect、delivery、调度与恢复。
+Runtime 持久保存的运行事实，用于决定 input、turn、effect、delivery、调度与恢复。
 _Avoid_: workspace, agent memory, transcript
+
+**Input**:
+Runtime 已持久接受、可以交给主 Agent 处理的一份外部来信或主动机会。它不是 prompt；一次处理失败后是否还能继续，取决于已经发生的事实。
+_Avoid_: message, prompt, queue item
+
+**Turn**:
+主 Agent 对一组已纳入输入进行的一次有边界运行。一个 Turn 可在运行中接纳后续 Input，但同一 Runtime Instance 同时只有一个主 Agent Turn。
+_Avoid_: session, request, model call
+
+**Effect**:
+Turn 在模型计算之外改变状态或对外行动的持久声明。Effect 必须先存在，相关工具或 Integration 才能实际执行。
+_Avoid_: tool call, delivery, log event
+
+**Delivery**:
+Integration 对一个 outbound Effect 的实际投递尝试及其结果。Effect 被 Runtime 接受不表示 Delivery 已成功。
+_Avoid_: message send, effect, tool result
+
+**Transcript Anchor**:
+Runtime Store 对 Primary Agent Transcript 中已存在执行证据的可验证引用。它证明记录位置，不把 Transcript 变成恢复事实源。
+_Avoid_: transcript content, summary, runtime state
+
+**Instance Configuration**:
+描述一个 Runtime Instance 如何装配，以及使用哪些时间政策、模型策略与 Integration 引用的配置材料。它不承载 Individual 材料、凭据内容或动态运行事实。
+_Avoid_: persona configuration, workspace material, runtime state
 
 **Integration**:
 Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。它为 Harness 提供能力，不定义 Individual 的身份或关系。
