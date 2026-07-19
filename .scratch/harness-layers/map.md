@@ -50,7 +50,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [05 — Unify Skill Discovery per Turn](issues/05-unify-skill-discovery.md)
 - Completed: [06 — Compact Tool Traces Before Context Reuse](issues/06-compact-tool-traces-before-reuse.md)
 - Completed: [07 — Correct Runtime and Source Boundaries](issues/07-correct-runtime-and-source-boundaries.md)
-- Current frontier: 阶段回顾与架构校正已闭合。下一张 ticket 仍从既有 follow-up 和后续层次中按进入条件选择，不提前实现写入型 agent 生命周期、Effect 后 Context 补偿、共享 Pi session Module、Integrations 或 Configuration。
+- Completed: [08 — Run Life Recorder from Frozen Activity Evidence](issues/08-run-life-recorder-from-frozen-activity.md)
+- Current frontier: Life Recorder 已能独立消费 Frozen Activity 并写回 Workspace。Runtime Active Segment、recorder receipt 的持久接入、Window Closure 与 Recent Activity Bridge 现在满足进入条件；下一张 ticket 应先共同收束这条生命周期，不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
 
 ## Context Follow-ups
 
@@ -58,7 +59,7 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 | Follow-up | Current handling |
 | --- | --- |
-| Window Closure and Recent Activity Bridge | 等 Agent Workspace 与记录类 Cognitive Organ 具备后实现。 |
+| Window Closure and Recent Activity Bridge | Agent Workspace 与 Life Recorder 已具备；下一步与 Runtime Active Segment 和持久 receipt 一起收束。 |
 | Tool Trace Compaction and Evidence Expansion | Ticket 06 completed：真实 compactor、失败 gate、Runtime 原子替换、稳定引用分页展开与机械收回已闭合。 |
 | Logical Day and Cross-day Context Recovery | 等时间/节律配置与每日 transcript 归属明确后实现。 |
 | Workspace Material Sources | Tickets 04-05 已接入 Identity、Memory、Behavior、Current Attention 与统一 skills catalog。 |

@@ -77,3 +77,25 @@ _Avoid_: individual capability, relationship material, executor abstraction
 **Cognitive Organ**:
 由 Loom 内置并版本化维护的专职能力。它的职责、方法、工具面、触发条件和保护规则由 Harness 定义。
 _Avoid_: optional plugin, workspace-defined agent, self-evolving organ
+
+## Cognitive Recording
+
+**Frozen Activity**:
+一段已停止变化、可供认知器官完整消费的实际活动证据，其中每个事件都通过 Actor Reference 明确归属。它不是仍可接收 Input 的 Active Segment，也不是一份自然语言摘要。
+_Avoid_: active segment, transcript slice, conversation summary
+
+**Actor Reference (`actorRef`)**:
+Frozen Activity 内标识事件归属的稳定引用。自然姓名和关系称谓帮助叙事，但不能替代或改变 Actor Reference 所确定的归属。
+_Avoid_: display name, inferred speaker, relationship label
+
+**Daily Narrative**:
+Agent Workspace 中面向近期接续的一日叙事。它保留当天仍有用的经过与悬而未决之处，不承担长期模式判断。
+_Avoid_: long-term memory, transcript, episode collection
+
+**Episode**:
+Agent Workspace 中保存“发生了改变”的可回放场景。它是外部记忆 Integration 的待导入材料，但其存在不表示已经导入。
+_Avoid_: summary, episode candidate, imported memory
+
+**Life Recorder Receipt**:
+Life Recorder 对一份 Frozen Activity 已完整读取且相应 Workspace 写入已完成的证明。它不证明 Activity 已关闭，也不证明任何外部记忆 Integration 已完成导入。
+_Avoid_: activity close, import receipt, model confirmation
