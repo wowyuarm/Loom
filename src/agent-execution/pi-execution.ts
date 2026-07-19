@@ -24,6 +24,10 @@ import type {
   TurnControl,
   TurnRequest,
 } from "../runtime/index.js";
+import type {
+  AgentWorkspace,
+  AgentWorkspaceTurnSnapshot,
+} from "../agent-workspace/agent-workspace.js";
 import {
   type InputAnnotationReference,
   verifyPrimaryTranscriptEntry,
@@ -38,12 +42,12 @@ type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
 
 export interface PiAgentExecutionOptions {
-  cwd: string;
+  agentWorkspace: AgentWorkspace;
   agentDir: string;
   transcriptFile: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
-  systemPrompt: string;
+  harnessSystemPrompt: string;
   readOnlyTools?: ToolDefinition[];
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
   contextBudget?: Partial<ContextBudget>;
@@ -153,9 +157,10 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly sessionManager: SessionManager,
     private readonly transcriptFile: string,
     private readonly lifecycle: InputAnnotationLifecycle,
-    private readonly createSession: () => Promise<PiSession>,
+    private readonly agentWorkspace: AgentWorkspace,
+    private readonly createSession: (systemPrompt: string) => Promise<PiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
-    private readonly systemPrompt: string,
+    private readonly harnessSystemPrompt: string,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
   ) {}
 
@@ -199,7 +204,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     let session: PiSession | undefined;
     try {
       await this.#selectCommittedBranch(request.contextWindow);
-      const materials = await this.loadContextMaterials(request);
+      const [workspaceSnapshot, materials] = await Promise.all([
+        this.agentWorkspace.loadTurnSnapshot(request.inputs[0]!.kind),
+        this.loadContextMaterials(request),
+      ]);
+      const systemPrompt = composeSystemPrompt(this.harnessSystemPrompt, workspaceSnapshot);
       const preparedWindow: ContextWindowState = request.contextWindow ?? {
         version: 1,
         id: request.turnId,
@@ -207,15 +216,15 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         committedTrace: [],
       };
       this.lifecycle.control(request.turnId).prepareContextWindow(preparedWindow);
-      session = await this.createSession();
+      session = await this.createSession(systemPrompt);
       session.setAutoCompactionEnabled(false);
       const materialized = materializeTurnContext({
         currentInput: currentInputMessage(request.inputs[0]!),
-        turnLive: structuredClone(materials.turnLive),
+        turnLive: [currentAttentionMessage(workspaceSnapshot.currentAttention), ...structuredClone(materials.turnLive)],
         windowFrozen: restoreMessages(preparedWindow.frozenSeed),
         committedTrace: restoreMessages(preparedWindow.committedTrace),
         fixedTokens: {
-          system: textTokens(this.systemPrompt),
+          system: textTokens(session.systemPrompt),
           toolSchemas: textTokens(JSON.stringify(session.getAllTools().map(tool => ({
             name: tool.name,
             description: tool.description,
@@ -301,14 +310,13 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
   await Promise.all([
-    mkdir(options.cwd, { recursive: true }),
     mkdir(options.agentDir, { recursive: true }),
     mkdir(path.dirname(options.transcriptFile), { recursive: true }),
   ]);
   const sessionManager = SessionManager.open(
     options.transcriptFile,
     path.dirname(options.transcriptFile),
-    options.cwd,
+    options.agentWorkspace.root,
   );
   const lifecycle = new InputAnnotationLifecycle(sessionManager);
   const annotationExtension: InlineExtension = {
@@ -317,22 +325,29 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       pi.on("message_start", event => lifecycle.onMessageStart(event.message));
     },
   };
-  const settingsManager = SettingsManager.create(options.cwd, options.agentDir);
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: options.cwd,
-    agentDir: options.agentDir,
-    settingsManager,
-    extensionFactories: [annotationExtension],
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    systemPrompt: options.systemPrompt,
-  });
-  const createSession = async () => {
+  // Agent Workspace files are Individual material, not a Pi project configuration source.
+  const settingsManager = SettingsManager.create(
+    options.agentWorkspace.root,
+    options.agentDir,
+    { projectTrusted: false },
+  );
+  const createSession = async (systemPrompt: string) => {
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: options.agentWorkspace.root,
+      agentDir: options.agentDir,
+      settingsManager,
+      extensionFactories: [annotationExtension],
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPromptOverride: () => systemPrompt,
+      appendSystemPromptOverride: () => [],
+    });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
-      cwd: options.cwd,
+      cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
       modelRuntime: options.modelRuntime,
       model: options.model,
@@ -349,9 +364,10 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     sessionManager,
     options.transcriptFile,
     lifecycle,
+    options.agentWorkspace,
     createSession,
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),
-    options.systemPrompt,
+    options.harnessSystemPrompt,
     options.contextBudget,
   );
 }
@@ -403,6 +419,30 @@ function currentInputMessage(input: ExecutionInput): AgentMessage {
     content: [{ type: "text", text: inputText(input) }],
     timestamp: Date.parse(input.occurredAt),
   };
+}
+
+function currentAttentionMessage(content: string): AgentMessage {
+  return {
+    role: "user",
+    content: [{ type: "text", text: section("Current Attention", content) }],
+    timestamp: 0,
+  };
+}
+
+function composeSystemPrompt(
+  harnessSystemPrompt: string,
+  snapshot: AgentWorkspaceTurnSnapshot,
+): string {
+  return [
+    section("Harness System Guidance", harnessSystemPrompt),
+    section("Identity", snapshot.identity),
+    section("Behavior", snapshot.behavior),
+    section("Long-term Memory", snapshot.longTermMemory),
+  ].join("\n\n");
+}
+
+function section(label: string, content: string): string {
+  return `# ${label}\n\n${content}`;
 }
 
 function textTokens(text: string): number {

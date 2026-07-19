@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { defineTool, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { defineTool, estimateTokens, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { createPiAgentExecution } from "../../src/agent-execution/pi-execution.js";
+import { AgentWorkspace } from "../../src/agent-workspace/agent-workspace.js";
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -47,6 +48,196 @@ async function createTestPi(root: string) {
   return { faux, model, modelRuntime };
 }
 
+test("binds interaction Workspace materials to their system and Context levels", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-materials-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await mkdir(path.join(workspaceRoot, ".pi", "extensions"), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, ".pi", "extensions", "change-prompt.js"),
+    "export default pi => pi.on('before_agent_start', event => ({ systemPrompt: `${event.systemPrompt}\\nworkspace config leak` }));",
+    "utf8",
+  );
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  let providerSystemPrompt = "";
+  faux.setResponses([
+    context => {
+      providerSystemPrompt = context.systemPrompt ?? "";
+      assert.equal(context.systemPrompt, `${[
+        "# Harness System Guidance\n\nharness guidance",
+        "# Identity\n\nidentity material",
+        "# Behavior\n\ninteraction behavior",
+        "# Long-term Memory\n\nlong-term memory",
+      ].join("\n\n")}\nCurrent working directory: ${workspaceRoot}`);
+      const text = context.messages.map(message => JSON.stringify(message)).join("\n");
+      assert.match(text, /Current Attention/);
+      assert.match(text, /current attention/);
+      assert.doesNotMatch(text, /background behavior/);
+      assert.doesNotMatch(text, /identity material/);
+      return fauxAssistantMessage("workspace received");
+    },
+  ]);
+
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  const result = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+
+  const plan = result.contextPlan as { budget: { fixedTokens: number } };
+  assert.equal(
+    plan.budget.fixedTokens,
+    textTokenEstimate(providerSystemPrompt) + textTokenEstimate("[]"),
+  );
+  assert.doesNotMatch(await readFile(transcriptFile, "utf8"), /current attention/);
+});
+
+test("keeps opportunity behavior frozen for same-Turn interaction steering", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-steering-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const providerStarted = deferred();
+  const releaseProvider = deferred();
+  const expectOriginalBackground = (systemPrompt: string | undefined) => {
+    assert.match(systemPrompt ?? "", /background behavior/);
+    assert.doesNotMatch(systemPrompt ?? "", /interaction behavior|changed behavior/);
+  };
+  faux.setResponses([
+    async context => {
+      expectOriginalBackground(context.systemPrompt);
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return fauxAssistantMessage("first response");
+    },
+    context => {
+      expectOriginalBackground(context.systemPrompt);
+      return fauxAssistantMessage("steering response");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  const running = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [{
+      ...executionInput("input-1", "background opportunity"),
+      kind: "opportunity",
+    }],
+  }, noEffectControl());
+  await providerStarted.promise;
+  await Promise.all([
+    writeFile(path.join(workspaceRoot, "behavior", "background.md"), "changed behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "changed behavior", "utf8"),
+  ]);
+  await running.steer(executionInput("input-2", "new interaction"));
+  releaseProvider.resolve();
+
+  await running.result;
+});
+
+test("refreshes Agent Workspace materials on the next Turn", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-refresh-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      assert.match(context.systemPrompt ?? "", /identity material/);
+      assert.match(JSON.stringify(context.messages), /current attention/);
+      return fauxAssistantMessage("first reply");
+    },
+    context => {
+      const systemPrompt = context.systemPrompt ?? "";
+      const messages = JSON.stringify(context.messages);
+      assert.match(systemPrompt, /identity revision/);
+      assert.match(systemPrompt, /memory revision/);
+      assert.match(systemPrompt, /behavior revision/);
+      assert.doesNotMatch(systemPrompt, /identity material|long-term memory|interaction behavior/);
+      assert.match(messages, /attention revision/);
+      assert.doesNotMatch(messages, /current attention/);
+      assert.match(messages, /first reply/);
+      return fauxAssistantMessage("second reply");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "first input")],
+  }, noEffectControl()).result;
+  await Promise.all([
+    writeFile(path.join(workspaceRoot, "identity.md"), "identity revision", "utf8"),
+    writeFile(path.join(workspaceRoot, "memory.md"), "memory revision", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "behavior revision", "utf8"),
+    writeFile(path.join(workspaceRoot, "attention.md"), "attention revision", "utf8"),
+  ]);
+
+  await execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "second input")],
+    contextWindow: first.contextWindow,
+  }, noEffectControl()).result;
+});
+
+test("rejects incomplete Workspace material before provider or Input evidence", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-incomplete-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await writeFile(path.join(workspaceRoot, "attention.md"), "\n", "utf8");
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([fauxAssistantMessage("must not run")]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+  const included: string[] = [];
+
+  await assert.rejects(execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => included.push(inputId),
+  }).result, /attention\.md is empty/);
+
+  assert.equal(faux.state.callCount, 0);
+  assert.deepEqual(included, []);
+  await assert.rejects(readFile(transcriptFile, "utf8"), { code: "ENOENT" });
+});
+
 test("runs an Input through Pi and returns verified transcript evidence", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-execution-"));
   const transcriptFile = path.join(root, "transcript", "agent.jsonl");
@@ -54,12 +245,12 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   faux.setResponses([fauxAssistantMessage("hello back")]);
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => execution.close());
   const included: string[] = [];
@@ -110,12 +301,12 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
 
   faux.appendResponses([fauxAssistantMessage("second response")]);
   const reopened = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => reopened.close());
   const second = reopened.start({
@@ -168,12 +359,12 @@ test("continues from the last committed Context after a failed transcript branch
   ]);
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => execution.close());
   const control = {
@@ -235,12 +426,12 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   ]);
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
     loadContextMaterials: async () => {
       revision += 1;
       return {
@@ -281,12 +472,12 @@ test("rejects an over-limit current Input before calling the provider", async t 
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([fauxAssistantMessage("must not run")]);
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "primary Agent",
+    harnessSystemPrompt: "primary Agent",
     contextBudget: {
       hardContext: 40,
       normalMaterial: 20,
@@ -323,12 +514,12 @@ test("rejects an invalid non-empty transcript without changing it", async () => 
   const { model, modelRuntime } = await createTestPi(root);
 
   await assert.rejects(createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   }), /valid pi session/i);
   assert.equal(await readFile(transcriptFile, "utf8"), original);
 });
@@ -351,6 +542,33 @@ function contextMessage(text: string) {
   };
 }
 
+async function createAgentWorkspaceFixture(root: string): Promise<string> {
+  const workspaceRoot = path.join(root, "workspace");
+  await mkdir(path.join(workspaceRoot, "behavior"), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(workspaceRoot, "identity.md"), "identity material", "utf8"),
+    writeFile(path.join(workspaceRoot, "memory.md"), "long-term memory", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "interaction behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "background.md"), "background behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "attention.md"), "current attention", "utf8"),
+  ]);
+  return workspaceRoot;
+}
+
+function noEffectControl() {
+  return {
+    includeInput: () => {},
+    prepareContextWindow: () => {},
+    prepareEffect: () => {
+      throw new Error("This test has no Effects");
+    },
+  };
+}
+
+function textTokenEstimate(text: string): number {
+  return estimateTokens(contextMessage(text));
+}
+
 test("does not include or annotate a steering Input before Pi starts its user message", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-steering-"));
   const transcriptFile = path.join(root, "transcript", "agent.jsonl");
@@ -367,12 +585,12 @@ test("does not include or annotate a steering Input before Pi starts its user me
   ]);
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => execution.close());
   const included: string[] = [];
@@ -446,12 +664,12 @@ test("does not complete or include queued steering after abort", async t => {
   ]);
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => execution.close());
   const included: string[] = [];
@@ -508,12 +726,12 @@ test("does not complete a Turn after Pi ends with an error", async t => {
     }),
   ]);
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
   });
   t.after(() => execution.close());
 
@@ -558,12 +776,12 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
   });
 
   const execution = await createPiAgentExecution({
-    cwd: root,
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
     transcriptFile,
     modelRuntime,
     model,
-    systemPrompt: "You are the primary Agent.",
+    harnessSystemPrompt: "You are the primary Agent.",
     readOnlyTools: [lookup],
   });
   t.after(() => execution.close());

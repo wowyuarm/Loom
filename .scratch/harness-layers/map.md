@@ -46,7 +46,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [01 — Refine Runtime and Runtime Store](issues/01-refine-runtime-and-store.md)
 - Completed: [02 — Bind Agent Execution to Pi Transcript Evidence](issues/02-bind-pi-execution-and-transcript.md)
 - Completed: [03 — Materialize Context Windows per Turn](issues/03-materialize-context-windows-per-turn.md)
-- Next: 进入 Agent Workspace 层，先回读来源中的 Workspace ownership、材料演化与 skill 来源，再分辨实际未决问题；以 ticket 03 的材料合同为接入点，不提前做 workspace init 或模板分发。
+- Completed: [04 — Bind Agent Workspace Materials to Turns](issues/04-bind-agent-workspace-materials-to-turns.md)
+- Next: 继续 Agent Workspace 层的统一 skill discovery，细化 core / workspace / extension 三种来源如何进入同一发现机制、何时刷新及如何拒绝重名；不提前做 workspace init、模板分发或器官写入保护。
 
 ## Context Follow-ups
 
@@ -57,7 +58,7 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 | Window Closure and Recent Activity Bridge | 等 Agent Workspace 与记录类 Cognitive Organ 具备后实现。 |
 | Tool Trace Compaction and Evidence Expansion | 回到 Context 层单独闭合 compactor、gate 与展开能力。 |
 | Logical Day and Cross-day Context Recovery | 等时间/节律配置与每日 transcript 归属明确后实现。 |
-| Workspace Material Sources | 下一主层 Agent Workspace 将接入 ticket 03 的材料合同。 |
+| Workspace Material Sources | Ticket 04 已接入 Identity、Memory、Behavior 与 Current Attention；skills discovery 是下一项 Workspace 工作。 |
 | Configuration and Model Revision Input | 等 Instance Configuration 层提供预算与每 Turn revision。 |
 
 具体边界与进入条件由 [ticket 03](issues/03-materialize-context-windows-per-turn.md#deferred-context-work) 维护；关闭一项后再为下一项建立实际 ticket，不提前创建空文件。
