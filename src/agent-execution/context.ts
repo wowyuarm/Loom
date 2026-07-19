@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { isRawCompactableToolResult } from "./tool-trace.js";
 
 export const DEFAULT_CONTEXT_BUDGET = {
   hardContext: 262_000,
@@ -200,7 +201,7 @@ function activeTraceUnits(messages: AgentMessage[]): PlannedUnit[] {
       }
       interaction.push(result);
     }
-    units.push(traceUnit(index, end, interaction, true));
+    units.push(traceUnit(index, end, interaction, interaction.some(isRawCompactableToolResult)));
     index = end;
   }
   return units;

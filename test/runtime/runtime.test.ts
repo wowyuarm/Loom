@@ -371,6 +371,178 @@ test("restores the committed Context Window for the next Turn after restart", as
   });
 });
 
+test("keeps an atomic Context replacement when the following provider run fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-compaction-"));
+  let run = 0;
+  const execution: AgentExecution = {
+    start(request, control) {
+      run += 1;
+      if (run === 1) {
+        const prepared = {
+          version: 1 as const,
+          id: "window-1",
+          frozenSeed: [{ role: "user", content: "frozen" }],
+          committedTrace: [],
+        };
+        control.prepareContextWindow(prepared);
+        control.includeInput(request.inputs[0]!.id);
+        const transcriptAnchor = { sessionId: "session-context", entryId: "entry-first" };
+        return {
+          result: Promise.resolve({
+            outcome: "completed" as const,
+            inputAnchors: [{
+              inputId: request.inputs[0]!.id,
+              transcriptAnchor: { sessionId: "session-context", entryId: "input-first" },
+            }],
+            transcriptAnchor,
+            contextWindow: {
+              ...prepared,
+              committedTrace: [{ role: "toolResult", content: "raw evidence" }],
+              transcriptAnchor,
+            },
+            contextPlan: { version: 1, budget: {}, decisions: [] },
+          }),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      }
+
+      const expected = request.contextWindow!;
+      control.prepareContextWindow(expected);
+      control.replaceContextWindow(expected, {
+        ...expected,
+        committedTrace: [{ role: "toolResult", content: "compacted evidence" }],
+      });
+      return {
+        result: Promise.reject(new Error("provider failed after compaction")),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const runtime = openRuntime({ root, execution });
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await assert.rejects(runtime.advance(), /provider failed after compaction/);
+  runtime.close();
+
+  const started = deferred<TurnRequest>();
+  const observer = openRuntime({
+    root,
+    execution: {
+      start(request) {
+        started.resolve(request);
+        return { result: new Promise(() => {}), steer: async () => {}, abort: async () => {} };
+      },
+    },
+  });
+  t.after(() => observer.close());
+  const advance = observer.advance();
+
+  assert.deepEqual((await started.promise).contextWindow?.committedTrace, [
+    { role: "toolResult", content: "compacted evidence" },
+  ]);
+  void advance;
+});
+
+test("rejects a stale Context replacement without changing the current window", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-stale-"));
+  let run = 0;
+  const runtime = openRuntime({
+    root,
+    execution: {
+      start(request, control) {
+        run += 1;
+        if (run === 1) {
+          const prepared = {
+            version: 1 as const,
+            id: "window-1",
+            frozenSeed: [{ role: "user", content: "frozen" }],
+            committedTrace: [],
+          };
+          control.prepareContextWindow(prepared);
+          control.includeInput(request.inputs[0]!.id);
+          const transcriptAnchor = { sessionId: "session-context", entryId: "entry-first" };
+          return {
+            result: Promise.resolve({
+              outcome: "completed" as const,
+              inputAnchors: [{
+                inputId: request.inputs[0]!.id,
+                transcriptAnchor: { sessionId: "session-context", entryId: "input-first" },
+              }],
+              transcriptAnchor,
+              contextWindow: {
+                ...prepared,
+                committedTrace: [{ role: "toolResult", content: "raw evidence" }],
+                transcriptAnchor,
+              },
+              contextPlan: { version: 1, budget: {}, decisions: [] },
+            }),
+            steer: async () => {},
+            abort: async () => {},
+          };
+        }
+
+        const expected = request.contextWindow!;
+        control.prepareContextWindow(expected);
+        control.replaceContextWindow(expected, {
+          ...expected,
+          committedTrace: [{ role: "toolResult", content: "current compacted evidence" }],
+        });
+        control.replaceContextWindow(expected, {
+          ...expected,
+          committedTrace: [{ role: "toolResult", content: "stale overwrite" }],
+        });
+        throw new Error("stale replacement should have failed");
+      },
+    },
+  });
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await assert.rejects(runtime.advance(), /context replacement.*stale/i);
+  runtime.close();
+
+  const started = deferred<TurnRequest>();
+  const observer = openRuntime({
+    root,
+    execution: {
+      start(request) {
+        started.resolve(request);
+        return { result: new Promise(() => {}), steer: async () => {}, abort: async () => {} };
+      },
+    },
+  });
+  t.after(() => observer.close());
+  const advance = observer.advance();
+
+  assert.deepEqual((await started.promise).contextWindow?.committedTrace, [
+    { role: "toolResult", content: "current compacted evidence" },
+  ]);
+  void advance;
+});
+
 test("keeps the prepared window seed when its first Turn fails", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-seed-"));
   const failingExecution: AgentExecution = {

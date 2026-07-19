@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 
-import type { TranscriptAnchor } from "../runtime/index.js";
+import type { JsonValue, TranscriptAnchor } from "../runtime/index.js";
 
 interface VerifyTranscriptEntryRequest {
   transcriptFile: string;
@@ -25,6 +26,17 @@ export interface VerifiedTranscriptEvidence {
     transcriptAnchor: TranscriptAnchor;
   }>;
   transcriptAnchor: TranscriptAnchor;
+}
+
+export interface TranscriptToolInteraction {
+  reference: string;
+  toolCallId: string;
+  toolName: string;
+  callArguments: JsonValue;
+  toolResult: {
+    isError: boolean;
+    content: JsonValue[];
+  };
 }
 
 interface TranscriptHeader extends Record<string, unknown> {
@@ -85,6 +97,91 @@ export async function verifyPrimaryTranscriptEvidence(
   };
 }
 
+export async function readCommittedToolInteractions(request: {
+  transcriptFile: string;
+  transcriptAnchor: TranscriptAnchor;
+  toolCallIds: string[];
+}): Promise<TranscriptToolInteraction[]> {
+  if (new Set(request.toolCallIds).size !== request.toolCallIds.length) {
+    throw new Error("Context contains duplicate tool call IDs");
+  }
+  const branch = await readBranchToEntry(
+    request.transcriptFile,
+    request.transcriptAnchor.sessionId,
+    request.transcriptAnchor.entryId,
+  );
+  const expected = new Set(request.toolCallIds);
+  const calls = toolCallsOnBranch(branch, request.transcriptFile);
+  const interactions = new Map<string, TranscriptToolInteraction>();
+  for (const entry of branch) {
+    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+    const message = entry.message as Record<string, unknown>;
+    if (message.role !== "toolResult" || typeof message.toolCallId !== "string" || !expected.has(message.toolCallId)) continue;
+    const call = calls.get(message.toolCallId);
+    if (!call
+      || typeof message.toolName !== "string"
+      || message.toolName !== call.toolName
+      || !Array.isArray(message.content)
+      || typeof message.isError !== "boolean"
+      || interactions.has(message.toolCallId)) {
+      throw new Error(`Transcript does not contain one complete interaction for tool call ${message.toolCallId}`);
+    }
+    interactions.set(message.toolCallId, {
+      reference: encodeToolInteractionReference(request.transcriptAnchor.sessionId, entry.id),
+      toolCallId: message.toolCallId,
+      toolName: call.toolName,
+      callArguments: asJsonValue(call.callArguments),
+      toolResult: {
+        isError: message.isError,
+        content: message.content.map(asJsonValue),
+      },
+    });
+  }
+  if (interactions.size !== expected.size) {
+    const missing = request.toolCallIds.filter(id => !interactions.has(id));
+    throw new Error(`Transcript is missing committed tool interactions: ${missing.join(", ")}`);
+  }
+  return request.toolCallIds.map(id => interactions.get(id)!);
+}
+
+export async function readReferencedToolInteraction(request: {
+  transcriptFile: string;
+  reference: string;
+}): Promise<TranscriptToolInteraction> {
+  const source = decodeToolInteractionReference(request.reference);
+  const branch = await readBranchToEntry(request.transcriptFile, source.sessionId, source.resultEntryId);
+  const resultEntry = branch.at(-1);
+  const message = resultEntry?.message;
+  if (resultEntry?.id !== source.resultEntryId
+    || resultEntry.type !== "message"
+    || !message
+    || typeof message !== "object") {
+    throw new Error("Tool interaction reference does not identify a transcript result");
+  }
+  const result = message as Record<string, unknown>;
+  if (result.role !== "toolResult"
+    || typeof result.toolCallId !== "string"
+    || typeof result.toolName !== "string"
+    || typeof result.isError !== "boolean"
+    || !Array.isArray(result.content)) {
+    throw new Error("Tool interaction reference does not identify a transcript result");
+  }
+  const call = toolCallsOnBranch(branch.slice(0, -1), request.transcriptFile).get(result.toolCallId);
+  if (!call || call.toolName !== result.toolName) {
+    throw new Error("Tool interaction reference has no matching transcript call");
+  }
+  return {
+    reference: request.reference,
+    toolCallId: result.toolCallId,
+    toolName: result.toolName,
+    callArguments: asJsonValue(call.callArguments),
+    toolResult: {
+      isError: result.isError,
+      content: result.content.map(asJsonValue),
+    },
+  };
+}
+
 function assertCompletedTurn(leaf: TranscriptEntry, transcriptFile: string): void {
   const message = leaf.message;
   if (leaf.type !== "message" || !message || typeof message !== "object") {
@@ -127,25 +224,55 @@ function assertCompleteToolInteractions(branch: TranscriptEntry[], transcriptFil
 }
 
 async function readSelectedBranch(transcriptFile: string, sessionId: string): Promise<TranscriptEntry[]> {
+  const { entries } = await readTranscript(transcriptFile, sessionId);
+  return buildBranch(entries, entries.at(-1), transcriptFile);
+}
+
+async function readBranchToEntry(
+  transcriptFile: string,
+  sessionId: string,
+  entryId: string,
+): Promise<TranscriptEntry[]> {
+  const { entries } = await readTranscript(transcriptFile, sessionId);
+  const target = entries.find(entry => entry.id === entryId);
+  if (!target) throw new Error(`Transcript entry ${entryId} does not exist`);
+  return buildBranch(entries, target, transcriptFile);
+}
+
+async function readTranscript(
+  transcriptFile: string,
+  sessionId: string,
+): Promise<{ entries: TranscriptEntry[] }> {
   const records = (await readFile(transcriptFile, "utf8"))
     .split("\n")
     .filter(line => line.length > 0)
     .map((line, index) => parseRecord(line, index + 1));
-  const [header, ...entries] = records;
+  const [header, ...rawEntries] = records;
   if (!isHeader(header) || header.id !== sessionId) {
     throw new Error(`Transcript ${transcriptFile} does not belong to session ${sessionId}`);
   }
 
+  const entries: TranscriptEntry[] = [];
   const byId = new Map<string, TranscriptEntry>();
-  for (const record of entries) {
+  for (const record of rawEntries) {
     if (!isEntry(record)) throw new Error(`Transcript ${transcriptFile} contains an invalid entry`);
     if (byId.has(record.id)) throw new Error(`Transcript ${transcriptFile} contains duplicate entry ${record.id}`);
     byId.set(record.id, record);
+    entries.push(record);
   }
 
+  return { entries };
+}
+
+function buildBranch(
+  entries: TranscriptEntry[],
+  leaf: TranscriptEntry | undefined,
+  transcriptFile: string,
+): TranscriptEntry[] {
+  const byId = new Map(entries.map(entry => [entry.id, entry]));
   const branch: TranscriptEntry[] = [];
   const selected = new Set<string>();
-  let current = entries.at(-1);
+  let current = leaf;
   while (isEntry(current)) {
     if (selected.has(current.id)) throw new Error(`Transcript ${transcriptFile} selected branch contains a cycle`);
     selected.add(current.id);
@@ -158,6 +285,72 @@ async function readSelectedBranch(transcriptFile: string, sessionId: string): Pr
     throw new Error(`Transcript ${transcriptFile} has no continuous selected branch`);
   }
   return branch;
+}
+
+function toolCallsOnBranch(
+  branch: TranscriptEntry[],
+  transcriptFile: string,
+): Map<string, { toolName: string; callArguments: unknown }> {
+  const calls = new Map<string, { toolName: string; callArguments: unknown }>();
+  for (const entry of branch) {
+    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+    const message = entry.message as Record<string, unknown>;
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const block of message.content) {
+      if (!block || typeof block !== "object") continue;
+      const content = block as Record<string, unknown>;
+      if (content.type !== "toolCall") continue;
+      if (typeof content.id !== "string"
+        || typeof content.name !== "string"
+        || !("arguments" in content)
+        || calls.has(content.id)) {
+        throw new Error(`Transcript ${transcriptFile} contains an invalid or duplicate tool call`);
+      }
+      calls.set(content.id, { toolName: content.name, callArguments: content.arguments });
+    }
+  }
+  return calls;
+}
+
+function encodeToolInteractionReference(sessionId: string, resultEntryId: string): string {
+  const payload = Buffer.from(JSON.stringify({ sessionId, resultEntryId }), "utf8").toString("base64url");
+  return `loom-tool-interaction:v1:${payload}`;
+}
+
+function decodeToolInteractionReference(reference: string): {
+  sessionId: string;
+  resultEntryId: string;
+} {
+  const prefix = "loom-tool-interaction:v1:";
+  if (!reference.startsWith(prefix)) throw new Error("Invalid tool interaction reference");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(reference.slice(prefix.length), "base64url").toString("utf8")) as unknown;
+  } catch {
+    throw new Error("Invalid tool interaction reference");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Invalid tool interaction reference");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (Object.keys(record).length !== 2
+    || typeof record.sessionId !== "string"
+    || !record.sessionId
+    || typeof record.resultEntryId !== "string"
+    || !record.resultEntryId) {
+    throw new Error("Invalid tool interaction reference");
+  }
+  return { sessionId: record.sessionId, resultEntryId: record.resultEntryId };
+}
+
+function asJsonValue(value: unknown): JsonValue {
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Transcript tool interaction contains a non-JSON value");
+  const parsed = JSON.parse(serialized) as JsonValue;
+  if (!isDeepStrictEqual(parsed, value)) {
+    throw new Error("Transcript tool interaction contains a non-JSON value");
+  }
+  return parsed;
 }
 
 function parseRecord(line: string, lineNumber: number): unknown {

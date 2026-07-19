@@ -48,7 +48,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [03 — Materialize Context Windows per Turn](issues/03-materialize-context-windows-per-turn.md)
 - Completed: [04 — Bind Agent Workspace Materials to Turns](issues/04-bind-agent-workspace-materials-to-turns.md)
 - Completed: [05 — Unify Skill Discovery per Turn](issues/05-unify-skill-discovery.md)
-- Review checkpoint: Agent Workspace 层已经闭合必要材料与统一 skill discovery。进入 Cognitive Organs 前先整体回顾 Runtime、Agent Execution、Context 与 Workspace，确认与 Xi source reference 的保留/改变、后续 follow-ups 和是否出现过度设计；本 checkpoint 不预建器官 ticket。
+- Completed: [06 — Compact Tool Traces Before Context Reuse](issues/06-compact-tool-traces-before-reuse.md)
+- Review checkpoint: 第一个 Cognitive Organ 与 Context compaction/gate/expansion 已闭合。先回顾 Runtime、Agent Execution、Workspace、skills 与 Cognitive Organ 的整体边界、已完成范围和剩余 follow-ups，再选择下一张 ticket。
 
 ## Context Follow-ups
 
@@ -57,7 +58,7 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 | Follow-up | Current handling |
 | --- | --- |
 | Window Closure and Recent Activity Bridge | 等 Agent Workspace 与记录类 Cognitive Organ 具备后实现。 |
-| Tool Trace Compaction and Evidence Expansion | 回到 Context 层单独闭合 compactor、gate 与展开能力。 |
+| Tool Trace Compaction and Evidence Expansion | Ticket 06 completed：真实 compactor、失败 gate、Runtime 原子替换、稳定引用分页展开与机械收回已闭合。 |
 | Logical Day and Cross-day Context Recovery | 等时间/节律配置与每日 transcript 归属明确后实现。 |
 | Workspace Material Sources | Tickets 04-05 已接入 Identity、Memory、Behavior、Current Attention 与统一 skills catalog。 |
 | Configuration and Model Revision Input | 等 Instance Configuration 层提供预算与每 Turn revision。 |

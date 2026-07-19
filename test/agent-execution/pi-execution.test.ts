@@ -295,9 +295,11 @@ test("binds interaction Workspace materials to their system and Context levels",
   const transcriptFile = path.join(root, "transcript", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   let providerSystemPrompt = "";
+  let providerTools: unknown[] = [];
   faux.setResponses([
     context => {
       providerSystemPrompt = context.systemPrompt ?? "";
+      providerTools = context.tools ?? [];
       assert.equal(context.systemPrompt, `${[
         "# Harness System Guidance\n\nharness guidance",
         "# Identity\n\nidentity material",
@@ -332,7 +334,7 @@ test("binds interaction Workspace materials to their system and Context levels",
   const plan = result.contextPlan as { budget: { fixedTokens: number } };
   assert.equal(
     plan.budget.fixedTokens,
-    textTokenEstimate(providerSystemPrompt) + textTokenEstimate("[]"),
+    textTokenEstimate(providerSystemPrompt) + textTokenEstimate(JSON.stringify(providerTools)),
   );
   assert.doesNotMatch(await readFile(transcriptFile, "utf8"), /current attention/);
 });
@@ -502,6 +504,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   }, {
     includeInput: inputId => included.push(inputId),
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -557,6 +560,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   }, {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -605,6 +609,7 @@ test("continues from the last committed Context after a failed transcript branch
   const control = {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -679,6 +684,7 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   const control = {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -731,6 +737,7 @@ test("rejects an over-limit current Input before calling the provider", async t 
   }, {
     includeInput: inputId => included.push(inputId),
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -823,6 +830,7 @@ function noEffectControl() {
   return {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -871,6 +879,7 @@ test("does not include or annotate a steering Input before Pi starts its user me
   }, {
     includeInput: inputId => included.push(inputId),
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -950,6 +959,7 @@ test("does not complete or include queued steering after abort", async t => {
   }, {
     includeInput: inputId => included.push(inputId),
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1012,6 +1022,7 @@ test("does not complete a Turn after Pi ends with an error", async t => {
   }, {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1062,6 +1073,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
   }, {
     includeInput: () => {},
     prepareContextWindow: () => {},
+    replaceContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("The lookup tool is read-only");
     },
@@ -1077,4 +1089,344 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
 
   assert.deepEqual(roles, ["user", "assistant", "toolResult", "assistant"]);
   assert.equal(result.inputAnchors[0]?.inputId, "input-1");
+});
+
+test("compacts committed tool traces and expands an authorized original interaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-compaction-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const originalResult = `found:original question\n${"x".repeat(45_000)}\noriginal end`;
+  let compactedReference = "";
+  let nextOffset = 0;
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "original question" }, { id: "call-1" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("first turn complete"),
+    context => {
+      const serialized = JSON.stringify(context.messages);
+      assert.doesNotMatch(serialized, /original question/);
+      assert.doesNotMatch(serialized, /found:original question/);
+      const compacted = context.messages.find(message => message.role === "toolResult");
+      assert.ok(compacted && compacted.role === "toolResult");
+      const text = compacted.content.find(block => block.type === "text")?.text;
+      assert.ok(text);
+      const record = JSON.parse(text) as { type?: string; reference?: string };
+      assert.equal(record.type, "loom.tool-interaction.compacted");
+      assert.ok(record.reference);
+      compactedReference = record.reference;
+      assert.ok((context.tools ?? []).some(tool => tool.name === "expand_tool_result"));
+      return fauxAssistantMessage(fauxToolCall(
+        "expand_tool_result",
+        { reference: compactedReference, offset: 0 },
+        { id: "expand-1" },
+      ), { stopReason: "toolUse" });
+    },
+    context => {
+      const expansion = [...context.messages].reverse().find(message =>
+        message.role === "toolResult" && message.toolName === "expand_tool_result");
+      assert.ok(expansion && expansion.role === "toolResult");
+      const text = expansion.content.find(block => block.type === "text")?.text;
+      assert.ok(text);
+      const page = JSON.parse(text) as {
+        type?: string;
+        reference?: string;
+        offset?: number;
+        nextOffset?: number | null;
+        content?: string;
+      };
+      assert.equal(page.type, "loom.tool-interaction.page");
+      assert.equal(page.reference, compactedReference);
+      assert.equal(page.offset, 0);
+      assert.ok(page.nextOffset);
+      nextOffset = page.nextOffset;
+      assert.match(page.content ?? "", /original question/);
+      assert.doesNotMatch(page.content ?? "", /original end/);
+      return fauxAssistantMessage(fauxToolCall(
+        "expand_tool_result",
+        { reference: compactedReference, offset: nextOffset },
+        { id: "expand-2" },
+      ), { stopReason: "toolUse" });
+    },
+    context => {
+      const expansion = [...context.messages].reverse().find(message =>
+        message.role === "toolResult" && message.toolCallId === "expand-2");
+      assert.ok(expansion && expansion.role === "toolResult");
+      const text = expansion.content.find(block => block.type === "text")?.text;
+      assert.ok(text);
+      const page = JSON.parse(text) as {
+        reference?: string;
+        offset?: number;
+        nextOffset?: number | null;
+        content?: string;
+      };
+      assert.equal(page.reference, compactedReference);
+      assert.equal(page.offset, nextOffset);
+      assert.equal(page.nextOffset, null);
+      assert.match(page.content ?? "", /original end/);
+      return fauxAssistantMessage(fauxToolCall(
+        "expand_tool_result",
+        { reference: "loom-tool-interaction:v1:eyJndWVzc2VkIjp0cnVlfQ", offset: 0 },
+        { id: "expand-guessed" },
+      ), { stopReason: "toolUse" });
+    },
+    context => {
+      const rejected = [...context.messages].reverse().find(message =>
+        message.role === "toolResult" && message.toolCallId === "expand-guessed");
+      assert.ok(rejected && rejected.role === "toolResult");
+      assert.equal(rejected.isError, true);
+      assert.match(JSON.stringify(rejected.content), /not authorized by the current Context/i);
+      return fauxAssistantMessage("expanded evidence received");
+    },
+    context => {
+      const serialized = JSON.stringify(context.messages);
+      assert.match(serialized, /loom\.tool-interaction\.expansion-compacted/);
+      assert.doesNotMatch(serialized, /original end/);
+      return fauxAssistantMessage("mechanical compaction received");
+    },
+  ]);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Return a deterministic test value.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async () => ({
+      content: [{ type: "text" as const, text: originalResult }],
+      details: {},
+    }),
+  });
+  let compactorCalls = 0;
+  const compactor = {
+    async compact(inputs: Array<{ toolCallId: string; toolName: string; callArguments: unknown; toolResult: unknown }>) {
+      compactorCalls += 1;
+      assert.deepEqual(inputs, [{
+        toolCallId: "call-1",
+        toolName: "lookup",
+        callArguments: { query: "original question" },
+        toolResult: {
+          isError: false,
+          content: [{ type: "text", text: originalResult }],
+        },
+      }]);
+      return [{
+        toolCallId: "call-1",
+        callSummary: "Looked up the supplied question.",
+        resultSummary: "The lookup returned a matching value.",
+        confirmedFacts: ["The lookup returned text."],
+        sourceClaims: [],
+        limitations: [],
+      }];
+    },
+  };
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    readOnlyTools: [lookup],
+    toolTraceCompactor: compactor,
+    contextBudget: { toolTraceReservation: 1 },
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "use the lookup")],
+  }, noEffectControl()).result;
+  let replacement: unknown;
+  const included: string[] = [];
+  const second = await execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "inspect the evidence")],
+    contextWindow: first.contextWindow,
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => included.push(inputId),
+    replaceContextWindow: (expected, next) => {
+      assert.deepEqual(expected, first.contextWindow);
+      replacement = next;
+    },
+  }).result;
+
+  assert.ok(replacement);
+  assert.deepEqual(included, ["input-2"]);
+  assert.equal(second.contextWindow.transcriptAnchor?.entryId, second.transcriptAnchor.entryId);
+
+  const third = await execution.start({
+    turnId: "turn-3",
+    leaseToken: 3,
+    inputs: [executionInput("input-3", "continue after expansion")],
+    contextWindow: second.contextWindow,
+  }, noEffectControl()).result;
+
+  assert.equal(compactorCalls, 1);
+  assert.equal(faux.state.callCount, 7);
+  assert.match(JSON.stringify(third.contextWindow.committedTrace), /expansion-compacted/);
+});
+
+test("keeps raw Context and excludes Input when tool trace compaction fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-gate-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "retry evidence" }, { id: "call-1" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("first turn complete"),
+    context => {
+      const serialized = JSON.stringify(context.messages);
+      assert.match(serialized, /loom\.tool-interaction\.compacted/);
+      assert.match(serialized, /retry after failure/);
+      return fauxAssistantMessage("retry complete");
+    },
+  ]);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Return a deterministic test value.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `found:${params.query}` }],
+      details: {},
+    }),
+  });
+  let compactionAttempts = 0;
+  const compactor = {
+    async compact(inputs: Array<{ toolCallId: string }>) {
+      compactionAttempts += 1;
+      assert.deepEqual(inputs.map(input => input.toolCallId), ["call-1"]);
+      if (compactionAttempts === 1) throw new Error("compactor unavailable");
+      return [{
+        toolCallId: "call-1",
+        callSummary: "Looked up retry evidence.",
+        resultSummary: "The lookup returned text.",
+        confirmedFacts: ["Text was returned."],
+        sourceClaims: [],
+        limitations: [],
+      }];
+    },
+  };
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    readOnlyTools: [lookup],
+    toolTraceCompactor: compactor,
+    contextBudget: { toolTraceReservation: 1 },
+  });
+  t.after(() => execution.close());
+  const first = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "create retry evidence")],
+  }, noEffectControl()).result;
+  const failedIncluded: string[] = [];
+  const failedReplacements: unknown[] = [];
+
+  await assert.rejects(execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "retry after failure")],
+    contextWindow: first.contextWindow,
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => failedIncluded.push(inputId),
+    replaceContextWindow: (_expected, replacement) => failedReplacements.push(replacement),
+  }).result, /compactor unavailable/);
+
+  assert.equal(faux.state.callCount, 2);
+  assert.deepEqual(failedIncluded, []);
+  assert.deepEqual(failedReplacements, []);
+  assert.match(JSON.stringify(first.contextWindow.committedTrace), /retry evidence/);
+
+  const retryIncluded: string[] = [];
+  const retry = await execution.start({
+    turnId: "turn-3",
+    leaseToken: 3,
+    inputs: [executionInput("input-2", "retry after failure")],
+    contextWindow: first.contextWindow,
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => retryIncluded.push(inputId),
+  }).result;
+
+  assert.equal(compactionAttempts, 2);
+  assert.equal(faux.state.callCount, 3);
+  assert.deepEqual(retryIncluded, ["input-2"]);
+  assert.doesNotMatch(JSON.stringify(retry.contextWindow.committedTrace), /found:retry evidence/);
+});
+
+test("does not expose successful tool trace batches when another batch fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-batches-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const calls = Array.from({ length: 11 }, (_, index) =>
+    fauxToolCall("lookup", { query: `query-${index + 1}` }, { id: `call-${index + 1}` }));
+  faux.setResponses([
+    fauxAssistantMessage(calls, { stopReason: "toolUse" }),
+    fauxAssistantMessage("batch source complete"),
+  ]);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Return a deterministic test value.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `found:${params.query}` }],
+      details: {},
+    }),
+  });
+  const batchSizes: number[] = [];
+  const compactor = {
+    async compact(inputs: Array<{ toolCallId: string }>) {
+      batchSizes.push(inputs.length);
+      if (inputs.length === 1) throw new Error("final batch failed");
+      return inputs.map(input => ({
+        toolCallId: input.toolCallId,
+        callSummary: `Called ${input.toolCallId}.`,
+        resultSummary: `Received ${input.toolCallId}.`,
+        confirmedFacts: [],
+        sourceClaims: [],
+        limitations: [],
+      }));
+    },
+  };
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    readOnlyTools: [lookup],
+    toolTraceCompactor: compactor,
+    contextBudget: { toolTraceReservation: 1 },
+  });
+  t.after(() => execution.close());
+  const first = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "create batched evidence")],
+  }, noEffectControl()).result;
+  const included: string[] = [];
+  const replacements: unknown[] = [];
+
+  await assert.rejects(execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "continue after batches")],
+    contextWindow: first.contextWindow,
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => included.push(inputId),
+    replaceContextWindow: (_expected, replacement) => replacements.push(replacement),
+  }).result, /final batch failed/);
+
+  assert.deepEqual(batchSizes.sort((left, right) => left - right), [1, 10]);
+  assert.equal(faux.state.callCount, 2);
+  assert.deepEqual(included, []);
+  assert.deepEqual(replacements, []);
 });

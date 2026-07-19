@@ -36,9 +36,16 @@ import {
   verifyPrimaryTranscriptEvidence,
 } from "./transcript.js";
 import {
+  DEFAULT_CONTEXT_BUDGET,
   type ContextBudget,
   materializeTurnContext,
 } from "./context.js";
+import {
+  compactCommittedToolTraces,
+  createExpandTool,
+  toolTraceCompactionRequired,
+} from "./tool-trace.js";
+import type { ToolTraceCompactor } from "../cognitive-organs/tool-trace-compactor.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -60,6 +67,7 @@ export interface PiAgentExecutionOptions {
   skillSources?: PiSkillSources;
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
   contextBudget?: Partial<ContextBudget>;
+  toolTraceCompactor?: ToolTraceCompactor;
 }
 
 export interface PiSkillSources {
@@ -172,10 +180,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly transcriptFile: string,
     private readonly lifecycle: InputAnnotationLifecycle,
     private readonly agentWorkspace: AgentWorkspace,
-    private readonly createSession: (systemPrompt: string) => Promise<PreparedPiSession>,
+    private readonly createSession: (
+      systemPrompt: string,
+      turnTools: ToolDefinition[],
+    ) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
+    private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
   ) {}
 
   start(request: TurnRequest, control: TurnControl): PiRunningExecution {
@@ -223,14 +235,28 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         this.loadContextMaterials(request),
       ]);
       const systemPrompt = composeSystemPrompt(this.harnessSystemPrompt, workspaceSnapshot);
-      const preparedWindow: ContextWindowState = request.contextWindow ?? {
+      let preparedWindow: ContextWindowState = request.contextWindow ?? {
         version: 1,
         id: request.turnId,
         frozenSeed: serializeMessages(materials.windowFrozen),
         committedTrace: [],
       };
       this.lifecycle.control(request.turnId).prepareContextWindow(preparedWindow);
-      const preparedSession = await this.createSession(systemPrompt);
+      const reservation = this.contextBudget?.toolTraceReservation
+        ?? DEFAULT_CONTEXT_BUDGET.toolTraceReservation;
+      if (toolTraceCompactionRequired(restoreMessages(preparedWindow.committedTrace), reservation)) {
+        const replacement = await compactCommittedToolTraces({
+          window: preparedWindow,
+          transcriptFile: this.transcriptFile,
+          ...(this.toolTraceCompactor ? { compactor: this.toolTraceCompactor } : {}),
+        });
+        this.lifecycle.control(request.turnId).replaceContextWindow(preparedWindow, replacement);
+        preparedWindow = replacement;
+      }
+      const preparedSession = await this.createSession(systemPrompt, [createExpandTool({
+        window: preparedWindow,
+        transcriptFile: this.transcriptFile,
+      })]);
       session = preparedSession.session;
       if (preparedSession.skillDiagnostics.length > 0) {
         this.sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
@@ -240,7 +266,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         });
       }
       if (preparedSession.acceptedSkillCount > 0
-        && !session.getAllTools().some(tool => tool.name === "read")) {
+        && !session.getActiveToolNames().includes("read")) {
         throw new Error("Accepted skills require an active read tool");
       }
       session.setAutoCompactionEnabled(false);
@@ -251,12 +277,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         committedTrace: restoreMessages(preparedWindow.committedTrace),
         fixedTokens: {
           system: textTokens(session.systemPrompt),
-          toolSchemas: textTokens(JSON.stringify(session.getAllTools().map(tool => ({
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-            promptGuidelines: tool.promptGuidelines,
-          })))),
+          toolSchemas: textTokens(JSON.stringify(activeToolSchemas(session))),
         },
         ...(this.contextBudget ? { budget: this.contextBudget } : {}),
       });
@@ -335,6 +356,9 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 }
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
+  if (options.readOnlyTools?.some(tool => tool.name === "expand_tool_result")) {
+    throw new Error("expand_tool_result is maintained by Loom and cannot be supplied as a read-only tool");
+  }
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
     mkdir(path.dirname(options.transcriptFile), { recursive: true }),
@@ -357,7 +381,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.agentDir,
     { projectTrusted: false },
   );
-  const createSession = async (systemPrompt: string) => {
+  const createSession = async (systemPrompt: string, turnTools: ToolDefinition[]) => {
     const workspaceSkills = path.join(options.agentWorkspace.root, "skills");
     const hasWorkspaceSkills = await exists(workspaceSkills);
     const additionalSkillPaths = [
@@ -385,13 +409,14 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
+    const customTools = [...(options.readOnlyTools ?? []), ...turnTools];
     const { session } = await createAgentSession({
       cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
       modelRuntime: options.modelRuntime,
       model: options.model,
-      noTools: options.readOnlyTools?.length ? "builtin" : "all",
-      ...(options.readOnlyTools ? { customTools: options.readOnlyTools } : {}),
+      noTools: customTools.length > 0 ? "builtin" : "all",
+      customTools,
       resourceLoader,
       sessionManager,
       settingsManager,
@@ -413,6 +438,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),
     options.harnessSystemPrompt,
     options.contextBudget,
+    options.toolTraceCompactor,
   );
 }
 
@@ -549,4 +575,24 @@ function textTokens(text: string): number {
     content: [{ type: "text", text }],
     timestamp: 0,
   }));
+}
+
+function activeToolSchemas(session: PiSession): Array<{
+  name: string;
+  label: string;
+  description: string;
+  parameters: unknown;
+  promptGuidelines: string[] | undefined;
+}> {
+  return session.getActiveToolNames().map(name => {
+    const tool = session.getToolDefinition(name);
+    if (!tool) throw new Error(`Active tool ${name} has no registered definition`);
+    return {
+      name: tool.name,
+      label: tool.label,
+      description: tool.description,
+      parameters: tool.parameters,
+      promptGuidelines: tool.promptGuidelines,
+    };
+  });
 }

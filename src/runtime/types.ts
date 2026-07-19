@@ -61,6 +61,7 @@ export interface EffectReceipt {
 export interface TurnControl {
   includeInput(inputId: string): void;
   prepareContextWindow(window: ContextWindowState): void;
+  replaceContextWindow(expected: ContextWindowState, replacement: ContextWindowState): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
 }
 

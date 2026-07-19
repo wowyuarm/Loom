@@ -188,6 +188,12 @@ class SqliteRuntime implements Runtime {
           claimed.fencingToken,
           window,
         ),
+        replaceContextWindow: (expected, replacement) => this.#replaceContextWindow(
+          claimed.turnId,
+          claimed.fencingToken,
+          expected,
+          replacement,
+        ),
         prepareEffect: effect => this.#prepareEffect(claimed.turnId, claimed.fencingToken, effect),
       });
       const active = {
@@ -565,6 +571,48 @@ class SqliteRuntime implements Runtime {
         null,
         "active",
         "turn_prepared",
+        now,
+        fencingToken,
+      );
+    });
+  }
+
+  #replaceContextWindow(
+    turnId: string,
+    fencingToken: number,
+    expected: ContextWindowState,
+    replacement: ContextWindowState,
+  ): void {
+    this.#validateContextWindow(expected);
+    this.#validateContextWindow(replacement);
+    const preservesWindow = replacement.id === expected.id
+      && isDeepStrictEqual(replacement.frozenSeed, expected.frozenSeed)
+      && isDeepStrictEqual(replacement.transcriptAnchor, expected.transcriptAnchor);
+    if (!preservesWindow) {
+      throw new Error(`Context replacement must preserve window ${expected.id} identity and anchors`);
+    }
+
+    this.#transaction(() => {
+      const turn = this.#database.prepare(`
+        SELECT id FROM turns
+        WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+      `).get(turnId, fencingToken, this.#ownerId);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Context from lease ${fencingToken}`);
+
+      const current = this.#readContextWindow().contextWindow;
+      if (!current || !isDeepStrictEqual(current, expected)) {
+        throw new Error(`Context replacement for Turn ${turnId} is stale`);
+      }
+      const now = this.#now();
+      this.#database.prepare(`
+        UPDATE active_context_window SET state_json = ?, updated_at = ? WHERE singleton = 1
+      `).run(JSON.stringify(replacement), now.toISOString());
+      this.#recordTransition(
+        "context_window",
+        replacement.id,
+        "active",
+        "active",
+        "execution_replaced",
         now,
         fencingToken,
       );
