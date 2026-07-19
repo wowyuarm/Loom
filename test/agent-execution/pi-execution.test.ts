@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
-import { defineTool, estimateTokens, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+  defineTool,
+  estimateTokens,
+  ModelRuntime,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 import { createPiAgentExecution } from "../../src/agent-execution/pi-execution.js";
@@ -47,6 +51,237 @@ async function createTestPi(root: string) {
   assert.ok(model);
   return { faux, model, modelRuntime };
 }
+
+test("presents core and Workspace skills as one stable catalog without Pi inheritance", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skills-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const agentDir = path.join(root, "agent-config");
+  const coreSkills = path.join(root, "core-skills");
+  const integrationSkills = path.join(root, "integration-skills");
+  await Promise.all([
+    writeSkill(coreSkills, "zeta-core", "Harness-maintained capability."),
+    writeSkill(path.join(workspaceRoot, "skills"), "alpha-workspace", "Individual-maintained capability."),
+    writeSkill(integrationSkills, "middle-integration", "Integration-maintained capability."),
+    writeSkill(path.join(agentDir, "skills"), "leaked-user", "Must not be inherited."),
+    writeSkill(path.join(workspaceRoot, ".pi", "skills"), "leaked-project", "Must not be inherited."),
+  ]);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const prompt = context.systemPrompt ?? "";
+      assert.match(prompt, /<available_skills>/);
+      assert.match(prompt, /<name>alpha-workspace<\/name>/);
+      assert.match(prompt, /<name>middle-integration<\/name>/);
+      assert.match(prompt, /<name>zeta-core<\/name>/);
+      assert.ok(prompt.indexOf("alpha-workspace") < prompt.indexOf("middle-integration"));
+      assert.ok(prompt.indexOf("middle-integration") < prompt.indexOf("zeta-core"));
+      assert.doesNotMatch(prompt, /leaked-user|leaked-project/);
+      return fauxAssistantMessage("skills received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir,
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    readOnlyTools: [readTool()],
+    skillSources: { core: [coreSkills], integrations: [integrationSkills] },
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+  assert.equal(faux.state.callCount, 1);
+});
+
+test("removes every skill sharing a name across sources", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skill-collision-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const coreSkills = path.join(root, "core-skills");
+  await Promise.all([
+    writeSkill(coreSkills, "shared-name", "Core version."),
+    writeSkill(path.join(workspaceRoot, "skills"), "shared-name", "Workspace version."),
+  ]);
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const prompt = context.systemPrompt ?? "";
+      assert.doesNotMatch(prompt, /<name>shared-name<\/name>/);
+      assert.match(prompt, /# Skill Diagnostics/);
+      assert.match(prompt, /shared-name/);
+      assert.match(prompt, /\"type\": \"collision\"/);
+      return fauxAssistantMessage("collision diagnosed");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    skillSources: { core: [coreSkills], integrations: [] },
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+  assert.equal(faux.state.callCount, 1);
+  assert.match(await readFile(transcriptFile, "utf8"), /loom\.skill-diagnostics\.v1/);
+});
+
+test("requires a read tool before running a Turn with accepted skills", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skill-read-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await writeSkill(path.join(workspaceRoot, "skills"), "workspace-skill", "Readable capability.");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const included: string[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, {
+    ...noEffectControl(),
+    includeInput: inputId => included.push(inputId),
+  }).result, /accepted skills require an active read tool/i);
+  assert.equal(faux.state.callCount, 0);
+  assert.deepEqual(included, []);
+});
+
+test("refreshes Workspace skills between Turns but freezes them during steering", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skill-refresh-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const workspaceSkills = path.join(workspaceRoot, "skills");
+  await Promise.all([
+    writeSkill(workspaceSkills, "changing", "Description version one."),
+    writeSkill(workspaceSkills, "removed", "Present in the first Turn."),
+  ]);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const providerStarted = deferred();
+  const releaseProvider = deferred();
+  const expectFirstCatalog = (systemPrompt: string | undefined) => {
+    const prompt = systemPrompt ?? "";
+    assert.match(prompt, /Description version one/);
+    assert.match(prompt, /<name>removed<\/name>/);
+    assert.doesNotMatch(prompt, /Description version two|<name>added<\/name>/);
+  };
+  faux.setResponses([
+    async context => {
+      expectFirstCatalog(context.systemPrompt);
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return fauxAssistantMessage("first response");
+    },
+    context => {
+      expectFirstCatalog(context.systemPrompt);
+      return fauxAssistantMessage("steering response");
+    },
+    context => {
+      const prompt = context.systemPrompt ?? "";
+      assert.match(prompt, /Description version two/);
+      assert.match(prompt, /<name>added<\/name>/);
+      assert.doesNotMatch(prompt, /Description version one|<name>removed<\/name>/);
+      return fauxAssistantMessage("next Turn response");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    readOnlyTools: [readTool()],
+  });
+  t.after(() => execution.close());
+
+  const firstTurn = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl());
+  await providerStarted.promise;
+  await Promise.all([
+    writeSkill(workspaceSkills, "changing", "Description version two."),
+    writeSkill(workspaceSkills, "added", "Added for the next Turn."),
+    rm(path.join(workspaceSkills, "removed"), { recursive: true }),
+  ]);
+  const steering = firstTurn.steer(executionInput("input-2", "follow up"));
+  releaseProvider.resolve();
+  await Promise.all([steering, firstTurn.result]);
+
+  await execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-3", "new Turn")],
+  }, noEffectControl()).result;
+  assert.equal(faux.state.callCount, 3);
+});
+
+test("excludes unusable skills while exposing and recording their diagnostics", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skill-diagnostics-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const skillsRoot = path.join(root, "core-skills");
+  await Promise.all([
+    writeSkill(skillsRoot, "Invalid_Name", "Invalid name capability."),
+    writeSkill(skillsRoot, "manual-only", "Human-invoked capability.", "disable-model-invocation: true\n"),
+  ]);
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const prompt = context.systemPrompt ?? "";
+      assert.doesNotMatch(prompt, /<name>Invalid_Name<\/name>|<name>manual-only<\/name>/);
+      assert.match(prompt, /# Skill Diagnostics/);
+      assert.match(prompt, /Invalid_Name/);
+      assert.match(prompt, /manual-only/);
+      return fauxAssistantMessage("diagnostics received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    readOnlyTools: [readTool()],
+    skillSources: { core: [skillsRoot], integrations: [] },
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+
+  const transcript = await readTranscript(transcriptFile);
+  const diagnostics = transcript.find(entry => entry.customType === "loom.skill-diagnostics.v1");
+  assert.equal((diagnostics?.data as { turnId?: string } | undefined)?.turnId, "turn-1");
+  assert.match(JSON.stringify(diagnostics?.data), /Invalid_Name/);
+  assert.match(JSON.stringify(diagnostics?.data), /manual-only/);
+  assert.equal(faux.state.callCount, 1);
+});
 
 test("binds interaction Workspace materials to their system and Context levels", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-materials-"));
@@ -553,6 +788,35 @@ async function createAgentWorkspaceFixture(root: string): Promise<string> {
     writeFile(path.join(workspaceRoot, "attention.md"), "current attention", "utf8"),
   ]);
   return workspaceRoot;
+}
+
+async function writeSkill(parent: string, name: string, description: string, extra = ""): Promise<string> {
+  const skillDir = path.join(parent, name);
+  await mkdir(skillDir, { recursive: true });
+  const skillFile = path.join(skillDir, "SKILL.md");
+  await writeFile(
+    skillFile,
+    `---\nname: ${name}\ndescription: ${description}\n${extra}---\n\n# ${name}\n`,
+    "utf8",
+  );
+  return skillFile;
+}
+
+function readTool() {
+  return defineTool({
+    name: "read",
+    label: "Read",
+    description: "Read an Agent Workspace file.",
+    parameters: Type.Object({ path: Type.String() }),
+    execute: async () => ({ content: [{ type: "text" as const, text: "test file" }], details: {} }),
+  });
+}
+
+async function readTranscript(transcriptFile: string): Promise<Array<Record<string, unknown>>> {
+  return (await readFile(transcriptFile, "utf8"))
+    .trimEnd()
+    .split("\n")
+    .map(line => JSON.parse(line) as Record<string, unknown>);
 }
 
 function noEffectControl() {

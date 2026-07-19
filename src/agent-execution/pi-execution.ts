@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -9,6 +9,8 @@ import {
   estimateTokens,
   type InlineExtension,
   type ModelRuntime,
+  type ResourceDiagnostic,
+  type Skill,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
@@ -41,6 +43,12 @@ import {
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
 
+interface PreparedPiSession {
+  session: PiSession;
+  acceptedSkillCount: number;
+  skillDiagnostics: ResourceDiagnostic[];
+}
+
 export interface PiAgentExecutionOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
@@ -49,8 +57,14 @@ export interface PiAgentExecutionOptions {
   model: Model<any>;
   harnessSystemPrompt: string;
   readOnlyTools?: ToolDefinition[];
+  skillSources?: PiSkillSources;
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
   contextBudget?: Partial<ContextBudget>;
+}
+
+export interface PiSkillSources {
+  core: string[];
+  integrations: string[];
 }
 
 export interface PiContextMaterials {
@@ -158,7 +172,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly transcriptFile: string,
     private readonly lifecycle: InputAnnotationLifecycle,
     private readonly agentWorkspace: AgentWorkspace,
-    private readonly createSession: (systemPrompt: string) => Promise<PiSession>,
+    private readonly createSession: (systemPrompt: string) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
@@ -216,7 +230,19 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         committedTrace: [],
       };
       this.lifecycle.control(request.turnId).prepareContextWindow(preparedWindow);
-      session = await this.createSession(systemPrompt);
+      const preparedSession = await this.createSession(systemPrompt);
+      session = preparedSession.session;
+      if (preparedSession.skillDiagnostics.length > 0) {
+        this.sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
+          version: 1,
+          turnId: request.turnId,
+          diagnostics: preparedSession.skillDiagnostics,
+        });
+      }
+      if (preparedSession.acceptedSkillCount > 0
+        && !session.getAllTools().some(tool => tool.name === "read")) {
+        throw new Error("Accepted skills require an active read tool");
+      }
       session.setAutoCompactionEnabled(false);
       const materialized = materializeTurnContext({
         currentInput: currentInputMessage(request.inputs[0]!),
@@ -332,7 +358,15 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     { projectTrusted: false },
   );
   const createSession = async (systemPrompt: string) => {
-    const resourceLoader = new DefaultResourceLoader({
+    const workspaceSkills = path.join(options.agentWorkspace.root, "skills");
+    const hasWorkspaceSkills = await exists(workspaceSkills);
+    const additionalSkillPaths = [
+      ...(options.skillSources?.core ?? []),
+      ...(hasWorkspaceSkills ? [workspaceSkills] : []),
+      ...(options.skillSources?.integrations ?? []),
+    ];
+    let resourceLoader: DefaultResourceLoader;
+    resourceLoader = new DefaultResourceLoader({
       cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
       settingsManager,
@@ -342,7 +376,12 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => systemPrompt,
+      additionalSkillPaths,
+      skillsOverride: result => resolveSkills(result.skills, result.diagnostics),
+      systemPromptOverride: () => appendSkillDiagnostics(
+        systemPrompt,
+        resourceLoader.getSkills().diagnostics,
+      ),
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
@@ -358,7 +397,12 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       settingsManager,
     });
     await session.bindExtensions({});
-    return session;
+    const finalSkills = resourceLoader.getSkills();
+    return {
+      session,
+      acceptedSkillCount: finalSkills.skills.length,
+      skillDiagnostics: finalSkills.diagnostics,
+    };
   };
   return new PerTurnPiAgentExecution(
     sessionManager,
@@ -370,6 +414,60 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.harnessSystemPrompt,
     options.contextBudget,
   );
+}
+
+function compareSkills(left: Skill, right: Skill): number {
+  return compareText(left.name, right.name) || compareText(left.filePath, right.filePath);
+}
+
+function resolveSkills(
+  skills: Skill[],
+  diagnostics: ResourceDiagnostic[],
+): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
+  const rejectedPaths = new Set(diagnostics.flatMap(diagnostic =>
+    diagnostic.type !== "collision" && diagnostic.path ? [diagnostic.path] : []));
+  const collisionNames = new Set(diagnostics.flatMap(diagnostic =>
+    diagnostic.type === "collision" && diagnostic.collision?.resourceType === "skill"
+      ? [diagnostic.collision.name]
+      : []));
+  const manualDiagnostics: ResourceDiagnostic[] = skills.flatMap(skill => skill.disableModelInvocation ? [{
+    type: "warning" as const,
+    message: `skill "${skill.name}" disables model invocation`,
+    path: skill.filePath,
+  }] : []);
+  return {
+    skills: skills
+      .filter(skill => !skill.disableModelInvocation
+        && !rejectedPaths.has(skill.filePath)
+        && !collisionNames.has(skill.name))
+      .sort(compareSkills),
+    diagnostics: [...diagnostics, ...manualDiagnostics].sort(compareDiagnostics),
+  };
+}
+
+function compareDiagnostics(left: ResourceDiagnostic, right: ResourceDiagnostic): number {
+  return compareText(left.path ?? "", right.path ?? "")
+    || compareText(left.type, right.type)
+    || compareText(left.message, right.message);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function appendSkillDiagnostics(systemPrompt: string, diagnostics: ResourceDiagnostic[]): string {
+  if (diagnostics.length === 0) return systemPrompt;
+  return `${systemPrompt}\n\n${section("Skill Diagnostics", JSON.stringify(diagnostics, null, 2))}`;
+}
+
+async function exists(target: string): Promise<boolean> {
+  try {
+    await access(target);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 function inputText(input: ExecutionInput): string {
