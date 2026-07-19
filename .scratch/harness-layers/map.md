@@ -44,7 +44,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 ## Current Frontier
 
 - Completed: [01 — Refine Runtime and Runtime Store](issues/01-refine-runtime-and-store.md)
-- Next: 从 Xi 的 Agent Execution、Primary Agent Transcript 与 Context 代码链选择第二层真实未决问题；调研完成前不预建 ticket。
+- Completed: [02 — Bind Agent Execution to Pi Transcript Evidence](issues/02-bind-pi-execution-and-transcript.md)
+- Next: 以已验证的 Pi session 与 transcript evidence 链为入口细化 Context；先回读来源中的 context materialization、active window 和 budget 事实，再建立该层真实未决 work item，不提前进入 Workspace。
 
 ## Source References
 

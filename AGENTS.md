@@ -21,6 +21,17 @@ Loom 是一个 Agent Harness，不承载多个 Agent Individual。每个 Runtime
 - 新依赖、运行配置和目录结构必须随第一个实际使用它的模块进入，并说明其必要性。
 - 新代码必须有与风险相称的实际验证；没有运行代码时，不伪造测试或命令。
 
+## Skill Workflow
+
+Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也不要为了使用 skill 预建 map、spec、ticket 或空架构。
+
+1. 延续 Loom 工作时，先按 Xi 的 `docs/loom-reconstruction-guide.md` 恢复阶段和 source entry；涉及既有决定时用 `search-memory` 做一次定向搜索，同一段工作不要反复搜索。
+2. 回读 Xi 代码或运行证据时使用 Xi 的 `runtime` skill，把 Xi 当作只读 source reference；先确认现有事实，再决定 Loom 取舍。
+3. 需要确定 Module 的 Interface 或 seam 时使用 `codebase-design`。优先让复杂度留在深 Module 内，只为真实变化点建立 Adapter；测试穿过同一个 Interface，不直接测试内部 Store 或 SQL。
+4. 术语或长期边界真正确定时使用 `domain-modeling`：立即更新 `CONTEXT.md`；只有决定难以反转、理由不明显且确有取舍时才写 ADR。
+5. 实现已确认的行为时使用 `tdd`。先由现有 ticket 或已确认决定确定测试 seam，再按“一条失败测试 -> 最小实现 -> 下一条行为”推进，不先横向写完所有测试或骨架。
+6. 完成一个实质工作单元后，运行真实验证，检查代码、ticket、薄文档是否一致，再一起 commit。形成长期有用的新状态或教训时使用 `distill-memory`，写入前先搜索并优先更新已有记忆；commit、路径清单和详细状态留在项目文档。
+
 ## Git
 
 - 使用简短英语 Conventional Commit message。

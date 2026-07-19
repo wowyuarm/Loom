@@ -18,6 +18,7 @@ export interface ExecutionInput {
   id: string;
   kind: InputKind;
   payload: JsonValue;
+  occurredAt: string;
   inclusionPosition: number;
 }
 
@@ -29,6 +30,10 @@ export interface TurnRequest {
 
 export interface ExecutionResult {
   outcome: "completed" | "no_reply";
+  inputAnchors: Array<{
+    inputId: string;
+    transcriptAnchor: TranscriptAnchor;
+  }>;
   transcriptAnchor: TranscriptAnchor;
 }
 
@@ -43,6 +48,7 @@ export interface EffectReceipt {
 }
 
 export interface TurnControl {
+  includeInput(inputId: string): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
 }
 
@@ -66,7 +72,7 @@ export interface Integration {
 
 export interface RunningExecution {
   result: Promise<ExecutionResult>;
-  steer(input: ExecutionInput): Promise<TranscriptAnchor>;
+  steer(input: ExecutionInput): Promise<void>;
   abort(reason: string): Promise<void>;
 }
 

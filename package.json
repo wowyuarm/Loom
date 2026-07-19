@@ -13,6 +13,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "typebox": "1.1.38",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.80.10",
+    "@earendil-works/pi-coding-agent": "0.80.10"
   }
 }

@@ -34,6 +34,7 @@ interface InputRow {
   source_id: string;
   kind: InputKind;
   payload_json: string;
+  occurred_at: string;
   status: RuntimeInputStatus["status"];
 }
 
@@ -135,7 +136,6 @@ class SqliteRuntime implements Runtime {
           await this.#steerInput(active, id);
         });
         active.steeringTail = steering.catch(() => {});
-        await steering;
       }
       return accepted;
     }
@@ -178,6 +178,7 @@ class SqliteRuntime implements Runtime {
         leaseToken: claimed.fencingToken,
         inputs: [claimed.input],
       }, {
+        includeInput: inputId => this.#includeInput(claimed.turnId, claimed.fencingToken, inputId),
         prepareEffect: effect => this.#prepareEffect(claimed.turnId, claimed.fencingToken, effect),
       });
       const active = {
@@ -339,12 +340,12 @@ class SqliteRuntime implements Runtime {
     return this.#transaction(() => {
       if (this.#hasRunningTurn()) return undefined;
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json
+        SELECT id, kind, payload_json, occurred_at
         FROM inputs
         WHERE status = 'pending'
         ORDER BY accepted_at, id
         LIMIT 1
-      `).get() as unknown as Pick<InputRow, "id" | "kind" | "payload_json"> | undefined;
+      `).get() as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "occurred_at"> | undefined;
       if (!input) return undefined;
 
       const tokenRow = this.#database.prepare(`
@@ -368,14 +369,10 @@ class SqliteRuntime implements Runtime {
       );
       this.#database.prepare(`
         INSERT INTO turn_inputs (
-          turn_id, input_id, position, inclusion_status, included_at
-        ) VALUES (?, ?, 1, 'included', ?)
-      `).run(turnId, input.id, now.toISOString());
-      this.#database.prepare(`
-        UPDATE inputs SET status = 'active', active_turn_id = ? WHERE id = ? AND status = 'pending'
+          turn_id, input_id, position, inclusion_status
+        ) VALUES (?, ?, 1, 'prepared')
       `).run(turnId, input.id);
       this.#recordTransition("turn", turnId, null, "running", "input_claimed", now, tokenRow.value);
-      this.#recordTransition("input", input.id, "pending", "active", "turn_started", now, tokenRow.value);
 
       return {
         turnId,
@@ -384,6 +381,7 @@ class SqliteRuntime implements Runtime {
           id: input.id,
           kind: input.kind,
           payload: JSON.parse(input.payload_json) as JsonValue,
+          occurredAt: input.occurred_at,
           inclusionPosition: 1,
         },
       };
@@ -396,6 +394,31 @@ class SqliteRuntime implements Runtime {
     }
     this.#transaction(() => {
       const now = this.#now();
+      const includedInputs = this.#database.prepare(`
+        SELECT input_id FROM turn_inputs
+        WHERE turn_id = ? AND inclusion_status = 'included'
+        ORDER BY position
+      `).all(turnId) as unknown as Array<{ input_id: string }>;
+      const anchors = new Map(result.inputAnchors.map(item => [item.inputId, item.transcriptAnchor]));
+      if (anchors.size !== result.inputAnchors.length) throw new Error(`Turn ${turnId} returned duplicate Input anchors`);
+      const includedIds = new Set(includedInputs.map(input => input.input_id));
+      for (const input of includedInputs) {
+        const anchor = anchors.get(input.input_id);
+        if (!anchor?.sessionId || !anchor.entryId) {
+          throw new Error(`Turn ${turnId} requires a verified Transcript Anchor for Input ${input.input_id}`);
+        }
+        this.#database.prepare(`
+          UPDATE turn_inputs SET inclusion_anchor_json = ?
+          WHERE turn_id = ? AND input_id = ? AND inclusion_status = 'included'
+        `).run(JSON.stringify(anchor), turnId, input.input_id);
+      }
+      for (const inputId of anchors.keys()) {
+        if (!includedIds.has(inputId)) throw new Error(`Turn ${turnId} returned evidence for non-included Input ${inputId}`);
+      }
+      this.#database.prepare(`
+        UPDATE turn_inputs SET inclusion_status = 'rejected'
+        WHERE turn_id = ? AND inclusion_status = 'prepared'
+      `).run(turnId);
       const changed = this.#database.prepare(`
         UPDATE turns
         SET status = 'completed', outcome = ?, ended_at = ?, transcript_anchor_json = ?
@@ -468,6 +491,38 @@ class SqliteRuntime implements Runtime {
       );
       this.#recordTransition("effect", effectId, null, "pending", "accepted", now, fencingToken);
       return { effectId };
+    });
+  }
+
+  #includeInput(turnId: string, fencingToken: number, inputId: string): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      const turn = this.#database.prepare(`
+        SELECT id FROM turns
+        WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+      `).get(turnId, fencingToken, this.#ownerId);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Input from lease ${fencingToken}`);
+
+      const relation = this.#database.prepare(`
+        UPDATE turn_inputs
+        SET inclusion_status = 'included', included_at = ?
+        WHERE turn_id = ? AND input_id = ? AND inclusion_status = 'prepared'
+      `).run(now.toISOString(), turnId, inputId);
+      if (relation.changes === 0) {
+        const included = this.#database.prepare(`
+          SELECT 1 FROM turn_inputs
+          WHERE turn_id = ? AND input_id = ? AND inclusion_status = 'included'
+        `).get(turnId, inputId);
+        if (included) return;
+        throw new Error(`Input ${inputId} was not prepared for Turn ${turnId}`);
+      }
+
+      const input = this.#database.prepare(`
+        UPDATE inputs SET status = 'active', active_turn_id = ?
+        WHERE id = ? AND status = 'pending'
+      `).run(turnId, inputId);
+      if (input.changes !== 1) throw new Error(`Input ${inputId} could not join Turn ${turnId}`);
+      this.#recordTransition("input", inputId, "pending", "active", "execution_included", now, fencingToken);
     });
   }
 
@@ -580,8 +635,8 @@ class SqliteRuntime implements Runtime {
   ): Promise<void> {
     const prepared = this.#transaction(() => {
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json FROM inputs WHERE id = ? AND status = 'pending'
-      `).get(inputId) as unknown as Pick<InputRow, "id" | "kind" | "payload_json"> | undefined;
+        SELECT id, kind, payload_json, occurred_at FROM inputs WHERE id = ? AND status = 'pending'
+      `).get(inputId) as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "occurred_at"> | undefined;
       if (!input) return undefined;
       const turn = this.#database.prepare(`
         SELECT id FROM turns
@@ -600,43 +655,18 @@ class SqliteRuntime implements Runtime {
           id: input.id,
           kind: input.kind,
           payload: JSON.parse(input.payload_json) as JsonValue,
+          occurredAt: input.occurred_at,
           inclusionPosition: next.position,
         } satisfies ExecutionInput,
       };
     });
     if (!prepared) return;
 
-    let anchor: TranscriptAnchor;
     try {
-      anchor = await active.execution.steer(prepared.input);
-      if (!anchor.sessionId || !anchor.entryId) throw new Error("Steering requires a verified Transcript Anchor");
+      await active.execution.steer(prepared.input);
     } catch {
       this.#rejectPreparedSteer(active.turnId, inputId);
-      return;
     }
-
-    const included = this.#transaction(() => {
-      const now = this.#now();
-      const turn = this.#database.prepare(`
-        SELECT id FROM turns
-        WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
-      `).get(active.turnId, active.fencingToken, this.#ownerId);
-      if (!turn) return false;
-      const relation = this.#database.prepare(`
-        UPDATE turn_inputs
-        SET inclusion_status = 'included', included_at = ?, inclusion_anchor_json = ?
-        WHERE turn_id = ? AND input_id = ? AND inclusion_status = 'prepared'
-      `).run(now.toISOString(), JSON.stringify(anchor), active.turnId, inputId);
-      if (relation.changes !== 1) return false;
-      const input = this.#database.prepare(`
-        UPDATE inputs SET status = 'active', active_turn_id = ?
-        WHERE id = ? AND status = 'pending'
-      `).run(active.turnId, inputId);
-      if (input.changes !== 1) throw new Error(`Input ${inputId} could not join Turn ${active.turnId}`);
-      this.#recordTransition("input", inputId, "pending", "active", "steered_into_turn", now, active.fencingToken);
-      return true;
-    });
-    if (!included) this.#rejectPreparedSteer(active.turnId, inputId);
   }
 
   #rejectPreparedSteer(turnId: string, inputId: string): void {

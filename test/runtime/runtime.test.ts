@@ -29,28 +29,56 @@ function deferred<T>(): {
   return { promise, resolve, reject };
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for runtime state");
+    await delay(1);
+  }
+}
+
 class HeldExecution implements AgentExecution {
   readonly started = deferred<TurnRequest>();
   readonly finished = deferred<Awaited<RunningExecution["result"]>>();
   readonly steered: TurnRequest["inputs"] = [];
 
-  start(request: TurnRequest, _control?: TurnControl): RunningExecution {
+  start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.includeInput(request.inputs[0]!.id);
     this.started.resolve(request);
     return {
       result: this.finished.promise,
       steer: async input => {
         this.steered.push(input);
-        return { sessionId: "session-held", entryId: `steer-${input.id}` };
+        control.includeInput(input.id);
       },
       abort: async () => {},
     };
   }
 
   complete(request: TurnRequest): void {
+    const inputs = [...request.inputs, ...this.steered];
     this.finished.resolve({
       outcome: "completed",
+      inputAnchors: inputs.map(input => ({
+        inputId: input.id,
+        transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
+      })),
       transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
     });
+  }
+}
+
+class NotStartedExecution implements AgentExecution {
+  readonly started = deferred<TurnRequest>();
+  readonly finished = deferred<Awaited<RunningExecution["result"]>>();
+
+  start(request: TurnRequest): RunningExecution {
+    this.started.resolve(request);
+    return {
+      result: this.finished.promise,
+      steer: async () => {},
+      abort: async () => {},
+    };
   }
 }
 
@@ -60,19 +88,81 @@ class EffectThenHoldExecution extends HeldExecution {
   }
 
   override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
     control.prepareEffect(this.effect);
-    return super.start(request);
+    return running;
+  }
+}
+
+class SlowSteeringExecution extends HeldExecution {
+  readonly steeringStarted = deferred<Parameters<RunningExecution["steer"]>[0]>();
+  readonly steeringFinished = deferred<Awaited<ReturnType<RunningExecution["steer"]>>>();
+
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    return {
+      ...running,
+      steer: async input => {
+        this.steered.push(input);
+        this.steeringStarted.resolve(input);
+        await this.steeringFinished.promise;
+        control.includeInput(input.id);
+      },
+    };
+  }
+}
+
+class SteeringEffectExecution extends HeldExecution {
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    return {
+      ...running,
+      steer: async input => {
+        this.steered.push(input);
+        control.includeInput(input.id);
+        control.prepareEffect({
+          kind: "message",
+          payload: { text: "reply after steering" },
+          routeRef: "default",
+        });
+      },
+    };
+  }
+}
+
+class IncludedWithoutEvidenceExecution extends HeldExecution {
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    return {
+      ...running,
+      steer: async input => {
+        this.steered.push(input);
+        control.includeInput(input.id);
+      },
+    };
+  }
+
+  override complete(request: TurnRequest): void {
+    this.finished.resolve({
+      outcome: "completed",
+      inputAnchors: request.inputs.map(input => ({
+        inputId: input.id,
+        transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
+      })),
+      transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
+    });
   }
 }
 
 const effectThenCompleteExecution: AgentExecution = {
   start(request, control): RunningExecution {
+    const running = completingExecution.start(request, control);
     control.prepareEffect({
       kind: "message",
       payload: { text: "hello from the Agent" },
       routeRef: "default",
     });
-    return completingExecution.start(request, control);
+    return running;
   },
 };
 
@@ -87,13 +177,18 @@ class HeldIntegration implements Integration {
 }
 
 const completingExecution: AgentExecution = {
-  start(request: TurnRequest): RunningExecution {
+  start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.includeInput(request.inputs[0]!.id);
     return {
       result: Promise.resolve({
         outcome: "completed",
+        inputAnchors: request.inputs.map(input => ({
+          inputId: input.id,
+          transcriptAnchor: { sessionId: "session-1", entryId: `input-${input.id}` },
+        })),
         transcriptAnchor: { sessionId: "session-1", entryId: `entry-${request.turnId}` },
       }),
-      steer: async () => ({ sessionId: "session-1", entryId: "steer-entry" }),
+      steer: async input => control.includeInput(input.id),
       abort: async () => {},
     };
   },
@@ -154,6 +249,28 @@ test("completes one pending input through a main Agent Turn", async t => {
     sessionId: "session-1",
     entryId: `entry-${status.turns[0]?.id}`,
   });
+});
+
+test("keeps an initial Input pending until Agent Execution starts its user message", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
+  const execution = new NotStartedExecution();
+  const runtime = openRuntime({ root, execution });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  const advance = runtime.advance();
+  await execution.started.promise;
+
+  assert.equal(runtime.status().inputs[0]?.status, "pending");
+  assert.deepEqual(runtime.status().turns[0]?.inputIds, []);
+
+  execution.finished.reject(new Error("test stop"));
+  await assert.rejects(advance, /test stop/);
 });
 
 test("retries inputs from an expired Turn and rejects its late completion", async t => {
@@ -228,6 +345,41 @@ test("renews the lease while a main Agent Turn is still running", async t => {
   assert.deepEqual(await advance, { disposition: "turn_completed" });
 });
 
+test("accepts a live Input without waiting for Agent Execution to include it", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
+  const execution = new SlowSteeringExecution();
+  const runtime = openRuntime({ root, execution });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advance = runtime.advance();
+  const turn = await execution.started.promise;
+
+  const acceptance = runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await execution.steeringStarted.promise;
+  const observed = await Promise.race([
+    acceptance.then(result => result.disposition),
+    delay(50).then(() => "blocked" as const),
+  ]);
+
+  execution.steeringFinished.resolve(undefined);
+  await acceptance;
+  execution.complete(turn);
+  await advance;
+
+  assert.equal(observed, "accepted");
+});
+
 test("does not replay an input after its Turn created an Effect", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
   let now = Date.parse("2026-07-18T12:00:00.000Z");
@@ -299,8 +451,7 @@ test("retries a late steering Input not covered by an earlier Effect", async t =
     kind: "interaction",
     payload: { text: "second" },
   });
-
-  assert.deepEqual(oldExecution.steered.map(input => input.id), [late.inputId]);
+  await waitUntil(() => oldRuntime.status().turns[0]?.inputIds.includes(late.inputId) === true);
 
   now += 2_000;
   const replacement = openRuntime({ root, now: () => new Date(now), ownerId: "replacement-runtime" });
@@ -313,6 +464,74 @@ test("retries a late steering Input not covered by an earlier Effect", async t =
 
   oldExecution.complete(oldTurn);
   await assert.rejects(lateAdvance, /no longer accepts writes/);
+});
+
+test("does not replay a steering Input covered by an Effect after actual inclusion", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
+  let now = Date.parse("2026-07-18T12:00:00.000Z");
+  const oldExecution = new SteeringEffectExecution();
+  const oldRuntime = openRuntime({
+    root,
+    execution: oldExecution,
+    ownerId: "old-runtime",
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+  t.after(() => oldRuntime.close());
+
+  await oldRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const lateAdvance = oldRuntime.advance();
+  const oldTurn = await oldExecution.started.promise;
+  const late = await oldRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await waitUntil(() => oldRuntime.status().effects[0]?.coveredInputPosition === 2);
+
+  now += 2_000;
+  const replacement = openRuntime({ root, now: () => new Date(now), ownerId: "replacement-runtime" });
+  t.after(() => replacement.close());
+
+  const recovered = replacement.status();
+  assert.equal(recovered.inputs.find(input => input.id === late.inputId)?.status, "consumed");
+  assert.equal(recovered.effects[0]?.coveredInputPosition, 2);
+
+  oldExecution.complete(oldTurn);
+  await assert.rejects(lateAdvance, /no longer accepts writes/);
+});
+
+test("does not complete a Turn without evidence for every included Input", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
+  const execution = new IncludedWithoutEvidenceExecution();
+  const runtime = openRuntime({ root, execution });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advance = runtime.advance();
+  const turn = await execution.started.promise;
+  const late = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(late.inputId) === true);
+
+  execution.complete(turn);
+
+  await assert.rejects(advance, /verified Transcript Anchor for Input/);
 });
 
 test("marks an expired dispatch as unknown and rejects its late result", async t => {
