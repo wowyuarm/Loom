@@ -30,7 +30,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       started_at TEXT NOT NULL,
       ended_at TEXT,
       transcript_anchor_json TEXT,
-      context_plan_json TEXT,
+      execution_record_json TEXT,
       error TEXT
     ) STRICT;
 
@@ -95,12 +95,12 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       fencing_token INTEGER
     ) STRICT;
 
-    CREATE TABLE IF NOT EXISTS active_context_window (
+    CREATE TABLE IF NOT EXISTS active_execution_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       state_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     ) STRICT;
 
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
   `);
 }

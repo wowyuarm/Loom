@@ -9,12 +9,26 @@ import {
   openRuntime,
   type AgentExecution,
   type EffectRequest,
-  type Integration,
+  type JsonValue,
+  type OutboundDelivery,
   type RunningExecution,
   type TranscriptAnchor,
   type TurnControl,
   type TurnRequest,
 } from "../../src/runtime/index.js";
+
+interface TestExecutionState {
+  generation: number;
+  items: JsonValue[];
+}
+
+function readTestExecutionState(value: JsonValue | undefined): TestExecutionState | undefined {
+  return value === undefined ? undefined : value as unknown as TestExecutionState;
+}
+
+function writeTestExecutionState(value: TestExecutionState): JsonValue {
+  return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -38,20 +52,14 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
-function contextResult(request: TurnRequest, transcriptAnchor: TranscriptAnchor) {
+function executionResult(request: TurnRequest, transcriptAnchor: TranscriptAnchor) {
+  const previous = readTestExecutionState(request.executionState);
   return {
-    contextWindow: {
-      version: 1 as const,
-      id: request.contextWindow?.id ?? "window-test",
-      frozenSeed: request.contextWindow?.frozenSeed ?? [],
-      committedTrace: request.contextWindow?.committedTrace ?? [],
-      transcriptAnchor,
-    },
-    contextPlan: {
-      version: 1,
-      budget: {},
-      decisions: [],
-    },
+    executionState: writeTestExecutionState({
+      generation: (previous?.generation ?? 0) + 1,
+      items: previous?.items ?? [],
+    }),
+    executionRecord: { kind: "test-execution", transcriptEntryId: transcriptAnchor.entryId },
   };
 }
 
@@ -61,11 +69,9 @@ class HeldExecution implements AgentExecution {
   readonly steered: TurnRequest["inputs"] = [];
 
   start(request: TurnRequest, control: TurnControl): RunningExecution {
-    control.prepareContextWindow(request.contextWindow ?? {
-      version: 1,
-      id: "window-test",
-      frozenSeed: [],
-      committedTrace: [],
+    control.prepareExecutionState(request.executionState ?? {
+      generation: 0,
+      items: [],
     });
     control.includeInput(request.inputs[0]!.id);
     this.started.resolve(request);
@@ -88,7 +94,7 @@ class HeldExecution implements AgentExecution {
         transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
       })),
       transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
-      ...contextResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
+      ...executionResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -175,7 +181,7 @@ class IncludedWithoutEvidenceExecution extends HeldExecution {
         transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
       })),
       transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
-      ...contextResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
+      ...executionResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -192,11 +198,11 @@ const effectThenCompleteExecution: AgentExecution = {
   },
 };
 
-class HeldIntegration implements Integration {
+class HeldOutboundDelivery implements OutboundDelivery {
   readonly started = deferred<string>();
   readonly finished = deferred<{ status: "delivered"; remoteId: string }>();
 
-  async deliver(attempt: Parameters<Integration["deliver"]>[0]): Promise<{ status: "delivered"; remoteId: string }> {
+  async deliver(attempt: Parameters<OutboundDelivery["deliver"]>[0]): Promise<{ status: "delivered"; remoteId: string }> {
     this.started.resolve(attempt.attemptId);
     return this.finished.promise;
   }
@@ -204,11 +210,9 @@ class HeldIntegration implements Integration {
 
 const completingExecution: AgentExecution = {
   start(request: TurnRequest, control: TurnControl): RunningExecution {
-    control.prepareContextWindow(request.contextWindow ?? {
-      version: 1,
-      id: "window-test",
-      frozenSeed: [],
-      committedTrace: [],
+    control.prepareExecutionState(request.executionState ?? {
+      generation: 0,
+      items: [],
     });
     control.includeInput(request.inputs[0]!.id);
     return {
@@ -219,7 +223,7 @@ const completingExecution: AgentExecution = {
           transcriptAnchor: { sessionId: "session-1", entryId: `input-${input.id}` },
         })),
         transcriptAnchor: { sessionId: "session-1", entryId: `entry-${request.turnId}` },
-        ...contextResult(request, { sessionId: "session-1", entryId: `entry-${request.turnId}` }),
+        ...executionResult(request, { sessionId: "session-1", entryId: `entry-${request.turnId}` }),
       }),
       steer: async input => control.includeInput(input.id),
       abort: async () => {},
@@ -284,49 +288,38 @@ test("completes one pending input through a main Agent Turn", async t => {
   });
 });
 
-test("restores the committed Context Window for the next Turn after restart", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-"));
+test("restores opaque execution state for the next Turn after restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-execution-state-"));
   const observed: TurnRequest[] = [];
-  const contextExecution: AgentExecution = {
+  const statefulExecution: AgentExecution = {
     start(request, control) {
       observed.push(request);
-      control.prepareContextWindow(request.contextWindow ?? {
-        version: 1,
-        id: "window-1",
-        frozenSeed: [{ role: "user", content: "frozen" }],
-        committedTrace: [],
+      control.prepareExecutionState(request.executionState ?? {
+        generation: 0,
+        items: [],
       });
       control.includeInput(request.inputs[0]!.id);
       const transcriptAnchor = {
-        sessionId: "session-context",
+        sessionId: "session-agent",
         entryId: `entry-${request.turnId}`,
       };
+      const previous = readTestExecutionState(request.executionState);
       return {
         result: Promise.resolve({
           outcome: "completed",
           inputAnchors: request.inputs.map(input => ({
             inputId: input.id,
             transcriptAnchor: {
-              sessionId: "session-context",
+              sessionId: "session-agent",
               entryId: `input-${input.id}`,
             },
           })),
           transcriptAnchor,
-          contextWindow: {
-            version: 1,
-            id: request.contextWindow?.id ?? "window-1",
-            frozenSeed: request.contextWindow?.frozenSeed ?? [{ role: "user", content: "frozen" }],
-            committedTrace: [
-              ...(request.contextWindow?.committedTrace ?? []),
-              { role: "user", content: request.inputs[0]!.payload },
-            ],
-            transcriptAnchor,
-          },
-          contextPlan: {
-            version: 1,
-            budget: { selectedMaterialTokens: request.inputs.length },
-            decisions: [{ unitId: "current:pending", action: "kept" }],
-          },
+          executionState: writeTestExecutionState({
+            generation: (previous?.generation ?? 0) + 1,
+            items: [...(previous?.items ?? []), request.inputs[0]!.payload],
+          }),
+          executionRecord: { kind: "test-execution", inputCount: request.inputs.length },
         }),
         steer: async input => control.includeInput(input.id),
         abort: async () => {},
@@ -334,7 +327,7 @@ test("restores the committed Context Window for the next Turn after restart", as
     },
   };
 
-  const first = openRuntime({ root, execution: contextExecution });
+  const first = openRuntime({ root, execution: statefulExecution });
   await first.acceptInput({
     source: "test-channel",
     sourceId: "message-1",
@@ -342,14 +335,13 @@ test("restores the committed Context Window for the next Turn after restart", as
     payload: { text: "first" },
   });
   assert.deepEqual(await first.advance(), { disposition: "turn_completed" });
-  assert.deepEqual(first.status().turns[0]?.contextPlan, {
-    version: 1,
-    budget: { selectedMaterialTokens: 1 },
-    decisions: [{ unitId: "current:pending", action: "kept" }],
+  assert.deepEqual(first.status().turns[0]?.executionRecord, {
+    kind: "test-execution",
+    inputCount: 1,
   });
   first.close();
 
-  const second = openRuntime({ root, execution: contextExecution });
+  const second = openRuntime({ root, execution: statefulExecution });
   t.after(() => second.close());
   await second.acceptInput({
     source: "test-channel",
@@ -359,62 +351,53 @@ test("restores the committed Context Window for the next Turn after restart", as
   });
   assert.deepEqual(await second.advance(), { disposition: "turn_completed" });
 
-  assert.deepEqual(observed[1]?.contextWindow, {
-    version: 1,
-    id: "window-1",
-    frozenSeed: [{ role: "user", content: "frozen" }],
-    committedTrace: [{ role: "user", content: { text: "first" } }],
-    transcriptAnchor: observed[0]?.contextWindow?.transcriptAnchor ?? {
-      sessionId: "session-context",
-      entryId: observed[0] ? `entry-${observed[0].turnId}` : "missing",
-    },
+  assert.deepEqual(readTestExecutionState(observed[1]?.executionState), {
+    generation: 1,
+    items: [{ text: "first" }],
   });
 });
 
-test("keeps an atomic Context replacement when the following provider run fails", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-compaction-"));
+test("keeps an atomic execution state replacement when the following execution fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-state-replacement-"));
   let run = 0;
   const execution: AgentExecution = {
     start(request, control) {
       run += 1;
       if (run === 1) {
         const prepared = {
-          version: 1 as const,
-          id: "window-1",
-          frozenSeed: [{ role: "user", content: "frozen" }],
-          committedTrace: [],
+          generation: 0,
+          items: [] as JsonValue[],
         };
-        control.prepareContextWindow(prepared);
+        control.prepareExecutionState(prepared);
         control.includeInput(request.inputs[0]!.id);
-        const transcriptAnchor = { sessionId: "session-context", entryId: "entry-first" };
+        const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-first" };
         return {
           result: Promise.resolve({
             outcome: "completed" as const,
             inputAnchors: [{
               inputId: request.inputs[0]!.id,
-              transcriptAnchor: { sessionId: "session-context", entryId: "input-first" },
+              transcriptAnchor: { sessionId: "session-agent", entryId: "input-first" },
             }],
             transcriptAnchor,
-            contextWindow: {
-              ...prepared,
-              committedTrace: [{ role: "toolResult", content: "raw evidence" }],
-              transcriptAnchor,
+            executionState: {
+              generation: 1,
+              items: ["raw state"],
             },
-            contextPlan: { version: 1, budget: {}, decisions: [] },
+            executionRecord: { kind: "test-execution" },
           }),
           steer: async () => {},
           abort: async () => {},
         };
       }
 
-      const expected = request.contextWindow!;
-      control.prepareContextWindow(expected);
-      control.replaceContextWindow(expected, {
+      const expected = readTestExecutionState(request.executionState)!;
+      control.prepareExecutionState(request.executionState!);
+      control.replaceExecutionState(request.executionState!, writeTestExecutionState({
         ...expected,
-        committedTrace: [{ role: "toolResult", content: "compacted evidence" }],
-      });
+        items: ["replaced state"],
+      }));
       return {
-        result: Promise.reject(new Error("provider failed after compaction")),
+        result: Promise.reject(new Error("execution failed after replacement")),
         steer: async () => {},
         abort: async () => {},
       };
@@ -434,7 +417,7 @@ test("keeps an atomic Context replacement when the following provider run fails"
     kind: "interaction",
     payload: { text: "second" },
   });
-  await assert.rejects(runtime.advance(), /provider failed after compaction/);
+  await assert.rejects(runtime.advance(), /execution failed after replacement/);
   runtime.close();
 
   const started = deferred<TurnRequest>();
@@ -450,14 +433,12 @@ test("keeps an atomic Context replacement when the following provider run fails"
   t.after(() => observer.close());
   const advance = observer.advance();
 
-  assert.deepEqual((await started.promise).contextWindow?.committedTrace, [
-    { role: "toolResult", content: "compacted evidence" },
-  ]);
+  assert.deepEqual(readTestExecutionState((await started.promise).executionState)?.items, ["replaced state"]);
   void advance;
 });
 
-test("rejects a stale Context replacement without changing the current window", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-stale-"));
+test("rejects a stale execution state replacement without changing current state", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-state-stale-"));
   let run = 0;
   const runtime = openRuntime({
     root,
@@ -466,44 +447,41 @@ test("rejects a stale Context replacement without changing the current window", 
         run += 1;
         if (run === 1) {
           const prepared = {
-            version: 1 as const,
-            id: "window-1",
-            frozenSeed: [{ role: "user", content: "frozen" }],
-            committedTrace: [],
+            generation: 0,
+            items: [] as JsonValue[],
           };
-          control.prepareContextWindow(prepared);
+          control.prepareExecutionState(prepared);
           control.includeInput(request.inputs[0]!.id);
-          const transcriptAnchor = { sessionId: "session-context", entryId: "entry-first" };
+          const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-first" };
           return {
             result: Promise.resolve({
               outcome: "completed" as const,
               inputAnchors: [{
                 inputId: request.inputs[0]!.id,
-                transcriptAnchor: { sessionId: "session-context", entryId: "input-first" },
+                transcriptAnchor: { sessionId: "session-agent", entryId: "input-first" },
               }],
               transcriptAnchor,
-              contextWindow: {
-                ...prepared,
-                committedTrace: [{ role: "toolResult", content: "raw evidence" }],
-                transcriptAnchor,
+              executionState: {
+                generation: 1,
+                items: ["current state"],
               },
-              contextPlan: { version: 1, budget: {}, decisions: [] },
+              executionRecord: { kind: "test-execution" },
             }),
             steer: async () => {},
             abort: async () => {},
           };
         }
 
-        const expected = request.contextWindow!;
-        control.prepareContextWindow(expected);
-        control.replaceContextWindow(expected, {
+        const expected = readTestExecutionState(request.executionState)!;
+        control.prepareExecutionState(request.executionState!);
+        control.replaceExecutionState(request.executionState!, writeTestExecutionState({
           ...expected,
-          committedTrace: [{ role: "toolResult", content: "current compacted evidence" }],
-        });
-        control.replaceContextWindow(expected, {
+          items: ["current replacement"],
+        }));
+        control.replaceExecutionState(request.executionState!, writeTestExecutionState({
           ...expected,
-          committedTrace: [{ role: "toolResult", content: "stale overwrite" }],
-        });
+          items: ["stale replacement"],
+        }));
         throw new Error("stale replacement should have failed");
       },
     },
@@ -521,7 +499,7 @@ test("rejects a stale Context replacement without changing the current window", 
     kind: "interaction",
     payload: { text: "second" },
   });
-  await assert.rejects(runtime.advance(), /context replacement.*stale/i);
+  await assert.rejects(runtime.advance(), /execution state replacement.*stale/i);
   runtime.close();
 
   const started = deferred<TurnRequest>();
@@ -537,21 +515,18 @@ test("rejects a stale Context replacement without changing the current window", 
   t.after(() => observer.close());
   const advance = observer.advance();
 
-  assert.deepEqual((await started.promise).contextWindow?.committedTrace, [
-    { role: "toolResult", content: "current compacted evidence" },
-  ]);
+  assert.deepEqual(readTestExecutionState((await started.promise).executionState)?.items, ["current replacement"]);
   void advance;
 });
 
-test("keeps the prepared window seed when its first Turn fails", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-seed-"));
+test("keeps prepared execution state when its first Turn fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-state-prepared-"));
   const failingExecution: AgentExecution = {
     start(request, control) {
-      control.prepareContextWindow({
-        version: 1,
-        id: "window-prepared",
-        frozenSeed: [{ role: "user", content: "original seed" }],
-        committedTrace: [],
+      control.prepareExecutionState({
+        owner: "main-agent",
+        phase: "prepared",
+        privateData: ["original"],
       });
       control.includeInput(request.inputs[0]!.id);
       return {
@@ -587,44 +562,39 @@ test("keeps the prepared window seed when its first Turn fails", async t => {
   const advance = recovered.advance();
   const request = await started.promise;
 
-  assert.deepEqual(request.contextWindow, {
-    version: 1,
-    id: "window-prepared",
-    frozenSeed: [{ role: "user", content: "original seed" }],
-    committedTrace: [],
+  assert.deepEqual(request.executionState, {
+    owner: "main-agent",
+    phase: "prepared",
+    privateData: ["original"],
   });
 
   void advance;
 });
 
-test("rejects a completed Turn that replaces its prepared Context Window", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-replace-"));
+test("persists completed execution state without interpreting its schema", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-execution-state-"));
   const execution: AgentExecution = {
     start(request, control) {
-      control.prepareContextWindow({
-        version: 1,
-        id: "window-prepared",
-        frozenSeed: [{ role: "user", content: "original seed" }],
-        committedTrace: [],
+      control.prepareExecutionState({
+        owner: "main-agent",
+        schema: "private-before-provider",
       });
       control.includeInput(request.inputs[0]!.id);
-      const transcriptAnchor = { sessionId: "session-context", entryId: "entry-complete" };
+      const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-complete" };
       return {
         result: Promise.resolve({
           outcome: "completed",
           inputAnchors: [{
             inputId: request.inputs[0]!.id,
-            transcriptAnchor: { sessionId: "session-context", entryId: "entry-input" },
+            transcriptAnchor: { sessionId: "session-agent", entryId: "entry-input" },
           }],
           transcriptAnchor,
-          contextWindow: {
-            version: 1,
-            id: "window-replaced",
-            frozenSeed: [{ role: "user", content: "changed seed" }],
-            committedTrace: [],
-            transcriptAnchor,
+          executionState: {
+            owner: "main-agent",
+            schema: "private-after-provider",
+            nested: { arbitrary: [true, 42, "kept"] },
           },
-          contextPlan: { version: 1, budget: {}, decisions: [] },
+          executionRecord: { kind: "main-agent-plan", selected: 3 },
         }),
         steer: async () => {},
         abort: async () => {},
@@ -640,9 +610,13 @@ test("rejects a completed Turn that replaces its prepared Context Window", async
     payload: { text: "hello" },
   });
 
-  await assert.rejects(runtime.advance(), /prepared Context Window/i);
-  assert.equal(runtime.status().turns[0]?.status, "failed");
-  assert.equal(runtime.status().inputs[0]?.status, "pending");
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.equal(runtime.status().turns[0]?.status, "completed");
+  assert.equal(runtime.status().inputs[0]?.status, "consumed");
+  assert.deepEqual(runtime.status().turns[0]?.executionRecord, {
+    kind: "main-agent-plan",
+    selected: 3,
+  });
 });
 
 test("keeps an initial Input pending until Agent Execution starts its user message", async t => {
@@ -707,6 +681,43 @@ test("retries inputs from an expired Turn and rejects its late completion", asyn
   await assert.rejects(lateAdvance, /no longer accepts writes/);
   assert.deepEqual(replacement.status().turns.map(turn => turn.status), ["interrupted", "completed"]);
   assert.equal(replacement.status().inputs[0]?.status, "consumed");
+});
+
+test("reconciles a Turn that expires after the replacement Runtime starts", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
+  let now = Date.parse("2026-07-19T12:00:00.000Z");
+  const execution = new HeldExecution();
+  const oldRuntime = openRuntime({
+    root,
+    execution,
+    ownerId: "old-runtime",
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+
+  await oldRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  void oldRuntime.advance();
+  await execution.started.promise;
+  oldRuntime.close();
+
+  const replacement = openRuntime({
+    root,
+    ownerId: "replacement-runtime",
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+  t.after(() => replacement.close());
+
+  assert.deepEqual(await replacement.advance(), { disposition: "busy" });
+  now += 2_000;
+  assert.deepEqual(await replacement.advance(), { disposition: "idle" });
+  assert.equal(replacement.status().turns[0]?.status, "interrupted");
+  assert.equal(replacement.status().inputs[0]?.status, "pending");
 });
 
 test("renews the lease while a main Agent Turn is still running", async t => {
@@ -931,11 +942,11 @@ test("does not complete a Turn without evidence for every included Input", async
 test("marks an expired dispatch as unknown and rejects its late result", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
   let now = Date.parse("2026-07-18T12:00:00.000Z");
-  const integration = new HeldIntegration();
+  const outboundDelivery = new HeldOutboundDelivery();
   const oldRuntime = openRuntime({
     root,
     execution: effectThenCompleteExecution,
-    integration,
+    outboundDelivery,
     ownerId: "old-runtime",
     leaseDurationMs: 1_000,
     now: () => new Date(now),
@@ -951,7 +962,7 @@ test("marks an expired dispatch as unknown and rejects its late result", async t
   assert.deepEqual(await oldRuntime.advance(), { disposition: "turn_completed" });
 
   const lateDelivery = oldRuntime.advance();
-  const attemptId = await integration.started.promise;
+  const attemptId = await outboundDelivery.started.promise;
   now += 2_000;
 
   const replacement = openRuntime({ root, now: () => new Date(now), ownerId: "replacement-runtime" });
@@ -960,7 +971,7 @@ test("marks an expired dispatch as unknown and rejects its late result", async t
   assert.equal(recovered.deliveries.find(delivery => delivery.id === attemptId)?.status, "unknown");
   assert.equal(recovered.effects[0]?.status, "reconciliation_required");
 
-  integration.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
   await assert.rejects(lateDelivery, /no longer accepts writes/);
   assert.equal(replacement.status().deliveries[0]?.status, "unknown");
 });

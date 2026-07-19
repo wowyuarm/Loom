@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { AgentWorkspace } from "../../src/agent-workspace/agent-workspace.js";
+import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
 test("loads the complete interaction snapshot from an Agent Workspace", async () => {
   const root = await createWorkspace({ interaction: "interaction behavior" });

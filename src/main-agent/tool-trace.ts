@@ -12,8 +12,9 @@ import type {
   ToolTraceCompactionDetail,
   ToolTraceCompactionInput,
   ToolTraceCompactor,
-} from "../cognitive-organs/tool-trace-compactor.js";
-import type { ContextWindowState, JsonValue } from "../runtime/index.js";
+} from "../agents/tool-trace-compactor.js";
+import type { JsonValue } from "../runtime/index.js";
+import type { ContextWindowState } from "./context.js";
 import {
   readCommittedToolInteractions,
   readReferencedToolInteraction,

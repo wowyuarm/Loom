@@ -30,9 +30,9 @@ _Avoid_: workspace root, shared state directory
 Loom 内部负责 input、时间、调度、turn、effect、delivery 与恢复的运行模块。它提供可靠的生命周期条件，不决定 Individual 的关注、表达或关系判断。
 _Avoid_: Agent Harness, daemon, scheduler
 
-**Agent Execution**:
-Loom 内部负责通过 Pi 组装和执行主 Agent 与认知器官运行、管理 context 并保留执行证据的模块。它是 Agent Harness 的一部分，不等于整个 Harness。
-_Avoid_: harness layer, runtime, executor abstraction
+**Main Agent**:
+Loom 内部负责主 Agent 的 Pi 执行、Context 组装、Primary Agent Transcript 和 tool trace 的模块。它不负责 Runtime 生命周期，也不定义认知器官如何运行。
+_Avoid_: Agent Individual, Agent Harness, runtime, cognitive organ
 
 **Agent Workspace**:
 Agent Individual 的高权限文件工作空间，存放身份、关系、认知材料、skills 和私人工作。它是工作边界，不是宿主机级安全隔离承诺。

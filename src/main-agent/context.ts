@@ -1,6 +1,74 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
+import { isDeepStrictEqual } from "node:util";
+
+import type { JsonValue, TranscriptAnchor } from "../runtime/index.js";
 import { isRawCompactableToolResult } from "./tool-trace.js";
+
+export interface ContextWindowState {
+  version: 1;
+  id: string;
+  frozenSeed: JsonValue[];
+  committedTrace: JsonValue[];
+  transcriptAnchor?: TranscriptAnchor;
+}
+
+export function parseContextWindowState(value: JsonValue | undefined): ContextWindowState | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Main Agent execution state is not a Context Window");
+  }
+  const state = value as Record<string, JsonValue>;
+  const anchor = state.transcriptAnchor;
+  if (state.version !== 1
+    || typeof state.id !== "string"
+    || !state.id
+    || !Array.isArray(state.frozenSeed)
+    || !Array.isArray(state.committedTrace)
+    || (anchor !== undefined && (!anchor
+      || typeof anchor !== "object"
+      || Array.isArray(anchor)
+      || typeof anchor.sessionId !== "string"
+      || !anchor.sessionId
+      || typeof anchor.entryId !== "string"
+      || !anchor.entryId))) {
+    throw new Error("Main Agent execution state contains an invalid Context Window");
+  }
+  return structuredClone(value) as unknown as ContextWindowState;
+}
+
+export function serializeContextWindowState(state: ContextWindowState): JsonValue {
+  return JSON.parse(JSON.stringify(state)) as JsonValue;
+}
+
+export function assertContextWindowReplacement(
+  expected: ContextWindowState,
+  replacement: ContextWindowState,
+): void {
+  if (replacement.id !== expected.id
+    || !isDeepStrictEqual(replacement.frozenSeed, expected.frozenSeed)
+    || !isDeepStrictEqual(replacement.transcriptAnchor, expected.transcriptAnchor)) {
+    throw new Error(`Context replacement must preserve window ${expected.id} identity and anchors`);
+  }
+}
+
+export function completeContextWindow(
+  prepared: ContextWindowState,
+  appendedTrace: JsonValue[],
+  transcriptAnchor: TranscriptAnchor,
+): ContextWindowState {
+  if (prepared.transcriptAnchor
+    && prepared.transcriptAnchor.sessionId !== transcriptAnchor.sessionId) {
+    throw new Error(`Context Window ${prepared.id} cannot cross transcript sessions`);
+  }
+  return {
+    version: 1,
+    id: prepared.id,
+    frozenSeed: prepared.frozenSeed,
+    committedTrace: [...prepared.committedTrace, ...appendedTrace],
+    transcriptAnchor,
+  };
+}
 
 export const DEFAULT_CONTEXT_BUDGET = {
   hardContext: 262_000,

@@ -7,7 +7,7 @@ import test from "node:test";
 import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { createPiToolTraceCompactor } from "../../src/cognitive-organs/tool-trace-compactor.js";
+import { createPiToolTraceCompactor } from "../../src/agents/tool-trace-compactor.js";
 
 test("compacts tool evidence in an isolated factual Pi run", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-tool-trace-organ-"));

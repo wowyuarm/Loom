@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   verifyPrimaryTranscriptEntry,
   verifyPrimaryTranscriptEvidence,
-} from "../../src/agent-execution/transcript.js";
+} from "../../src/main-agent/transcript.js";
 
 test("verifies an entry on the selected continuous transcript branch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));

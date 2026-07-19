@@ -8,14 +8,14 @@ Status: active
 
 ## Whole
 
-Loom 是完整的 Agent Harness。`Harness` 不作为与 Runtime、Workspace 或 Cognitive Organs 并列的内部层名；Xi `src/harness/` 所承担的职责在 Loom 中统一称为 Agent Execution。
+Loom 是完整的 Agent Harness。`Harness` 不作为与 Runtime、Workspace 或 Cognitive Organs 并列的内部层名；Xi `src/harness/` 中与主 Agent 调用有关的职责在 Loom 中归入 Main Agent。
 
 ## Executing Modules
 
 | Module | Owns |
 | --- | --- |
 | Runtime | input、时间、调度、turn、effect/delivery、恢复与运行观测。 |
-| Agent Execution | Pi session、模型运行、context、工具执行与执行证据。 |
+| Main Agent | 主 Agent 的 Pi 执行、Context、Primary Agent Transcript 与 tool trace。 |
 | Cognitive Organs | Harness 内化且版本化的认知维护能力。 |
 | Integrations | channel、nmem、extensions 及其具体 Adapter。 |
 
@@ -28,12 +28,12 @@ Loom 是完整的 Agent Harness。`Harness` 不作为与 Runtime、Workspace 或
 | Primary Agent Transcript | 主 Agent 的原始执行证据，不承担恢复真相。 |
 | Instance Configuration | 实例装配、时间节律、模型策略与默认 route 引用。 |
 
-Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 Agent Execution 暴露的动作面，两者都不单独成为主层。
+Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 Main Agent 暴露的动作面，两者都不单独成为主层。
 
 ## Detail Order
 
 1. Runtime + Runtime Store
-2. Agent Execution + Primary Agent Transcript + Context
+2. Main Agent + Primary Agent Transcript + Context
 3. Agent Workspace
 4. Cognitive Organs
 5. Integrations
@@ -49,7 +49,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [04 — Bind Agent Workspace Materials to Turns](issues/04-bind-agent-workspace-materials-to-turns.md)
 - Completed: [05 — Unify Skill Discovery per Turn](issues/05-unify-skill-discovery.md)
 - Completed: [06 — Compact Tool Traces Before Context Reuse](issues/06-compact-tool-traces-before-reuse.md)
-- Review checkpoint: 第一个 Cognitive Organ 与 Context compaction/gate/expansion 已闭合。先回顾 Runtime、Agent Execution、Workspace、skills 与 Cognitive Organ 的整体边界、已完成范围和剩余 follow-ups，再选择下一张 ticket。
+- Completed: [07 — Correct Runtime and Source Boundaries](issues/07-correct-runtime-and-source-boundaries.md)
+- Current frontier: 阶段回顾与架构校正已闭合。下一张 ticket 仍从既有 follow-up 和后续层次中按进入条件选择，不提前实现写入型 agent 生命周期、Effect 后 Context 补偿、共享 Pi session Module、Integrations 或 Configuration。
 
 ## Context Follow-ups
 

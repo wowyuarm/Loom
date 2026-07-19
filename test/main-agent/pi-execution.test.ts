@@ -12,8 +12,16 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { createPiAgentExecution } from "../../src/agent-execution/pi-execution.js";
-import { AgentWorkspace } from "../../src/agent-workspace/agent-workspace.js";
+import { parseContextWindowState } from "../../src/main-agent/context.js";
+import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
+import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
+import type { JsonValue } from "../../src/runtime/index.js";
+
+function contextWindow(result: { executionState: JsonValue }) {
+  const window = parseContextWindowState(result.executionState);
+  assert.ok(window);
+  return window;
+}
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -331,7 +339,7 @@ test("binds interaction Workspace materials to their system and Context levels",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
 
-  const plan = result.contextPlan as { budget: { fixedTokens: number } };
+  const plan = result.executionRecord as { budget: { fixedTokens: number } };
   assert.equal(
     plan.budget.fixedTokens,
     textTokenEstimate(providerSystemPrompt) + textTokenEstimate(JSON.stringify(providerTools)),
@@ -439,7 +447,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "second input")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, noEffectControl()).result;
 });
 
@@ -503,8 +511,8 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     }],
   }, {
     includeInput: inputId => included.push(inputId),
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -559,8 +567,8 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     }],
   }, {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -608,8 +616,8 @@ test("continues from the last committed Context after a failed transcript branch
   t.after(() => execution.close());
   const control = {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -625,18 +633,18 @@ test("continues from the last committed Context after a failed transcript branch
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "failed input")],
-    contextWindow: committed.contextWindow,
+    executionState: committed.executionState,
   }, control).result, /provider failure/);
 
   const recovered = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
     inputs: [executionInput("input-3", "recovered input")],
-    contextWindow: committed.contextWindow,
+    executionState: committed.executionState,
   }, control).result;
 
-  assert.equal(recovered.contextWindow.committedTrace.length, 4);
-  assert.deepEqual(recovered.contextWindow.transcriptAnchor, recovered.transcriptAnchor);
+  assert.equal(contextWindow(recovered).committedTrace.length, 4);
+  assert.deepEqual(contextWindow(recovered).transcriptAnchor, recovered.transcriptAnchor);
 });
 
 test("refreshes Turn-live material while keeping the window-frozen seed", async t => {
@@ -683,8 +691,8 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   t.after(() => execution.close());
   const control = {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -699,11 +707,11 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "second input")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, control).result;
 
-  assert.deepEqual(first.contextWindow.frozenSeed, [contextMessage("frozen-1")]);
-  assert.deepEqual(second.contextWindow.frozenSeed, first.contextWindow.frozenSeed);
+  assert.deepEqual(contextWindow(first).frozenSeed, [contextMessage("frozen-1")]);
+  assert.deepEqual(contextWindow(second).frozenSeed, contextWindow(first).frozenSeed);
   assert.equal(revision, 2);
 });
 
@@ -736,8 +744,8 @@ test("rejects an over-limit current Input before calling the provider", async t 
     inputs: [executionInput("input-1", "x".repeat(1_000))],
   }, {
     includeInput: inputId => included.push(inputId),
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -829,8 +837,8 @@ async function readTranscript(transcriptFile: string): Promise<Array<Record<stri
 function noEffectControl() {
   return {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -878,8 +886,8 @@ test("does not include or annotate a steering Input before Pi starts its user me
     }],
   }, {
     includeInput: inputId => included.push(inputId),
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -958,8 +966,8 @@ test("does not complete or include queued steering after abort", async t => {
     }],
   }, {
     includeInput: inputId => included.push(inputId),
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1021,8 +1029,8 @@ test("does not complete a Turn after Pi ends with an error", async t => {
     }],
   }, {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1072,8 +1080,8 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
     }],
   }, {
     includeInput: () => {},
-    prepareContextWindow: () => {},
-    replaceContextWindow: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
     prepareEffect: () => {
       throw new Error("The lookup tool is read-only");
     },
@@ -1240,30 +1248,30 @@ test("compacts committed tool traces and expands an authorized original interact
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "inspect the evidence")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, {
     ...noEffectControl(),
     includeInput: inputId => included.push(inputId),
-    replaceContextWindow: (expected, next) => {
-      assert.deepEqual(expected, first.contextWindow);
+    replaceExecutionState: (expected, next) => {
+      assert.deepEqual(expected, first.executionState);
       replacement = next;
     },
   }).result;
 
   assert.ok(replacement);
   assert.deepEqual(included, ["input-2"]);
-  assert.equal(second.contextWindow.transcriptAnchor?.entryId, second.transcriptAnchor.entryId);
+  assert.equal(contextWindow(second).transcriptAnchor?.entryId, second.transcriptAnchor.entryId);
 
   const third = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
     inputs: [executionInput("input-3", "continue after expansion")],
-    contextWindow: second.contextWindow,
+    executionState: second.executionState,
   }, noEffectControl()).result;
 
   assert.equal(compactorCalls, 1);
   assert.equal(faux.state.callCount, 7);
-  assert.match(JSON.stringify(third.contextWindow.committedTrace), /expansion-compacted/);
+  assert.match(JSON.stringify(contextWindow(third).committedTrace), /expansion-compacted/);
 });
 
 test("keeps raw Context and excludes Input when tool trace compaction fails", async t => {
@@ -1330,24 +1338,24 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "retry after failure")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, {
     ...noEffectControl(),
     includeInput: inputId => failedIncluded.push(inputId),
-    replaceContextWindow: (_expected, replacement) => failedReplacements.push(replacement),
+    replaceExecutionState: (_expected, replacement) => failedReplacements.push(replacement),
   }).result, /compactor unavailable/);
 
   assert.equal(faux.state.callCount, 2);
   assert.deepEqual(failedIncluded, []);
   assert.deepEqual(failedReplacements, []);
-  assert.match(JSON.stringify(first.contextWindow.committedTrace), /retry evidence/);
+  assert.match(JSON.stringify(contextWindow(first).committedTrace), /retry evidence/);
 
   const retryIncluded: string[] = [];
   const retry = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
     inputs: [executionInput("input-2", "retry after failure")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, {
     ...noEffectControl(),
     includeInput: inputId => retryIncluded.push(inputId),
@@ -1356,7 +1364,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
   assert.equal(compactionAttempts, 2);
   assert.equal(faux.state.callCount, 3);
   assert.deepEqual(retryIncluded, ["input-2"]);
-  assert.doesNotMatch(JSON.stringify(retry.contextWindow.committedTrace), /found:retry evidence/);
+  assert.doesNotMatch(JSON.stringify(contextWindow(retry).committedTrace), /found:retry evidence/);
 });
 
 test("does not expose successful tool trace batches when another batch fails", async t => {
@@ -1418,11 +1426,11 @@ test("does not expose successful tool trace batches when another batch fails", a
     turnId: "turn-2",
     leaseToken: 2,
     inputs: [executionInput("input-2", "continue after batches")],
-    contextWindow: first.contextWindow,
+    executionState: first.executionState,
   }, {
     ...noEffectControl(),
     includeInput: inputId => included.push(inputId),
-    replaceContextWindow: (_expected, replacement) => replacements.push(replacement),
+    replaceExecutionState: (_expected, replacement) => replacements.push(replacement),
   }).result, /final batch failed/);
 
   assert.deepEqual(batchSizes.sort((left, right) => left - right), [1, 10]);

@@ -1,7 +1,6 @@
 export { openRuntime } from "./runtime.js";
 export type {
   AcceptedInput,
-  ContextWindowState,
   AdvanceResult,
   AgentExecution,
   DeliveryAttemptRequest,
@@ -11,7 +10,7 @@ export type {
   ExecutionInput,
   ExecutionResult,
   InputKind,
-  Integration,
+  OutboundDelivery,
   JsonValue,
   RunningExecution,
   Runtime,

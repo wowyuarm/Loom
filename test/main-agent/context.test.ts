@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 
-import { materializeTurnContext } from "../../src/agent-execution/context.js";
+import { materializeTurnContext } from "../../src/main-agent/context.js";
 
 test("rejects a required current Input that cannot fit the hard context limit", () => {
   assert.throws(() => materializeTurnContext({

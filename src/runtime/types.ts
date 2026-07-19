@@ -9,18 +9,10 @@ export interface RuntimeInput {
   occurredAt?: string;
 }
 
-export interface TranscriptAnchor {
+export type TranscriptAnchor = {
   sessionId: string;
   entryId: string;
-}
-
-export interface ContextWindowState {
-  version: 1;
-  id: string;
-  frozenSeed: JsonValue[];
-  committedTrace: JsonValue[];
-  transcriptAnchor?: TranscriptAnchor;
-}
+};
 
 export interface ExecutionInput {
   id: string;
@@ -34,7 +26,7 @@ export interface TurnRequest {
   turnId: string;
   leaseToken: number;
   inputs: ExecutionInput[];
-  contextWindow?: ContextWindowState;
+  executionState?: JsonValue;
 }
 
 export interface ExecutionResult {
@@ -44,8 +36,8 @@ export interface ExecutionResult {
     transcriptAnchor: TranscriptAnchor;
   }>;
   transcriptAnchor: TranscriptAnchor;
-  contextWindow: ContextWindowState;
-  contextPlan: JsonValue;
+  executionState: JsonValue;
+  executionRecord: JsonValue;
 }
 
 export interface EffectRequest {
@@ -60,8 +52,8 @@ export interface EffectReceipt {
 
 export interface TurnControl {
   includeInput(inputId: string): void;
-  prepareContextWindow(window: ContextWindowState): void;
-  replaceContextWindow(expected: ContextWindowState, replacement: ContextWindowState): void;
+  prepareExecutionState(state: JsonValue): void;
+  replaceExecutionState(expected: JsonValue, replacement: JsonValue): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
 }
 
@@ -79,7 +71,7 @@ export type DeliveryObservation =
   | { status: "not_sent"; error?: string }
   | { status: "unknown"; error?: string };
 
-export interface Integration {
+export interface OutboundDelivery {
   deliver(attempt: DeliveryAttemptRequest): Promise<DeliveryObservation>;
 }
 
@@ -111,7 +103,7 @@ export interface RuntimeTurnStatus {
   status: "running" | "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
   inputIds: string[];
   transcriptAnchor?: TranscriptAnchor;
-  contextPlan?: JsonValue;
+  executionRecord?: JsonValue;
 }
 
 export interface RuntimeEffectStatus {
@@ -144,7 +136,7 @@ export interface RuntimeStatus {
 export interface RuntimeOptions {
   root: string;
   execution?: AgentExecution;
-  integration?: Integration;
+  outboundDelivery?: OutboundDelivery;
   now?: () => Date;
   nextId?: () => string;
   ownerId?: string;

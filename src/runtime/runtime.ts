@@ -8,7 +8,6 @@ import type {
   AcceptedInput,
   AdvanceResult,
   AgentExecution,
-  ContextWindowState,
   DeliveryAttemptRequest,
   DeliveryObservation,
   EffectReceipt,
@@ -16,7 +15,7 @@ import type {
   ExecutionInput,
   ExecutionResult,
   InputKind,
-  Integration,
+  OutboundDelivery,
   JsonValue,
   RunningExecution,
   Runtime,
@@ -45,7 +44,7 @@ interface TurnRow {
   status: RuntimeTurnStatus["status"];
   fencing_token: number;
   transcript_anchor_json: string | null;
-  context_plan_json: string | null;
+  execution_record_json: string | null;
 }
 
 interface EffectRow {
@@ -79,7 +78,7 @@ interface ActiveExecution {
 class SqliteRuntime implements Runtime {
   readonly #database: DatabaseSync;
   readonly #execution: AgentExecution | undefined;
-  readonly #integration: Integration | undefined;
+  readonly #outboundDelivery: OutboundDelivery | undefined;
   readonly #now: () => Date;
   readonly #nextId: () => string;
   readonly #ownerId: string;
@@ -92,7 +91,7 @@ class SqliteRuntime implements Runtime {
     mkdirSync(options.root, { recursive: true });
     this.#database = new DatabaseSync(path.join(options.root, "runtime.db"));
     this.#execution = options.execution;
-    this.#integration = options.integration;
+    this.#outboundDelivery = options.outboundDelivery;
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
     this.#ownerId = options.ownerId ?? randomUUID();
@@ -146,9 +145,12 @@ class SqliteRuntime implements Runtime {
   }
 
   async advance(): Promise<AdvanceResult> {
-    if (this.#active || this.#activeDeliveryId || this.#hasRunningTurn()) return { disposition: "busy" };
+    if (this.#active || this.#activeDeliveryId) return { disposition: "busy" };
+    this.#reconcileExpiredDeliveries();
+    this.#reconcileExpiredTurns();
+    if (this.#hasRunningTurn()) return { disposition: "busy" };
 
-    if (this.#integration) {
+    if (this.#outboundDelivery) {
       const delivery = this.#claimPendingDelivery();
       if (delivery) {
         this.#activeDeliveryId = delivery.request.attemptId;
@@ -156,7 +158,7 @@ class SqliteRuntime implements Runtime {
         try {
           let observation: DeliveryObservation;
           try {
-            observation = await this.#integration.deliver(delivery.request);
+            observation = await this.#outboundDelivery.deliver(delivery.request);
           } catch (error) {
             observation = { status: "unknown", error: error instanceof Error ? error.message : String(error) };
           }
@@ -180,15 +182,15 @@ class SqliteRuntime implements Runtime {
         turnId: claimed.turnId,
         leaseToken: claimed.fencingToken,
         inputs: [claimed.input],
-        ...(claimed.contextWindow ? { contextWindow: claimed.contextWindow } : {}),
+        ...(claimed.executionState !== undefined ? { executionState: claimed.executionState } : {}),
       }, {
         includeInput: inputId => this.#includeInput(claimed.turnId, claimed.fencingToken, inputId),
-        prepareContextWindow: window => this.#prepareContextWindow(
+        prepareExecutionState: state => this.#prepareExecutionState(
           claimed.turnId,
           claimed.fencingToken,
-          window,
+          state,
         ),
-        replaceContextWindow: (expected, replacement) => this.#replaceContextWindow(
+        replaceExecutionState: (expected, replacement) => this.#replaceExecutionState(
           claimed.turnId,
           claimed.fencingToken,
           expected,
@@ -226,7 +228,7 @@ class SqliteRuntime implements Runtime {
       ORDER BY accepted_at, id
     `).all() as unknown as InputRow[];
     const turnRows = this.#database.prepare(`
-      SELECT id, status, fencing_token, transcript_anchor_json, context_plan_json
+      SELECT id, status, fencing_token, transcript_anchor_json, execution_record_json
       FROM turns
       ORDER BY started_at, id
     `).all() as unknown as TurnRow[];
@@ -264,8 +266,8 @@ class SqliteRuntime implements Runtime {
           ...(row.transcript_anchor_json
             ? { transcriptAnchor: JSON.parse(row.transcript_anchor_json) as TranscriptAnchor }
             : {}),
-          ...(row.context_plan_json
-            ? { contextPlan: JSON.parse(row.context_plan_json) as JsonValue }
+          ...(row.execution_record_json
+            ? { executionRecord: JSON.parse(row.execution_record_json) as JsonValue }
             : {}),
         };
       }),
@@ -358,7 +360,7 @@ class SqliteRuntime implements Runtime {
     turnId: string;
     fencingToken: number;
     input: ExecutionInput;
-    contextWindow?: ContextWindowState;
+    executionState?: JsonValue;
   } | undefined {
     return this.#transaction(() => {
       if (this.#hasRunningTurn()) return undefined;
@@ -407,7 +409,7 @@ class SqliteRuntime implements Runtime {
           occurredAt: input.occurred_at,
           inclusionPosition: 1,
         },
-        ...this.#readContextWindow(),
+        ...this.#readExecutionState(),
       };
     });
   }
@@ -445,37 +447,31 @@ class SqliteRuntime implements Runtime {
       `).run(turnId);
       const changed = this.#database.prepare(`
         UPDATE turns
-        SET status = 'completed', outcome = ?, ended_at = ?, transcript_anchor_json = ?, context_plan_json = ?
+        SET status = 'completed', outcome = ?, ended_at = ?, transcript_anchor_json = ?, execution_record_json = ?
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).run(
         result.outcome,
         now.toISOString(),
         JSON.stringify(result.transcriptAnchor),
-        JSON.stringify(result.contextPlan),
+        JSON.stringify(result.executionRecord),
         turnId,
         fencingToken,
         this.#ownerId,
       );
       if (changed.changes !== 1) throw new Error(`Turn ${turnId} no longer accepts writes from lease ${fencingToken}`);
-      const preparedWindow = this.#readContextWindow().contextWindow;
-      if (!preparedWindow) {
-        throw new Error(`Turn ${turnId} did not prepare a Context Window before completion`);
+      const preparedState = this.#readExecutionState().executionState;
+      if (preparedState === undefined) {
+        throw new Error(`Turn ${turnId} did not prepare execution state before completion`);
       }
-      this.#validateCompletedContextWindow(preparedWindow, result.contextWindow, result.transcriptAnchor);
-      const existing = this.#database.prepare(`
-        SELECT 1 FROM active_context_window WHERE singleton = 1
-      `).get();
       this.#database.prepare(`
-        INSERT INTO active_context_window (singleton, state_json, updated_at)
-        VALUES (1, ?, ?)
-        ON CONFLICT(singleton) DO UPDATE SET
-          state_json = excluded.state_json,
-          updated_at = excluded.updated_at
-      `).run(JSON.stringify(result.contextWindow), now.toISOString());
+        UPDATE active_execution_state
+        SET state_json = ?, updated_at = ?
+        WHERE singleton = 1
+      `).run(JSON.stringify(result.executionState), now.toISOString());
       this.#recordTransition(
-        "context_window",
-        result.contextWindow.id,
-        existing ? "active" : null,
+        "execution_state",
+        "primary",
+        "active",
         "active",
         "turn_completed",
         now,
@@ -495,79 +491,42 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #readContextWindow(): { contextWindow?: ContextWindowState } {
+  #readExecutionState(): { executionState?: JsonValue } {
     const row = this.#database.prepare(`
-      SELECT state_json FROM active_context_window WHERE singleton = 1
+      SELECT state_json FROM active_execution_state WHERE singleton = 1
     `).get() as unknown as { state_json: string } | undefined;
     if (!row) return {};
-    const contextWindow = JSON.parse(row.state_json) as ContextWindowState;
-    this.#validateContextWindow(contextWindow);
-    return { contextWindow };
+    return { executionState: JSON.parse(row.state_json) as JsonValue };
   }
 
-  #validateContextWindow(window: ContextWindowState): void {
-    if (window.version !== 1 || !window.id || !Array.isArray(window.frozenSeed) || !Array.isArray(window.committedTrace)) {
-      throw new Error("Runtime received an invalid Context Window");
-    }
-    if (window.transcriptAnchor
-      && (!window.transcriptAnchor.sessionId || !window.transcriptAnchor.entryId)) {
-      throw new Error(`Context Window ${window.id} has an invalid Transcript Anchor`);
-    }
-  }
-
-  #validateCompletedContextWindow(
-    prepared: ContextWindowState,
-    completed: ContextWindowState,
-    transcriptAnchor: TranscriptAnchor,
-  ): void {
-    this.#validateContextWindow(completed);
-    const preservesPreparedState = completed.id === prepared.id
-      && isDeepStrictEqual(completed.frozenSeed, prepared.frozenSeed)
-      && completed.committedTrace.length >= prepared.committedTrace.length
-      && isDeepStrictEqual(
-        completed.committedTrace.slice(0, prepared.committedTrace.length),
-        prepared.committedTrace,
-      );
-    if (!preservesPreparedState) {
-      throw new Error(`Completed Turn cannot replace prepared Context Window ${prepared.id}`);
-    }
-    if (completed.transcriptAnchor?.sessionId !== transcriptAnchor.sessionId
-      || completed.transcriptAnchor.entryId !== transcriptAnchor.entryId
-      || (prepared.transcriptAnchor
-        && prepared.transcriptAnchor.sessionId !== transcriptAnchor.sessionId)) {
-      throw new Error(`Context Window ${completed.id} requires the completed Turn Transcript Anchor`);
-    }
-  }
-
-  #prepareContextWindow(
+  #prepareExecutionState(
     turnId: string,
     fencingToken: number,
-    window: ContextWindowState,
+    state: JsonValue,
   ): void {
-    this.#validateContextWindow(window);
     this.#transaction(() => {
       const turn = this.#database.prepare(`
         SELECT id FROM turns
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).get(turnId, fencingToken, this.#ownerId);
-      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Context from lease ${fencingToken}`);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts execution state from lease ${fencingToken}`);
 
-      const current = this.#readContextWindow().contextWindow;
-      if (current) {
-        if (!isDeepStrictEqual(current, window)) {
-          throw new Error(`Turn ${turnId} cannot replace active Context Window ${current.id} before completion`);
+      const current = this.#readExecutionState().executionState;
+      if (current !== undefined) {
+        if (!isDeepStrictEqual(current, state)) {
+          throw new Error(`Turn ${turnId} cannot replace active execution state before completion`);
         }
         return;
       }
 
       const now = this.#now();
       this.#database.prepare(`
-        INSERT INTO active_context_window (singleton, state_json, updated_at)
+        INSERT INTO active_execution_state (singleton, state_json, updated_at)
         VALUES (1, ?, ?)
-      `).run(JSON.stringify(window), now.toISOString());
+      `).run(JSON.stringify(state), now.toISOString());
       this.#recordTransition(
-        "context_window",
-        window.id,
+        "execution_state",
+        "primary",
         null,
         "active",
         "turn_prepared",
@@ -577,39 +536,32 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #replaceContextWindow(
+  #replaceExecutionState(
     turnId: string,
     fencingToken: number,
-    expected: ContextWindowState,
-    replacement: ContextWindowState,
+    expected: JsonValue,
+    replacement: JsonValue,
   ): void {
-    this.#validateContextWindow(expected);
-    this.#validateContextWindow(replacement);
-    const preservesWindow = replacement.id === expected.id
-      && isDeepStrictEqual(replacement.frozenSeed, expected.frozenSeed)
-      && isDeepStrictEqual(replacement.transcriptAnchor, expected.transcriptAnchor);
-    if (!preservesWindow) {
-      throw new Error(`Context replacement must preserve window ${expected.id} identity and anchors`);
-    }
-
     this.#transaction(() => {
       const turn = this.#database.prepare(`
         SELECT id FROM turns
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).get(turnId, fencingToken, this.#ownerId);
-      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Context from lease ${fencingToken}`);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts execution state from lease ${fencingToken}`);
 
-      const current = this.#readContextWindow().contextWindow;
-      if (!current || !isDeepStrictEqual(current, expected)) {
-        throw new Error(`Context replacement for Turn ${turnId} is stale`);
+      const current = this.#readExecutionState().executionState;
+      if (current === undefined || !isDeepStrictEqual(current, expected)) {
+        throw new Error(`Execution state replacement for Turn ${turnId} is stale`);
       }
       const now = this.#now();
       this.#database.prepare(`
-        UPDATE active_context_window SET state_json = ?, updated_at = ? WHERE singleton = 1
+        UPDATE active_execution_state
+        SET state_json = ?, updated_at = ?
+        WHERE singleton = 1
       `).run(JSON.stringify(replacement), now.toISOString());
       this.#recordTransition(
-        "context_window",
-        replacement.id,
+        "execution_state",
+        "primary",
         "active",
         "active",
         "execution_replaced",

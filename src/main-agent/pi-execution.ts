@@ -18,7 +18,6 @@ import {
 
 import type {
   AgentExecution,
-  ContextWindowState,
   ExecutionInput,
   ExecutionResult,
   JsonValue,
@@ -29,23 +28,28 @@ import type {
 import type {
   AgentWorkspace,
   AgentWorkspaceTurnSnapshot,
-} from "../agent-workspace/agent-workspace.js";
+} from "../workspace/agent-workspace.js";
 import {
   type InputAnnotationReference,
   verifyPrimaryTranscriptEntry,
   verifyPrimaryTranscriptEvidence,
 } from "./transcript.js";
 import {
+  assertContextWindowReplacement,
+  completeContextWindow,
+  type ContextWindowState,
   DEFAULT_CONTEXT_BUDGET,
   type ContextBudget,
   materializeTurnContext,
+  parseContextWindowState,
+  serializeContextWindowState,
 } from "./context.js";
 import {
   compactCommittedToolTraces,
   createExpandTool,
   toolTraceCompactionRequired,
 } from "./tool-trace.js";
-import type { ToolTraceCompactor } from "../cognitive-organs/tool-trace-compactor.js";
+import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -86,8 +90,6 @@ export interface PiAgentExecution extends AgentExecution {
 }
 
 export interface PiExecutionResult extends ExecutionResult {
-  contextWindow: ContextWindowState;
-  contextPlan: JsonValue;
 }
 
 export interface PiRunningExecution extends RunningExecution {
@@ -229,19 +231,20 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
   async #run(request: TurnRequest): Promise<PiExecutionResult> {
     let session: PiSession | undefined;
     try {
-      await this.#selectCommittedBranch(request.contextWindow);
+      const restoredWindow = parseContextWindowState(request.executionState);
+      await this.#selectCommittedBranch(restoredWindow);
       const [workspaceSnapshot, materials] = await Promise.all([
         this.agentWorkspace.loadTurnSnapshot(request.inputs[0]!.kind),
         this.loadContextMaterials(request),
       ]);
       const systemPrompt = composeSystemPrompt(this.harnessSystemPrompt, workspaceSnapshot);
-      let preparedWindow: ContextWindowState = request.contextWindow ?? {
+      let preparedWindow: ContextWindowState = restoredWindow ?? {
         version: 1,
         id: request.turnId,
         frozenSeed: serializeMessages(materials.windowFrozen),
         committedTrace: [],
       };
-      this.lifecycle.control(request.turnId).prepareContextWindow(preparedWindow);
+      this.lifecycle.control(request.turnId).prepareExecutionState(serializeContextWindowState(preparedWindow));
       const reservation = this.contextBudget?.toolTraceReservation
         ?? DEFAULT_CONTEXT_BUDGET.toolTraceReservation;
       if (toolTraceCompactionRequired(restoreMessages(preparedWindow.committedTrace), reservation)) {
@@ -250,7 +253,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           transcriptFile: this.transcriptFile,
           ...(this.toolTraceCompactor ? { compactor: this.toolTraceCompactor } : {}),
         });
-        this.lifecycle.control(request.turnId).replaceContextWindow(preparedWindow, replacement);
+        assertContextWindowReplacement(preparedWindow, replacement);
+        this.lifecycle.control(request.turnId).replaceExecutionState(
+          serializeContextWindowState(preparedWindow),
+          serializeContextWindowState(replacement),
+        );
         preparedWindow = replacement;
       }
       const preparedSession = await this.createSession(systemPrompt, [createExpandTool({
@@ -294,21 +301,16 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         inputs: this.lifecycle.evidenceRequest(request.turnId),
       });
       this.#throwIfAborted(request.turnId);
-      const committedTrace = [
-        ...preparedWindow.committedTrace,
-        ...serializeMessages(session.messages.slice(previousMessageCount)),
-      ];
+      const completedWindow = completeContextWindow(
+        preparedWindow,
+        serializeMessages(session.messages.slice(previousMessageCount)),
+        evidence.transcriptAnchor,
+      );
       return {
         outcome: "completed",
         ...evidence,
-        contextWindow: {
-          version: 1,
-          id: preparedWindow.id,
-          frozenSeed: preparedWindow.frozenSeed,
-          committedTrace,
-          transcriptAnchor: evidence.transcriptAnchor,
-        },
-        contextPlan: serializeValue(materialized.plan),
+        executionState: serializeContextWindowState(completedWindow),
+        executionRecord: serializeValue(materialized.plan),
       };
     } catch (error) {
       this.#sessionReady?.reject(error);
