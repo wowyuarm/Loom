@@ -80,12 +80,16 @@ _Avoid_: optional plugin, workspace-defined agent, self-evolving organ
 
 ## Cognitive Recording
 
+**Stable Facts**:
+Agent Workspace 中供 Cognitive Organs 共同使用的少量结构化事实，描述 Agent Individual、主要关系对象及双方相对稳定的身份、称谓、关系、地点与语言。它提供归属和表达的基本坐标，不承载近期状态、行为规则、长期叙事或运行配置。
+_Avoid_: identity prose, long-term memory, actor registry, persona configuration
+
 **Frozen Activity**:
 一段已停止变化、可供认知器官完整消费的实际活动证据，其中每个事件都通过 Actor Reference 明确归属。它不是仍可接收 Input 的 Active Segment，也不是一份自然语言摘要。
 _Avoid_: active segment, transcript slice, conversation summary
 
 **Actor Reference (`actorRef`)**:
-Frozen Activity 内标识事件归属的稳定引用。自然姓名和关系称谓帮助叙事，但不能替代或改变 Actor Reference 所确定的归属。
+Frozen Activity 内标识事件归属的稳定引用；当前只区分 Agent Individual、主要关系对象与 system。自然姓名和关系称谓来自 Stable Facts，不能替代或改变 Actor Reference 所确定的归属。
 _Avoid_: display name, inferred speaker, relationship label
 
 **Daily Narrative**:

@@ -44,6 +44,25 @@ export class AgentWorkspace {
     };
   }
 
+  async loadStableFacts(): Promise<string> {
+    const source = await this.#read("facts.json");
+    let facts: unknown;
+    try {
+      facts = JSON.parse(source);
+    } catch {
+      throw new Error("Agent Workspace facts.json must contain valid JSON");
+    }
+    if (!isObject(facts)
+      || facts.version !== 1
+      || !isObject(facts.individual)
+      || !isObject(facts.human)) {
+      throw new Error(
+        "Agent Workspace facts.json must have version 1 and object sections named individual and human",
+      );
+    }
+    return source;
+  }
+
   async #read(relativePath: string): Promise<string> {
     try {
       const content = await readFile(path.join(this.root, relativePath), "utf8");
@@ -58,6 +77,10 @@ export class AgentWorkspace {
       throw error;
     }
   }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isMissingFile(error: unknown): error is NodeJS.ErrnoException {

@@ -3,6 +3,8 @@
 Status: resolved
 Type: cognitive organ
 
+> Current model Context, Stable Facts, actor attribution and test policy were corrected by [ticket 09](09-correct-life-recorder-context-and-grounding.md). This ticket preserves the original implementation step rather than describing the current Interface in isolation.
+
 ## Problem
 
 Loom 已有 Main Agent Transcript、Context Window、Agent Workspace 和只读写事实的 Tool Trace Compactor，但还没有任何会把一段实际生活写回 Workspace 的认知器官。直接复制 Xi life-recorder 会重新引入对具体姓名、展示文案、固定时区、`xi.jsonl` 和 nmem 在线状态的依赖；过度中性的自然语言又会让模型混淆是谁说了或做了什么。

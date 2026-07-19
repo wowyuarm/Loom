@@ -51,7 +51,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [06 — Compact Tool Traces Before Context Reuse](issues/06-compact-tool-traces-before-reuse.md)
 - Completed: [07 — Correct Runtime and Source Boundaries](issues/07-correct-runtime-and-source-boundaries.md)
 - Completed: [08 — Run Life Recorder from Frozen Activity Evidence](issues/08-run-life-recorder-from-frozen-activity.md)
-- Current frontier: Life Recorder 已能独立消费 Frozen Activity 并写回 Workspace。Runtime Active Segment、recorder receipt 的持久接入、Window Closure 与 Recent Activity Bridge 现在满足进入条件；下一张 ticket 应先共同收束这条生命周期，不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
+- Completed: [09 — Correct Life Recorder Context and Grounding](issues/09-correct-life-recorder-context-and-grounding.md)
+- Current frontier: Life Recorder 已使用 Stable Facts、索引驱动 Context 和受保护写入独立消费 Frozen Activity。Runtime Active Segment、recorder receipt 的持久接入、Window Closure 与 Recent Activity Bridge 现在满足进入条件；下一张 ticket 应先共同收束这条生命周期，不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
 
 ## Context Follow-ups
 

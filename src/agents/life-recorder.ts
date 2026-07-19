@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -16,36 +16,44 @@ import {
 import { Type } from "typebox";
 
 import type { JsonValue } from "../runtime/index.js";
-import { AgentWorkspace, AgentWorkspaceMaterialError } from "../workspace/agent-workspace.js";
+import { AgentWorkspace } from "../workspace/agent-workspace.js";
 
-const SYSTEM_PROMPT = `You are the Life Recorder, a first-hand recorder for one Agent Individual.
+const SYSTEM_PROMPT = `You are the Life Recorder for one Agent Individual. You are a first-hand recorder, not a long-term analyst.
 
-Your evidence is a frozen activity with structured actors and events. Use actorRef as the sole authority for who said, thought, or did something. Use natural names or relational terms when Identity, observed labels, or relationship context support them. Use a neutral term only when those materials do not provide a supported term, and always preserve the actorRef distinction.
+## Stable facts
 
-Distinguish external input, the Agent Individual's internal output, thinking, tool actions, Effects, and Delivery results. Thinking is explicitly internal evidence: never present it as another actor's words, an external fact, or an action that occurred. Record only what the evidence supports.
+The system prompt ends with the complete contents of the Agent Workspace's facts.json. It provides stable grounding about the Agent Individual, the primary human, their names, natural forms of address, identities, relationship, places, and languages. It is not evidence that an event happened and it is not a behavior instruction. If current evidence explicitly corrects an existing fact, preserve the correction instead of rewriting it to match the old fact.
+
+## Evidence and attribution
+
+Your primary evidence is one Frozen Activity: an immutable, ordered sequence of events. Use actorRef as the sole authority for who said, thought, or did something:
+- individual: the Agent Individual
+- human: the primary human
+- system: tools, Integrations, or Runtime evidence
+
+Distinguish human input, the Individual's output, internal thinking, tool actions and results, Effects, and Delivery. Thinking is internal evidence: never present it as the human's words, an external fact, or an action that occurred. Individual output is not a delivered message unless Delivery evidence says it was delivered. Record only what the evidence and any files you deliberately read support.
 
 Use read_activity until every event page has been read. Raw events are available only through that tool.
 
-Maintain two different Workspace records:
-- Daily Narrative supports near-term continuity. Call write_daily only when the complete Daily should change; provide the complete replacement text for the recording day.
+## Language fidelity
+
+Preserve quoted speech and source text in the language actually used. Never translate a quotation merely because this instruction is in English. Write surrounding narrative in the predominant language of the activity; when the activity has no clear language signal, use the Individual's preferred language from stable facts.
+
+## Workspace records
+
+Maintain two different records when the evidence warrants them:
+- Daily Narrative supports near-term continuity. Read the existing Daily when it exists, then call write_daily only when the complete Daily should change. Preserve its established voice and structure. Chronological time sections are useful but not mandatory. A summary is optional for a long day, not a required section. A candidates section is optional and should contain only explicit corrections, stable-fact candidates, meaningful changes, or observations that a later Cognitive Organ may need to examine.
 - An episode preserves a replayable scene in which something changed. Call record_episode once for each such scene, citing only eventIds from this frozen activity. Assign ordinals from zero in chronological episode order, and reuse the same ordinal for the same scene when retrying a segment.
 
-Either record may have no change. Do not perform long-term analysis, infer patterns across time, or claim that an external memory system has imported anything. You have only the three recorder tools provided in this run. Finish with a short factual confirmation after reading all activity and completing any writes.`;
+Either record may have no change. Do not force a summary, candidate, episode, or Daily update merely to produce output. Do not perform long-term analysis, infer patterns across time, update stable facts directly, or claim that an external memory system has imported anything. Finish with a short factual confirmation after reading all activity and completing any writes.`;
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
 
-export interface FrozenActivityActor {
-  actorRef: string;
-  kind: "individual" | "external" | "system";
-  observedLabel?: string;
-  relationshipContext?: string;
-}
-
 export interface FrozenActivityEvent {
   eventId: string;
   at: string;
-  actorRef: string;
+  actorRef: "individual" | "human" | "system";
   kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
   content: JsonValue;
 }
@@ -56,7 +64,6 @@ export interface FrozenActivity {
   recordingDay: string;
   openedAt: string;
   closedAt: string;
-  actors: FrozenActivityActor[];
   events: FrozenActivityEvent[];
   transcriptAnchors: JsonValue[];
 }
@@ -88,13 +95,6 @@ export interface PiLifeRecorderOptions {
 
 export interface LifeRecorder {
   record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
-}
-
-interface RecorderMaterials {
-  identity: string;
-  longTermMemory: string | "missing";
-  daily: string | "missing";
-  episodes: Array<{ path: string; content: string }> | "missing";
 }
 
 interface FileSnapshot {
@@ -148,7 +148,7 @@ class PiLifeRecorder implements LifeRecorder {
     const runId = this.options.nextRunId?.() ?? randomUUID();
     const recordedAt = (this.options.now?.() ?? new Date()).toISOString();
     const dailyPath = `daily/${activity.recordingDay}.md`;
-    const materials = await loadRecorderMaterials(this.options.agentWorkspace, activity.recordingDay);
+    const stableFacts = await this.options.agentWorkspace.loadStableFacts();
     const journal = new WorkspaceWriteJournal(this.options.agentWorkspace.root);
     const readEventIndexes = new Set<number>();
     const eventIndexById = new Map(activity.events.map((event, index) => [event.eventId, index]));
@@ -254,7 +254,7 @@ class PiLifeRecorder implements LifeRecorder {
     ];
 
     try {
-      await this.#runSession(activity, runId, materials, tools);
+      await this.#runSession(activity, runId, dailyPath, stableFacts, tools);
       if (readEventIndexes.size !== activity.events.length) {
         throw new Error("Life Recorder did not read all frozen activity events");
       }
@@ -275,7 +275,8 @@ class PiLifeRecorder implements LifeRecorder {
   async #runSession(
     activity: FrozenActivity,
     runId: string,
-    materials: RecorderMaterials,
+    dailyPath: string,
+    stableFacts: string,
     tools: ToolDefinition[],
   ): Promise<void> {
     const transcriptFile = path.join(this.options.transcriptDirectory, `${runId}.jsonl`);
@@ -298,7 +299,13 @@ class PiLifeRecorder implements LifeRecorder {
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: () => SYSTEM_PROMPT,
+      systemPromptOverride: () => [
+        SYSTEM_PROMPT,
+        "",
+        "<stable_facts>",
+        stableFacts.trim(),
+        "</stable_facts>",
+      ].join("\n"),
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
@@ -307,7 +314,7 @@ class PiLifeRecorder implements LifeRecorder {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
-      tools: tools.map(tool => tool.name),
+      tools: ["read", "ls", ...tools.map(tool => tool.name)],
       customTools: tools,
       resourceLoader,
       sessionManager,
@@ -316,21 +323,7 @@ class PiLifeRecorder implements LifeRecorder {
     try {
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(JSON.stringify({
-        type: "loom.life-recorder.run",
-        version: 1,
-        runId,
-        activity: {
-          segmentId: activity.segmentId,
-          recordingDay: activity.recordingDay,
-          openedAt: activity.openedAt,
-          closedAt: activity.closedAt,
-          actors: activity.actors,
-          transcriptAnchors: activity.transcriptAnchors,
-          eventCount: activity.events.length,
-        },
-        materials,
-      }), { expandPromptTemplates: false });
+      await session.prompt(buildRunPrompt(activity, runId, dailyPath), { expandPromptTemplates: false });
       assertSuccessfulCompletion(session.messages);
     } finally {
       session.dispose();
@@ -364,43 +357,29 @@ function assertSuccessfulCompletion(messages: AgentMessage[]): void {
   }
 }
 
-async function loadRecorderMaterials(workspace: AgentWorkspace, day: string): Promise<RecorderMaterials> {
-  const identity = await loadRequiredIdentity(workspace);
-  const [longTermMemory, daily, episodes] = await Promise.all([
-    readOptionalText(path.join(workspace.root, "memory.md")),
-    readOptionalText(path.join(workspace.root, "daily", `${day}.md`)),
-    loadEpisodeMaterials(workspace.root, day),
-  ]);
-  return {
-    identity,
-    longTermMemory: longTermMemory ?? "missing",
-    daily: daily ?? "missing",
-    episodes: episodes.length > 0 ? episodes : "missing",
-  };
-}
-
-async function loadRequiredIdentity(workspace: AgentWorkspace): Promise<string> {
-  const identityPath = path.join(workspace.root, "identity.md");
-  const identity = await readOptionalText(identityPath);
-  if (identity === undefined) throw new AgentWorkspaceMaterialError("identity.md", "missing");
-  if (identity.trim().length === 0) throw new AgentWorkspaceMaterialError("identity.md", "empty");
-  return identity;
-}
-
-async function loadEpisodeMaterials(root: string, day: string): Promise<Array<{ path: string; content: string }>> {
-  const directory = path.join(root, "episodes", day);
-  let entries;
-  try {
-    entries = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    if (isMissingFile(error)) return [];
-    throw error;
-  }
-  const names = entries.filter(entry => entry.isFile() && entry.name.endsWith(".md")).map(entry => entry.name).sort();
-  return Promise.all(names.map(async name => ({
-    path: `episodes/${day}/${name}`,
-    content: await readFile(path.join(directory, name), "utf8"),
-  })));
+function buildRunPrompt(activity: FrozenActivity, runId: string, dailyPath: string): string {
+  return [
+    "Life Recorder run",
+    "",
+    "## Run",
+    `- Run ID: ${runId}`,
+    `- Recording day: ${activity.recordingDay}`,
+    "",
+    "## Frozen Activity",
+    `- Activity ID: ${activity.segmentId}`,
+    `- Time range: ${activity.openedAt} to ${activity.closedAt}`,
+    `- Event count: ${activity.events.length}`,
+    `- Transcript anchors: ${JSON.stringify(activity.transcriptAnchors)}`,
+    "- Read the complete immutable evidence with read_activity. Continue from nextOffset until it is null.",
+    "",
+    "## Workspace index",
+    `- Current Daily: ${dailyPath}`,
+    "  This is the existing narrative for the recording day. Read it when present before replacing it; a missing file means the day has no Daily yet.",
+    "- Paths mentioned by activity tool events are entry points to work performed during the activity. Read only those needed to understand what actually changed.",
+    "- Long-term Memory and existing episodes are not evidence for this recording run; do not seek them out.",
+    "",
+    "Read the evidence, inspect indexed Workspace material only when needed, then update the Daily and record episodes only when warranted.",
+  ].join("\n");
 }
 
 function validateActivity(activity: FrozenActivity): void {
@@ -409,17 +388,12 @@ function validateActivity(activity: FrozenActivity): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(activity.recordingDay)) throw new Error("Invalid recordingDay");
   validateIsoTimestamp(activity.openedAt, "openedAt");
   validateIsoTimestamp(activity.closedAt, "closedAt");
-  const actorRefs = new Set<string>();
-  for (const actor of activity.actors) {
-    const actorRef = requireNonBlank(actor.actorRef, "actorRef");
-    if (actorRefs.has(actorRef)) throw new Error(`Duplicate actorRef: ${actorRef}`);
-    actorRefs.add(actorRef);
-  }
+  const actorRefs = new Set(["individual", "human", "system"]);
   const eventIds = new Set<string>();
   for (const event of activity.events) {
     const eventId = requireNonBlank(event.eventId, "eventId");
     if (eventIds.has(eventId)) throw new Error(`Duplicate eventId: ${eventId}`);
-    if (!actorRefs.has(event.actorRef)) throw new Error(`Unknown actorRef in frozen activity: ${event.actorRef}`);
+    if (!actorRefs.has(event.actorRef)) throw new Error(`Unsupported actorRef in frozen activity: ${event.actorRef}`);
     validateIsoTimestamp(event.at, `event ${eventId} timestamp`);
     eventIds.add(eventId);
   }
@@ -465,15 +439,6 @@ function formatEpisode(episode: {
     episode.scene.trim(),
     "",
   ].join("\n");
-}
-
-async function readOptionalText(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
 }
 
 async function readOptionalBuffer(file: string): Promise<Buffer | null> {
