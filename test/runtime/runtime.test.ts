@@ -11,6 +11,7 @@ import {
   type EffectRequest,
   type Integration,
   type RunningExecution,
+  type TranscriptAnchor,
   type TurnControl,
   type TurnRequest,
 } from "../../src/runtime/index.js";
@@ -37,12 +38,35 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   }
 }
 
+function contextResult(request: TurnRequest, transcriptAnchor: TranscriptAnchor) {
+  return {
+    contextWindow: {
+      version: 1 as const,
+      id: request.contextWindow?.id ?? "window-test",
+      frozenSeed: request.contextWindow?.frozenSeed ?? [],
+      committedTrace: request.contextWindow?.committedTrace ?? [],
+      transcriptAnchor,
+    },
+    contextPlan: {
+      version: 1,
+      budget: {},
+      decisions: [],
+    },
+  };
+}
+
 class HeldExecution implements AgentExecution {
   readonly started = deferred<TurnRequest>();
   readonly finished = deferred<Awaited<RunningExecution["result"]>>();
   readonly steered: TurnRequest["inputs"] = [];
 
   start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.prepareContextWindow(request.contextWindow ?? {
+      version: 1,
+      id: "window-test",
+      frozenSeed: [],
+      committedTrace: [],
+    });
     control.includeInput(request.inputs[0]!.id);
     this.started.resolve(request);
     return {
@@ -64,6 +88,7 @@ class HeldExecution implements AgentExecution {
         transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
       })),
       transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
+      ...contextResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -150,6 +175,7 @@ class IncludedWithoutEvidenceExecution extends HeldExecution {
         transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
       })),
       transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
+      ...contextResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -178,6 +204,12 @@ class HeldIntegration implements Integration {
 
 const completingExecution: AgentExecution = {
   start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.prepareContextWindow(request.contextWindow ?? {
+      version: 1,
+      id: "window-test",
+      frozenSeed: [],
+      committedTrace: [],
+    });
     control.includeInput(request.inputs[0]!.id);
     return {
       result: Promise.resolve({
@@ -187,6 +219,7 @@ const completingExecution: AgentExecution = {
           transcriptAnchor: { sessionId: "session-1", entryId: `input-${input.id}` },
         })),
         transcriptAnchor: { sessionId: "session-1", entryId: `entry-${request.turnId}` },
+        ...contextResult(request, { sessionId: "session-1", entryId: `entry-${request.turnId}` }),
       }),
       steer: async input => control.includeInput(input.id),
       abort: async () => {},
@@ -249,6 +282,195 @@ test("completes one pending input through a main Agent Turn", async t => {
     sessionId: "session-1",
     entryId: `entry-${status.turns[0]?.id}`,
   });
+});
+
+test("restores the committed Context Window for the next Turn after restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-"));
+  const observed: TurnRequest[] = [];
+  const contextExecution: AgentExecution = {
+    start(request, control) {
+      observed.push(request);
+      control.prepareContextWindow(request.contextWindow ?? {
+        version: 1,
+        id: "window-1",
+        frozenSeed: [{ role: "user", content: "frozen" }],
+        committedTrace: [],
+      });
+      control.includeInput(request.inputs[0]!.id);
+      const transcriptAnchor = {
+        sessionId: "session-context",
+        entryId: `entry-${request.turnId}`,
+      };
+      return {
+        result: Promise.resolve({
+          outcome: "completed",
+          inputAnchors: request.inputs.map(input => ({
+            inputId: input.id,
+            transcriptAnchor: {
+              sessionId: "session-context",
+              entryId: `input-${input.id}`,
+            },
+          })),
+          transcriptAnchor,
+          contextWindow: {
+            version: 1,
+            id: request.contextWindow?.id ?? "window-1",
+            frozenSeed: request.contextWindow?.frozenSeed ?? [{ role: "user", content: "frozen" }],
+            committedTrace: [
+              ...(request.contextWindow?.committedTrace ?? []),
+              { role: "user", content: request.inputs[0]!.payload },
+            ],
+            transcriptAnchor,
+          },
+          contextPlan: {
+            version: 1,
+            budget: { selectedMaterialTokens: request.inputs.length },
+            decisions: [{ unitId: "current:pending", action: "kept" }],
+          },
+        }),
+        steer: async input => control.includeInput(input.id),
+        abort: async () => {},
+      };
+    },
+  };
+
+  const first = openRuntime({ root, execution: contextExecution });
+  await first.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  assert.deepEqual(await first.advance(), { disposition: "turn_completed" });
+  assert.deepEqual(first.status().turns[0]?.contextPlan, {
+    version: 1,
+    budget: { selectedMaterialTokens: 1 },
+    decisions: [{ unitId: "current:pending", action: "kept" }],
+  });
+  first.close();
+
+  const second = openRuntime({ root, execution: contextExecution });
+  t.after(() => second.close());
+  await second.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  assert.deepEqual(await second.advance(), { disposition: "turn_completed" });
+
+  assert.deepEqual(observed[1]?.contextWindow, {
+    version: 1,
+    id: "window-1",
+    frozenSeed: [{ role: "user", content: "frozen" }],
+    committedTrace: [{ role: "user", content: { text: "first" } }],
+    transcriptAnchor: observed[0]?.contextWindow?.transcriptAnchor ?? {
+      sessionId: "session-context",
+      entryId: observed[0] ? `entry-${observed[0].turnId}` : "missing",
+    },
+  });
+});
+
+test("keeps the prepared window seed when its first Turn fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-seed-"));
+  const failingExecution: AgentExecution = {
+    start(request, control) {
+      control.prepareContextWindow({
+        version: 1,
+        id: "window-prepared",
+        frozenSeed: [{ role: "user", content: "original seed" }],
+        committedTrace: [],
+      });
+      control.includeInput(request.inputs[0]!.id);
+      return {
+        result: Promise.reject(new Error("provider failed")),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const failed = openRuntime({ root, execution: failingExecution });
+  await failed.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  await assert.rejects(failed.advance(), /provider failed/);
+  failed.close();
+
+  const started = deferred<TurnRequest>();
+  const recoveringExecution: AgentExecution = {
+    start(request) {
+      started.resolve(request);
+      return {
+        result: new Promise(() => {}),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const recovered = openRuntime({ root, execution: recoveringExecution });
+  t.after(() => recovered.close());
+  const advance = recovered.advance();
+  const request = await started.promise;
+
+  assert.deepEqual(request.contextWindow, {
+    version: 1,
+    id: "window-prepared",
+    frozenSeed: [{ role: "user", content: "original seed" }],
+    committedTrace: [],
+  });
+
+  void advance;
+});
+
+test("rejects a completed Turn that replaces its prepared Context Window", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-context-replace-"));
+  const execution: AgentExecution = {
+    start(request, control) {
+      control.prepareContextWindow({
+        version: 1,
+        id: "window-prepared",
+        frozenSeed: [{ role: "user", content: "original seed" }],
+        committedTrace: [],
+      });
+      control.includeInput(request.inputs[0]!.id);
+      const transcriptAnchor = { sessionId: "session-context", entryId: "entry-complete" };
+      return {
+        result: Promise.resolve({
+          outcome: "completed",
+          inputAnchors: [{
+            inputId: request.inputs[0]!.id,
+            transcriptAnchor: { sessionId: "session-context", entryId: "entry-input" },
+          }],
+          transcriptAnchor,
+          contextWindow: {
+            version: 1,
+            id: "window-replaced",
+            frozenSeed: [{ role: "user", content: "changed seed" }],
+            committedTrace: [],
+            transcriptAnchor,
+          },
+          contextPlan: { version: 1, budget: {}, decisions: [] },
+        }),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const runtime = openRuntime({ root, execution });
+  t.after(() => runtime.close());
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+
+  await assert.rejects(runtime.advance(), /prepared Context Window/i);
+  assert.equal(runtime.status().turns[0]?.status, "failed");
+  assert.equal(runtime.status().inputs[0]?.status, "pending");
 });
 
 test("keeps an initial Input pending until Agent Execution starts its user message", async t => {

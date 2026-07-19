@@ -75,6 +75,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     }],
   }, {
     includeInput: inputId => included.push(inputId),
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -129,6 +130,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     }],
   }, {
     includeInput: () => {},
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -142,6 +144,175 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   assert.equal(reopenedEntries.filter(entry => entry.type === "custom" && entry.customType === "loom.input.v1").length, 2);
   assert.equal(secondResult.inputAnchors[0]?.inputId, "input-2");
   assert.equal(secondResult.transcriptAnchor.sessionId, result.transcriptAnchor.sessionId);
+});
+
+test("continues from the last committed Context after a failed transcript branch", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-branch-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("committed reply"),
+    fauxAssistantMessage("failed reply", {
+      stopReason: "error",
+      errorMessage: "provider failure",
+    }),
+    context => {
+      const text = context.messages.map(message => JSON.stringify(message)).join("\n");
+      assert.match(text, /committed input/);
+      assert.match(text, /committed reply/);
+      assert.doesNotMatch(text, /failed input/);
+      assert.doesNotMatch(text, /failed reply/);
+      assert.match(text, /recovered input/);
+      return fauxAssistantMessage("recovered reply");
+    },
+  ]);
+
+  const execution = await createPiAgentExecution({
+    cwd: root,
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    systemPrompt: "You are the primary Agent.",
+  });
+  t.after(() => execution.close());
+  const control = {
+    includeInput: () => {},
+    prepareContextWindow: () => {},
+    prepareEffect: () => {
+      throw new Error("This test has no Effects");
+    },
+  };
+
+  const committed = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "committed input")],
+  }, control).result;
+
+  await assert.rejects(execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "failed input")],
+    contextWindow: committed.contextWindow,
+  }, control).result, /provider failure/);
+
+  const recovered = await execution.start({
+    turnId: "turn-3",
+    leaseToken: 3,
+    inputs: [executionInput("input-3", "recovered input")],
+    contextWindow: committed.contextWindow,
+  }, control).result;
+
+  assert.equal(recovered.contextWindow.committedTrace.length, 4);
+  assert.deepEqual(recovered.contextWindow.transcriptAnchor, recovered.transcriptAnchor);
+});
+
+test("refreshes Turn-live material while keeping the window-frozen seed", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-materials-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  let revision = 0;
+  faux.setResponses([
+    context => {
+      const text = context.messages.map(message => JSON.stringify(message)).join("\n");
+      assert.match(text, /live-1/);
+      assert.match(text, /frozen-1/);
+      assert.equal(text.match(/first input/g)?.length, 1);
+      return fauxAssistantMessage("first reply");
+    },
+    context => {
+      const text = context.messages.map(message => JSON.stringify(message)).join("\n");
+      assert.match(text, /live-2/);
+      assert.doesNotMatch(text, /live-1/);
+      assert.match(text, /frozen-1/);
+      assert.doesNotMatch(text, /frozen-2/);
+      assert.match(text, /first input/);
+      assert.match(text, /first reply/);
+      assert.equal(text.match(/second input/g)?.length, 1);
+      return fauxAssistantMessage("second reply");
+    },
+  ]);
+
+  const execution = await createPiAgentExecution({
+    cwd: root,
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    systemPrompt: "You are the primary Agent.",
+    loadContextMaterials: async () => {
+      revision += 1;
+      return {
+        turnLive: [contextMessage(`live-${revision}`)],
+        windowFrozen: [contextMessage(`frozen-${revision}`)],
+      };
+    },
+  });
+  t.after(() => execution.close());
+  const control = {
+    includeInput: () => {},
+    prepareContextWindow: () => {},
+    prepareEffect: () => {
+      throw new Error("This test has no Effects");
+    },
+  };
+
+  const first = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "first input")],
+  }, control).result;
+  const second = await execution.start({
+    turnId: "turn-2",
+    leaseToken: 2,
+    inputs: [executionInput("input-2", "second input")],
+    contextWindow: first.contextWindow,
+  }, control).result;
+
+  assert.deepEqual(first.contextWindow.frozenSeed, [contextMessage("frozen-1")]);
+  assert.deepEqual(second.contextWindow.frozenSeed, first.contextWindow.frozenSeed);
+  assert.equal(revision, 2);
+});
+
+test("rejects an over-limit current Input before calling the provider", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-limit-"));
+  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([fauxAssistantMessage("must not run")]);
+  const execution = await createPiAgentExecution({
+    cwd: root,
+    agentDir: path.join(root, "agent"),
+    transcriptFile,
+    modelRuntime,
+    model,
+    systemPrompt: "primary Agent",
+    contextBudget: {
+      hardContext: 40,
+      normalMaterial: 20,
+      outputReserve: 10,
+      safetyMargin: 0,
+      toolTraceReservation: 20,
+    },
+  });
+  t.after(() => execution.close());
+  const included: string[] = [];
+
+  const running = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "x".repeat(1_000))],
+  }, {
+    includeInput: inputId => included.push(inputId),
+    prepareContextWindow: () => {},
+    prepareEffect: () => {
+      throw new Error("This test has no Effects");
+    },
+  });
+
+  await assert.rejects(running.result, /required current Input/i);
+  assert.equal(faux.state.callCount, 0);
+  assert.deepEqual(included, []);
 });
 
 test("rejects an invalid non-empty transcript without changing it", async () => {
@@ -161,6 +332,24 @@ test("rejects an invalid non-empty transcript without changing it", async () => 
   }), /valid pi session/i);
   assert.equal(await readFile(transcriptFile, "utf8"), original);
 });
+
+function executionInput(id: string, text: string) {
+  return {
+    id,
+    kind: "interaction" as const,
+    payload: { text },
+    occurredAt: "2026-07-19T00:00:00.000Z",
+    inclusionPosition: 1,
+  };
+}
+
+function contextMessage(text: string) {
+  return {
+    role: "user" as const,
+    content: [{ type: "text" as const, text }],
+    timestamp: 0,
+  };
+}
 
 test("does not include or annotate a steering Input before Pi starts its user message", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-steering-"));
@@ -199,6 +388,7 @@ test("does not include or annotate a steering Input before Pi starts its user me
     }],
   }, {
     includeInput: inputId => included.push(inputId),
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -277,6 +467,7 @@ test("does not complete or include queued steering after abort", async t => {
     }],
   }, {
     includeInput: inputId => included.push(inputId),
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -338,6 +529,7 @@ test("does not complete a Turn after Pi ends with an error", async t => {
     }],
   }, {
     includeInput: () => {},
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -387,6 +579,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
     }],
   }, {
     includeInput: () => {},
+    prepareContextWindow: () => {},
     prepareEffect: () => {
       throw new Error("The lookup tool is read-only");
     },

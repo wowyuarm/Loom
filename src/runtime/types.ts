@@ -14,6 +14,14 @@ export interface TranscriptAnchor {
   entryId: string;
 }
 
+export interface ContextWindowState {
+  version: 1;
+  id: string;
+  frozenSeed: JsonValue[];
+  committedTrace: JsonValue[];
+  transcriptAnchor?: TranscriptAnchor;
+}
+
 export interface ExecutionInput {
   id: string;
   kind: InputKind;
@@ -26,6 +34,7 @@ export interface TurnRequest {
   turnId: string;
   leaseToken: number;
   inputs: ExecutionInput[];
+  contextWindow?: ContextWindowState;
 }
 
 export interface ExecutionResult {
@@ -35,6 +44,8 @@ export interface ExecutionResult {
     transcriptAnchor: TranscriptAnchor;
   }>;
   transcriptAnchor: TranscriptAnchor;
+  contextWindow: ContextWindowState;
+  contextPlan: JsonValue;
 }
 
 export interface EffectRequest {
@@ -49,6 +60,7 @@ export interface EffectReceipt {
 
 export interface TurnControl {
   includeInput(inputId: string): void;
+  prepareContextWindow(window: ContextWindowState): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
 }
 
@@ -98,6 +110,7 @@ export interface RuntimeTurnStatus {
   status: "running" | "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
   inputIds: string[];
   transcriptAnchor?: TranscriptAnchor;
+  contextPlan?: JsonValue;
 }
 
 export interface RuntimeEffectStatus {

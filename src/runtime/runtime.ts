@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { initializeRuntimeSchema } from "./schema.js";
 import type {
   AcceptedInput,
   AdvanceResult,
   AgentExecution,
+  ContextWindowState,
   DeliveryAttemptRequest,
   DeliveryObservation,
   EffectReceipt,
@@ -43,6 +45,7 @@ interface TurnRow {
   status: RuntimeTurnStatus["status"];
   fencing_token: number;
   transcript_anchor_json: string | null;
+  context_plan_json: string | null;
 }
 
 interface EffectRow {
@@ -177,8 +180,14 @@ class SqliteRuntime implements Runtime {
         turnId: claimed.turnId,
         leaseToken: claimed.fencingToken,
         inputs: [claimed.input],
+        ...(claimed.contextWindow ? { contextWindow: claimed.contextWindow } : {}),
       }, {
         includeInput: inputId => this.#includeInput(claimed.turnId, claimed.fencingToken, inputId),
+        prepareContextWindow: window => this.#prepareContextWindow(
+          claimed.turnId,
+          claimed.fencingToken,
+          window,
+        ),
         prepareEffect: effect => this.#prepareEffect(claimed.turnId, claimed.fencingToken, effect),
       });
       const active = {
@@ -211,7 +220,7 @@ class SqliteRuntime implements Runtime {
       ORDER BY accepted_at, id
     `).all() as unknown as InputRow[];
     const turnRows = this.#database.prepare(`
-      SELECT id, status, fencing_token, transcript_anchor_json
+      SELECT id, status, fencing_token, transcript_anchor_json, context_plan_json
       FROM turns
       ORDER BY started_at, id
     `).all() as unknown as TurnRow[];
@@ -248,6 +257,9 @@ class SqliteRuntime implements Runtime {
           inputIds: inputRows.map(input => input.input_id),
           ...(row.transcript_anchor_json
             ? { transcriptAnchor: JSON.parse(row.transcript_anchor_json) as TranscriptAnchor }
+            : {}),
+          ...(row.context_plan_json
+            ? { contextPlan: JSON.parse(row.context_plan_json) as JsonValue }
             : {}),
         };
       }),
@@ -336,7 +348,12 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #claimNextInput(): { turnId: string; fencingToken: number; input: ExecutionInput } | undefined {
+  #claimNextInput(): {
+    turnId: string;
+    fencingToken: number;
+    input: ExecutionInput;
+    contextWindow?: ContextWindowState;
+  } | undefined {
     return this.#transaction(() => {
       if (this.#hasRunningTurn()) return undefined;
       const input = this.#database.prepare(`
@@ -384,6 +401,7 @@ class SqliteRuntime implements Runtime {
           occurredAt: input.occurred_at,
           inclusionPosition: 1,
         },
+        ...this.#readContextWindow(),
       };
     });
   }
@@ -421,17 +439,42 @@ class SqliteRuntime implements Runtime {
       `).run(turnId);
       const changed = this.#database.prepare(`
         UPDATE turns
-        SET status = 'completed', outcome = ?, ended_at = ?, transcript_anchor_json = ?
+        SET status = 'completed', outcome = ?, ended_at = ?, transcript_anchor_json = ?, context_plan_json = ?
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).run(
         result.outcome,
         now.toISOString(),
         JSON.stringify(result.transcriptAnchor),
+        JSON.stringify(result.contextPlan),
         turnId,
         fencingToken,
         this.#ownerId,
       );
       if (changed.changes !== 1) throw new Error(`Turn ${turnId} no longer accepts writes from lease ${fencingToken}`);
+      const preparedWindow = this.#readContextWindow().contextWindow;
+      if (!preparedWindow) {
+        throw new Error(`Turn ${turnId} did not prepare a Context Window before completion`);
+      }
+      this.#validateCompletedContextWindow(preparedWindow, result.contextWindow, result.transcriptAnchor);
+      const existing = this.#database.prepare(`
+        SELECT 1 FROM active_context_window WHERE singleton = 1
+      `).get();
+      this.#database.prepare(`
+        INSERT INTO active_context_window (singleton, state_json, updated_at)
+        VALUES (1, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          state_json = excluded.state_json,
+          updated_at = excluded.updated_at
+      `).run(JSON.stringify(result.contextWindow), now.toISOString());
+      this.#recordTransition(
+        "context_window",
+        result.contextWindow.id,
+        existing ? "active" : null,
+        "active",
+        "turn_completed",
+        now,
+        fencingToken,
+      );
       const activeInputs = this.#database.prepare(`
         SELECT id FROM inputs WHERE active_turn_id = ? AND status = 'active'
       `).all(turnId) as unknown as Array<{ id: string }>;
@@ -443,6 +486,88 @@ class SqliteRuntime implements Runtime {
       for (const input of activeInputs) {
         this.#recordTransition("input", input.id, "active", "consumed", "turn_completed", now, fencingToken);
       }
+    });
+  }
+
+  #readContextWindow(): { contextWindow?: ContextWindowState } {
+    const row = this.#database.prepare(`
+      SELECT state_json FROM active_context_window WHERE singleton = 1
+    `).get() as unknown as { state_json: string } | undefined;
+    if (!row) return {};
+    const contextWindow = JSON.parse(row.state_json) as ContextWindowState;
+    this.#validateContextWindow(contextWindow);
+    return { contextWindow };
+  }
+
+  #validateContextWindow(window: ContextWindowState): void {
+    if (window.version !== 1 || !window.id || !Array.isArray(window.frozenSeed) || !Array.isArray(window.committedTrace)) {
+      throw new Error("Runtime received an invalid Context Window");
+    }
+    if (window.transcriptAnchor
+      && (!window.transcriptAnchor.sessionId || !window.transcriptAnchor.entryId)) {
+      throw new Error(`Context Window ${window.id} has an invalid Transcript Anchor`);
+    }
+  }
+
+  #validateCompletedContextWindow(
+    prepared: ContextWindowState,
+    completed: ContextWindowState,
+    transcriptAnchor: TranscriptAnchor,
+  ): void {
+    this.#validateContextWindow(completed);
+    const preservesPreparedState = completed.id === prepared.id
+      && isDeepStrictEqual(completed.frozenSeed, prepared.frozenSeed)
+      && completed.committedTrace.length >= prepared.committedTrace.length
+      && isDeepStrictEqual(
+        completed.committedTrace.slice(0, prepared.committedTrace.length),
+        prepared.committedTrace,
+      );
+    if (!preservesPreparedState) {
+      throw new Error(`Completed Turn cannot replace prepared Context Window ${prepared.id}`);
+    }
+    if (completed.transcriptAnchor?.sessionId !== transcriptAnchor.sessionId
+      || completed.transcriptAnchor.entryId !== transcriptAnchor.entryId
+      || (prepared.transcriptAnchor
+        && prepared.transcriptAnchor.sessionId !== transcriptAnchor.sessionId)) {
+      throw new Error(`Context Window ${completed.id} requires the completed Turn Transcript Anchor`);
+    }
+  }
+
+  #prepareContextWindow(
+    turnId: string,
+    fencingToken: number,
+    window: ContextWindowState,
+  ): void {
+    this.#validateContextWindow(window);
+    this.#transaction(() => {
+      const turn = this.#database.prepare(`
+        SELECT id FROM turns
+        WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+      `).get(turnId, fencingToken, this.#ownerId);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Context from lease ${fencingToken}`);
+
+      const current = this.#readContextWindow().contextWindow;
+      if (current) {
+        if (!isDeepStrictEqual(current, window)) {
+          throw new Error(`Turn ${turnId} cannot replace active Context Window ${current.id} before completion`);
+        }
+        return;
+      }
+
+      const now = this.#now();
+      this.#database.prepare(`
+        INSERT INTO active_context_window (singleton, state_json, updated_at)
+        VALUES (1, ?, ?)
+      `).run(JSON.stringify(window), now.toISOString());
+      this.#recordTransition(
+        "context_window",
+        window.id,
+        null,
+        "active",
+        "turn_prepared",
+        now,
+        fencingToken,
+      );
     });
   }
 
