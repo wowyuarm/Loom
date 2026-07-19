@@ -52,7 +52,9 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [07 — Correct Runtime and Source Boundaries](issues/07-correct-runtime-and-source-boundaries.md)
 - Completed: [08 — Run Life Recorder from Frozen Activity Evidence](issues/08-run-life-recorder-from-frozen-activity.md)
 - Completed: [09 — Correct Life Recorder Context and Grounding](issues/09-correct-life-recorder-context-and-grounding.md)
-- Current frontier: Life Recorder 已使用 Stable Facts、索引驱动 Context 和受保护写入独立消费 Frozen Activity。Runtime Active Segment、recorder receipt 的持久接入、Window Closure 与 Recent Activity Bridge 现在满足进入条件；下一张 ticket 应先共同收束这条生命周期，不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
+- Completed: [10 — Define Replayable Episodes and the Life Recorder Method](issues/10-define-replayable-episodes-and-recorder-method.md)
+- Current frontier: Life Recorder 的 Workspace 原生 Episode、Daily candidates、完整工作方法、索引驱动 Context 和受保护写入已经收束。下一张 ticket 应共同收束 Runtime Active Segment、Frozen Activity、持久 Life Recorder Receipt、失败重试、Window Closure 与 Recent Activity Bridge；不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
+- 已确认的失败边界：Recorder 本轮失败时回滚 Daily/Episode 且不产生 Receipt；Runtime 必须保留同一份 Frozen Activity 为 pending，之后重试，不能把回滚解释为 Activity 已被丢弃。当前代码尚未接入这条 Runtime 生命周期。
 
 ## Context Follow-ups
 
