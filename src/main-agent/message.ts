@@ -26,28 +26,33 @@ export function createMessageTool(options: {
     name: "message",
     label: "Message",
     description: [
-      "Send text through the Runtime Instance's configured Interaction Route, or explicitly end without sending.",
-      "A successful send means the Harness durably accepted the outbound Effect; it does not mean Delivery succeeded.",
+      "Use message to make text visible to the human through the configured Interaction Route, or to let the current interaction end naturally.",
+      "Assistant output outside this tool is private and is not delivered.",
+      "send creates one durable outbound Effect. Tool success means the Harness accepted it; it does not mean Delivery succeeded or the human received it.",
+      "Call message more than once when several separate messages are natural.",
+      "send ends the Turn by default. Use after_send=continue when another message, tool action, or further work should follow in the same Turn.",
+      "no_reply creates no outbound Effect and ends the Turn. It means the current interaction can naturally stop without forcing another response.",
+      "A proactive Turn that simply lets an opportunity pass does not need to call no_reply.",
     ].join(" "),
     parameters: Type.Object({
       action: Type.Optional(Type.Union([
         Type.Literal("send"),
         Type.Literal("no_reply"),
       ], {
-        description: "send creates an outbound Effect; no_reply ends without an outbound Effect.",
+        description: "send creates an outbound Effect; no_reply lets the current interaction end naturally without one.",
         default: "send",
       })),
       text: Type.Optional(Type.String({
-        description: "Text to send. Required and non-blank for send; omitted for no_reply.",
+        description: "Text to make visible to the human. Required and non-blank for send; omitted for no_reply.",
       })),
       reason: Type.Optional(Type.String({
-        description: "Optional private reason for no_reply. It is not delivered.",
+        description: "Optional private reason for no_reply. The human does not receive it.",
       })),
       after_send: Type.Optional(Type.Union([
         Type.Literal("end_turn"),
         Type.Literal("continue"),
       ], {
-        description: "End after this send, or continue the same Turn for more work.",
+        description: "End after this send, or continue the same Turn for another message, tool action, or further work.",
         default: "end_turn",
       })),
     }),

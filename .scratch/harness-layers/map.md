@@ -56,7 +56,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [11 — Close Activity without Blocking Continuity](issues/11-close-activity-lifecycle.md)。Runtime 已持久连接 Active Segment、Frozen Activity、successor Context、pending Life Recorder 与 Receipt，并建立 Workspace 受限 `read` / `ls`。durable freeze 允许后继 Input；器官运行本身不进入 lived Activity。其最初按 pending 状态选择 bridge 的做法已由 Ticket 12 修正。
 - Completed: [12 — Bound the Recent Activity Bridge](issues/12-bound-recent-activity-bridge.md)。Recent Activity 与 Recorder 队列已解耦；successor 固定最近四段紧凑 bridge，普通工具 pair 共享 1K 额度、保留 200 字预览，并通过现有 `expand_tool_result` 读取完整证据。
 - Completed: [13 — Bind Main Agent Message Decisions](issues/13-bind-main-agent-message-decisions.md)。Main Agent 在装配默认 Interaction Route 时获得通用 `message`；`send` 先形成持久 Effect，`no_reply` 形成明确 Turn outcome，成功的 Harness terminal tool result 可作为已验证 Transcript 末尾。
-- Next selection: 设计 Orientation 并闭合 `Orientation -> Opportunity -> Main Agent` 主动链路。Orientation 应通过专用只读工具检查近期 Frozen Activity，并按需探索 Workspace；最终 system prompt、首轮 run Context、工具说明和 Main Agent 所见 Opportunity 文本在实现前共同确认。暂不预建通用 scheduler、Configuration 或 nmem Integration。
+- Completed: [14 — Form Proactive Opportunities](issues/14-form-proactive-opportunities.md)。Orientation 通过隔离 Pi session、Stable Facts、Workspace 受限读取和专用 Activity 分页形成 Opportunity 或 none；Runtime 只在持续空闲时原子接纳，主动 Turn 的静默、私活、message、途中来信和失败前工具活动均已闭合到 Active Segment / Frozen Activity 生命周期。
 
 ## Context Follow-ups
 

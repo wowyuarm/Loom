@@ -82,6 +82,14 @@ _Avoid_: individual capability, relationship material, executor abstraction
 由 Loom 内置并版本化维护的专职能力。它的职责、方法、工具面、触发条件和保护规则由 Harness 定义。
 _Avoid_: optional plugin, workspace-defined agent, self-evolving organ
 
+**Orientation**:
+在 Runtime 空闲时探索近期 Activity、Agent Workspace 与动作空间，并为 Main Agent 提供一个可能关注点的 Cognitive Organ。它不是 gate、planner、任务分发器或 Main Agent 的替代判断者；没有真实牵引时可以不形成 Opportunity。
+_Avoid_: scheduler, background agent, task planner, proactive gate
+
+**Opportunity**:
+Orientation 结果经 Runtime 原子确认仍然空闲后形成的一种 Input。它不是人类来信或任务，可以被 Main Agent 放下、转化为私人活动或通过 Effect 走向外部行动。
+_Avoid_: human message, scheduled task, orientation result, mandatory action
+
 ## Cognitive Recording
 
 **Stable Facts**:

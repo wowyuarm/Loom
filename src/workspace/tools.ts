@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import path from "node:path";
 
 import {
+  createGrepToolDefinition,
   createLsToolDefinition,
   createReadToolDefinition,
   defineTool,
@@ -14,8 +15,10 @@ export function createWorkspaceReadTools(root: string): ToolDefinition[] {
   const workspaceRoot = path.resolve(root);
   const read = createReadToolDefinition(workspaceRoot);
   const ls = createLsToolDefinition(workspaceRoot);
+  const grep = createGrepToolDefinition(workspaceRoot);
   const executeRead = read.execute.bind(read);
   const executeLs = ls.execute.bind(ls);
+  const executeGrep = grep.execute.bind(grep);
 
   read.execute = async (toolCallId, params, signal, onUpdate, context) => {
     await assertWorkspacePath(workspaceRoot, params.path);
@@ -25,8 +28,12 @@ export function createWorkspaceReadTools(root: string): ToolDefinition[] {
     await assertWorkspacePath(workspaceRoot, params.path ?? ".");
     return executeLs(toolCallId, params, signal, onUpdate, context);
   };
+  grep.execute = async (toolCallId, params, signal, onUpdate, context) => {
+    await assertWorkspacePath(workspaceRoot, params.path ?? ".");
+    return executeGrep(toolCallId, params, signal, onUpdate, context);
+  };
 
-  return [defineTool(read), defineTool(ls)];
+  return [defineTool(read), defineTool(ls), defineTool(grep)];
 }
 
 async function assertWorkspacePath(root: string, requestedPath: string): Promise<void> {

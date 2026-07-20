@@ -187,12 +187,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly createSession: (
       systemPrompt: string,
       turnTools: ToolDefinition[],
+      activityExtension: InlineExtension,
     ) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
     private readonly defaultInteractionRoute: string | undefined,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
     private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
+    private readonly ordinaryToolNames: Set<string>,
   ) {}
 
   start(request: TurnRequest, control: TurnControl): PiRunningExecution {
@@ -214,7 +216,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         this.lifecycle.enqueue(request.turnId, input);
         try {
           const session = await this.#sessionReady!.promise;
-          await session.steer(inputText(input));
+          await session.steer(inputText(input, request.inputs[0]!.kind === "opportunity"));
         } catch (error) {
           this.lifecycle.removePending(request.turnId, input.id);
           throw error;
@@ -276,7 +278,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           decision: messageDecision,
         }));
       }
-      const preparedSession = await this.createSession(systemPrompt, turnTools);
+      const preparedSession = await this.createSession(
+        systemPrompt,
+        turnTools,
+        toolActivityExtension(
+          this.lifecycle.control(request.turnId),
+          this.ordinaryToolNames,
+        ),
+      );
       session = preparedSession.session;
       if (preparedSession.skillDiagnostics.length > 0) {
         this.sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
@@ -402,7 +411,11 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.agentDir,
     { projectTrusted: false },
   );
-  const createSession = async (systemPrompt: string, turnTools: ToolDefinition[]) => {
+  const createSession = async (
+    systemPrompt: string,
+    turnTools: ToolDefinition[],
+    activityExtension: InlineExtension,
+  ) => {
     const workspaceSkills = path.join(options.agentWorkspace.root, "skills");
     const hasWorkspaceSkills = await exists(workspaceSkills);
     const additionalSkillPaths = [
@@ -415,7 +428,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
       settingsManager,
-      extensionFactories: [annotationExtension],
+      extensionFactories: [annotationExtension, activityExtension],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -461,6 +474,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,
+    new Set((options.readOnlyTools ?? []).map(tool => tool.name)),
   );
 }
 
@@ -503,6 +517,36 @@ function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+function toolActivityExtension(
+  control: TurnControl,
+  ordinaryToolNames: Set<string>,
+): InlineExtension {
+  const calls = new Map<string, { toolName: string; args: JsonValue }>();
+  return {
+    name: "loom-tool-activity",
+    factory: pi => {
+      pi.on("tool_execution_start", event => {
+        if (!ordinaryToolNames.has(event.toolName)) return;
+        calls.set(event.toolCallId, {
+          toolName: event.toolName,
+          args: serializeValue(event.args),
+        });
+      });
+      pi.on("tool_execution_end", event => {
+        const call = calls.get(event.toolCallId);
+        calls.delete(event.toolCallId);
+        if (!call || event.isError || event.toolName !== call.toolName) return;
+        control.recordToolActivity({
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          callArguments: call.args,
+          result: serializeValue(event.result),
+        });
+      });
+    },
+  };
+}
+
 function appendSkillDiagnostics(systemPrompt: string, diagnostics: ResourceDiagnostic[]): string {
   if (diagnostics.length === 0) return systemPrompt;
   return `${systemPrompt}\n\n${section("Skill Diagnostics", JSON.stringify(diagnostics, null, 2))}`;
@@ -518,12 +562,63 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-function inputText(input: ExecutionInput): string {
+function inputText(input: ExecutionInput, withinOpportunityTurn = false): string {
+  if (input.kind === "opportunity") return opportunityInputText(input);
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
     const text = input.payload.text;
-    if (typeof text === "string") return text;
+    if (typeof text === "string") {
+      if (!withinOpportunityTurn) return text;
+      return [
+        "A human message arrived while the proactive Turn was still running.",
+        "Treat the following as a real current interaction, not as part of the earlier proactive opportunity:",
+        "",
+        "<human_input>",
+        text,
+        "</human_input>",
+      ].join("\n");
+    }
   }
   return JSON.stringify(input.payload);
+}
+
+function opportunityInputText(input: ExecutionInput): string {
+  if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+    throw new Error("Opportunity Input requires a structured payload");
+  }
+  const narrative = input.payload.narrative;
+  const observedAt = input.payload.observedAt;
+  const localTime = input.payload.localTime;
+  const lastHumanInputAt = input.payload.lastHumanInputAt;
+  if (typeof narrative !== "string" || !narrative.trim()) {
+    throw new Error("Opportunity Input requires a narrative");
+  }
+  if (typeof observedAt !== "string" || Number.isNaN(Date.parse(observedAt))) {
+    throw new Error("Opportunity Input requires observedAt");
+  }
+  const timing = typeof lastHumanInputAt === "string" && !Number.isNaN(Date.parse(lastHumanInputAt))
+    ? [`Time since the latest human Input: ${elapsedTime(observedAt, lastHumanInputAt)}`]
+    : [];
+  return [
+    "<proactive_opportunity>",
+    `Observed at: ${observedAt}`,
+    ...(typeof localTime === "string" && localTime.trim() ? [`Local time: ${localTime.trim()}`] : []),
+    ...timing,
+    "",
+    "A possible point of attention was found:",
+    "",
+    narrative.trim(),
+    "</proactive_opportunity>",
+    "",
+    "This is not a human message and it is not a task assignment. Treat it as a possible point of attention.",
+    "You may let it pass, inspect or change Workspace material, continue private work, change direction, or reach out through the available interaction tools when something is genuinely worth sending.",
+    "Do not report this wrapper or its internal fields to the human.",
+  ].join("\n");
+}
+
+function elapsedTime(later: string, earlier: string): string {
+  const minutes = Math.max(0, Math.floor((Date.parse(later) - Date.parse(earlier)) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  return hours > 0 ? `${hours} hours ${minutes % 60} minutes` : `${minutes} minutes`;
 }
 
 function isUserMessage(value: unknown): boolean {

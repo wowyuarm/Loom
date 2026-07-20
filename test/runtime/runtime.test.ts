@@ -129,6 +129,19 @@ class EffectThenHoldExecution extends HeldExecution {
   }
 }
 
+class ToolThenHoldExecution extends HeldExecution {
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    control.recordToolActivity({
+      toolCallId: "tool-complete",
+      toolName: "edit",
+      callArguments: { path: "threads/private.md" },
+      result: { content: [{ type: "text", text: "changed" }] },
+    });
+    return running;
+  }
+}
+
 class SlowSteeringExecution extends HeldExecution {
   readonly steeringStarted = deferred<Parameters<RunningExecution["steer"]>[0]>();
   readonly steeringFinished = deferred<Awaited<ReturnType<RunningExecution["steer"]>>>();
@@ -1149,6 +1162,40 @@ test("does not replay an input after its Turn created an Effect", async t => {
   assert.equal(recovered.inputs[0]?.status, "consumed");
   assert.equal(recovered.effects[0]?.status, "pending");
   assert.equal(recovered.effects[0]?.coveredInputPosition, 1);
+
+  oldExecution.complete(oldTurn);
+  await assert.rejects(lateAdvance, /no longer accepts writes/);
+});
+
+test("does not replay an Input after its Turn completed ordinary tool activity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-tool-recovery-"));
+  let now = Date.parse("2026-07-18T12:00:00.000Z");
+  const oldExecution = new ToolThenHoldExecution();
+  const oldRuntime = openRuntime({
+    root,
+    execution: oldExecution,
+    ownerId: "old-runtime",
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+  t.after(() => oldRuntime.close());
+
+  await oldRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-with-tool",
+    kind: "interaction",
+    payload: { text: "change the private file" },
+  });
+  const lateAdvance = oldRuntime.advance();
+  const oldTurn = await oldExecution.started.promise;
+
+  now += 2_000;
+  const replacement = openRuntime({ root, now: () => new Date(now), ownerId: "replacement-runtime" });
+  t.after(() => replacement.close());
+
+  const recovered = replacement.status();
+  assert.equal(recovered.turns[0]?.status, "interrupted");
+  assert.equal(recovered.inputs[0]?.status, "consumed");
 
   oldExecution.complete(oldTurn);
   await assert.rejects(lateAdvance, /no longer accepts writes/);

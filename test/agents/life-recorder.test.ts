@@ -25,6 +25,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "grep",
         "ls",
         "read",
         "read_activity",

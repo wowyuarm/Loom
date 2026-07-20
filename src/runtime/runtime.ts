@@ -18,9 +18,11 @@ import type {
   EffectRequest,
   ExecutionInput,
   ExecutionResult,
+  FormOpportunityResult,
   InputKind,
   FrozenActivity,
   LifeRecorderReceipt,
+  Orientation,
   OutboundDelivery,
   JsonValue,
   RunningExecution,
@@ -33,6 +35,7 @@ import type {
   RuntimeStatus,
   RuntimeTurnStatus,
   TranscriptAnchor,
+  VerifiedToolActivity,
 } from "./types.js";
 
 interface InputRow {
@@ -109,6 +112,7 @@ class SqliteRuntime implements Runtime {
   readonly #outboundDelivery: OutboundDelivery | undefined;
   readonly #activityLifecycle: ActivityLifecycle | undefined;
   readonly #activityRecorder: ActivityRecorder | undefined;
+  readonly #orientation: Orientation | undefined;
   readonly #now: () => Date;
   readonly #nextId: () => string;
   readonly #ownerId: string;
@@ -126,6 +130,7 @@ class SqliteRuntime implements Runtime {
     this.#outboundDelivery = options.outboundDelivery;
     this.#activityLifecycle = options.activityLifecycle;
     this.#activityRecorder = options.activityRecorder;
+    this.#orientation = options.orientation;
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
     this.#ownerId = options.ownerId ?? randomUUID();
@@ -180,6 +185,49 @@ class SqliteRuntime implements Runtime {
     return accepted;
   }
 
+  async formOpportunity(): Promise<FormOpportunityResult> {
+    if (!this.#orientation) throw new Error("Runtime has no Orientation adapter");
+    const observedAt = this.#now();
+    const snapshot = this.#opportunitySnapshot(observedAt);
+    if (!snapshot) return { disposition: "busy" };
+
+    const result = await this.#orientation.form(snapshot.request);
+    if (result.outcome === "none") return { disposition: "none", runId: result.runId };
+    if (!result.runId.trim() || !result.narrative.trim()) {
+      throw new Error("Orientation Opportunity requires a runId and narrative");
+    }
+
+    return this.#transaction(() => {
+      if (!this.#isOpportunityIdle()
+        || this.#latestOpportunityTransitionSequence() !== snapshot.transitionSequence) {
+        return { disposition: "stale", runId: result.runId } as const;
+      }
+      const inputId = this.#nextId();
+      const acceptedAt = this.#now();
+      this.#database.prepare(`
+        INSERT INTO inputs (
+          id, source, source_id, kind, payload_json, occurred_at, accepted_at, status
+        ) VALUES (?, 'orientation', ?, 'opportunity', ?, ?, ?, 'pending')
+      `).run(
+        inputId,
+        result.runId,
+        JSON.stringify({
+          version: 1,
+          narrative: result.narrative.trim(),
+          observedAt: snapshot.request.observedAt,
+          localTime: snapshot.request.localTime,
+          ...(snapshot.request.lastHumanInputAt
+            ? { lastHumanInputAt: snapshot.request.lastHumanInputAt }
+            : {}),
+        }),
+        snapshot.request.observedAt,
+        acceptedAt.toISOString(),
+      );
+      this.#recordTransition("input", inputId, null, "pending", "opportunity_admitted", acceptedAt, null);
+      return { disposition: "accepted", inputId, runId: result.runId } as const;
+    });
+  }
+
   async advance(): Promise<AdvanceResult> {
     if (this.#active || this.#activeDeliveryId || this.#closingActivityId || this.#activeActivityAttemptId) {
       return { disposition: "busy" };
@@ -216,6 +264,7 @@ class SqliteRuntime implements Runtime {
     if (this.#execution) {
       const claimed = this.#claimNextInput();
       if (claimed) {
+        let turnCompleted = false;
         try {
           const running = this.#execution.start({
             turnId: claimed.turnId,
@@ -235,6 +284,11 @@ class SqliteRuntime implements Runtime {
               expected,
               replacement,
             ),
+            recordToolActivity: activity => this.#recordToolActivity(
+              claimed.turnId,
+              claimed.fencingToken,
+              activity,
+            ),
             prepareEffect: effect => this.#prepareEffect(claimed.turnId, claimed.fencingToken, effect),
           });
           const active = {
@@ -250,9 +304,37 @@ class SqliteRuntime implements Runtime {
           active.finishing = true;
           await active.steeringTail;
           this.#completeTurn(claimed.turnId, claimed.fencingToken, result);
+          turnCompleted = true;
+          if (claimed.input.kind === "opportunity") {
+            const standalone = this.#standaloneProactiveActivity(claimed.turnId);
+            if (standalone) {
+              await this.#freezeActivity(standalone);
+            } else {
+              this.#discardSilentOpportunitySegment(claimed.turnId);
+            }
+          }
           return { disposition: "turn_completed" };
         } catch (error) {
+          if (turnCompleted) throw error;
+          const active = this.#active;
+          if (active?.turnId === claimed.turnId) {
+            active.finishing = true;
+            await active.steeringTail;
+          }
           this.#failTurn(claimed.turnId, claimed.fencingToken, error);
+          if (claimed.input.kind === "opportunity") {
+            const standalone = this.#standaloneProactiveActivity(claimed.turnId);
+            if (standalone) {
+              try {
+                await this.#freezeActivity(standalone);
+              } catch (freezeError) {
+                throw new AggregateError(
+                  [error, freezeError],
+                  `Proactive Turn failed and its verified activity could not be frozen: ${error instanceof Error ? error.message : String(error)}`,
+                );
+              }
+            }
+          }
           throw error;
         } finally {
           this.#stopHeartbeat();
@@ -272,6 +354,10 @@ class SqliteRuntime implements Runtime {
     if (this.#hasRunningTurn() || this.#hasPendingInput()) return { disposition: "busy" };
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
+    return this.#freezeActivity(segment);
+  }
+
+  async #freezeActivity(segment: ActiveSegmentRow): Promise<CloseActivityResult> {
     if (!this.#activityLifecycle) throw new Error("Activity closure requires a Main Agent lifecycle adapter");
 
     const claimed = this.#claimActivityClose(segment.id);
@@ -280,7 +366,13 @@ class SqliteRuntime implements Runtime {
     this.#startHeartbeat("activity_close", segment.id, claimed.fencingToken);
     try {
       const frozen = await this.#activityLifecycle.freeze(claimed.request);
-      this.#finishActivityClose(claimed.request, claimed.fencingToken, frozen.activity, frozen.successorExecutionState);
+      const committed = this.#finishActivityClose(
+        claimed.request,
+        claimed.fencingToken,
+        frozen.activity,
+        frozen.successorExecutionState,
+      );
+      if (!committed) return { disposition: "busy" };
       return { disposition: "activity_frozen", activityId: segment.id };
     } catch (error) {
       this.#failActivityClose(segment.id, claimed.fencingToken, error);
@@ -408,6 +500,61 @@ class SqliteRuntime implements Runtime {
     `).get());
   }
 
+  #isOpportunityIdle(): boolean {
+    return !this.#active
+      && !this.#activeDeliveryId
+      && !this.#closingActivityId
+      && !this.#activeActivityAttemptId
+      && !this.#hasRunningTurn()
+      && !this.#readActiveSegment()
+      && !this.#hasPendingInput()
+      && !this.#hasPendingDeliveryWork();
+  }
+
+  #opportunitySnapshot(observedAt: Date): {
+    request: {
+      observedAt: string;
+      localTime: string;
+      lastHumanInputAt?: string;
+      recentActivities: FrozenActivity[];
+    };
+    transitionSequence: number;
+  } | undefined {
+    return this.#transaction(() => {
+      if (!this.#isOpportunityIdle()) return undefined;
+      const latestHuman = this.#database.prepare(`
+        SELECT occurred_at FROM inputs
+        WHERE kind = 'interaction'
+        ORDER BY accepted_at DESC, id DESC
+        LIMIT 1
+      `).get() as unknown as { occurred_at: string } | undefined;
+      const activities = this.#database.prepare(`
+        SELECT frozen_activity_json FROM activities
+        ORDER BY sequence DESC
+        LIMIT 4
+      `).all() as unknown as Array<{ frozen_activity_json: string }>;
+      return {
+        request: {
+          observedAt: observedAt.toISOString(),
+          localTime: localDateTimeLabel(observedAt),
+          ...(latestHuman ? { lastHumanInputAt: latestHuman.occurred_at } : {}),
+          recentActivities: activities
+            .reverse()
+            .map(row => JSON.parse(row.frozen_activity_json) as FrozenActivity),
+        },
+        transitionSequence: this.#latestOpportunityTransitionSequence(),
+      };
+    });
+  }
+
+  #latestOpportunityTransitionSequence(): number {
+    const row = this.#database.prepare(`
+      SELECT COALESCE(MAX(sequence), 0) AS sequence
+      FROM transitions
+    `).get() as unknown as { sequence: number };
+    return row.sequence;
+  }
+
   #claimActivityClose(segmentId: string): {
     request: ActivityFreezeRequest;
     fencingToken: number;
@@ -495,6 +642,22 @@ class SqliteRuntime implements Runtime {
       WHERE turns.segment_id = ?
       ORDER BY effects.created_at, effects.id
     `).all(segment.id) as unknown as Array<EffectRow & { created_at: string; ended_at: string | null }>;
+    const toolActivityRows = this.#database.prepare(`
+      SELECT turn_tool_activity.turn_id, turn_tool_activity.tool_call_id,
+             turn_tool_activity.tool_name, turn_tool_activity.call_arguments_json,
+             turn_tool_activity.result_json, turn_tool_activity.completed_at
+      FROM turn_tool_activity
+      JOIN turns ON turns.id = turn_tool_activity.turn_id
+      WHERE turns.segment_id = ?
+      ORDER BY turn_tool_activity.completed_at, turn_tool_activity.tool_call_id
+    `).all(segment.id) as unknown as Array<{
+      turn_id: string;
+      tool_call_id: string;
+      tool_name: string;
+      call_arguments_json: string;
+      result_json: string;
+      completed_at: string;
+    }>;
     const deliveryRows = this.#database.prepare(`
       SELECT delivery_attempts.id, delivery_attempts.effect_id, delivery_attempts.attempt_number,
              delivery_attempts.status, delivery_attempts.started_at, delivery_attempts.ended_at,
@@ -546,6 +709,14 @@ class SqliteRuntime implements Runtime {
           : {}),
         ...(row.error ? { error: row.error } : {}),
       })),
+      toolActivities: toolActivityRows.map(row => ({
+        turnId: row.turn_id,
+        toolCallId: row.tool_call_id,
+        toolName: row.tool_name,
+        callArguments: JSON.parse(row.call_arguments_json) as JsonValue,
+        result: JSON.parse(row.result_json) as JsonValue,
+        completedAt: row.completed_at,
+      })),
       effects: effectRows.map(row => ({
         id: row.id,
         turnId: row.turn_id,
@@ -574,20 +745,33 @@ class SqliteRuntime implements Runtime {
     fencingToken: number,
     activity: FrozenActivity,
     successorExecutionState: JsonValue,
-  ): void {
+  ): boolean {
     if (activity.segmentId !== request.segment.id
       || activity.openedAt !== request.segment.openedAt
       || activity.closedAt !== request.segment.closedAt
       || activity.recordingDay !== request.segment.recordingDay) {
       throw new Error(`Frozen Activity does not match closing segment ${request.segment.id}`);
     }
-    this.#transaction(() => {
+    return this.#transaction(() => {
       const segment = this.#readActiveSegment();
       if (!segment
         || segment.id !== request.segment.id
         || segment.status !== "closing"
         || segment.close_fencing_token !== fencingToken) {
         throw new Error(`Activity close for ${request.segment.id} no longer owns its lease`);
+      }
+      if (this.#hasPendingInput()) {
+        const now = this.#now();
+        const changed = this.#database.prepare(`
+          UPDATE active_segment
+          SET status = 'active', close_owner = NULL, close_fencing_token = NULL,
+              close_lease_expires_at = NULL, closed_at = NULL
+          WHERE singleton = 1 AND id = ? AND status = 'closing'
+            AND close_fencing_token = ? AND close_owner = ?
+        `).run(request.segment.id, fencingToken, this.#ownerId);
+        if (changed.changes !== 1) throw new Error(`Activity close for ${request.segment.id} could not yield`);
+        this.#recordTransition("segment", request.segment.id, "closing", "active", "close_yielded_to_input", now, fencingToken);
+        return false;
       }
       const current = this.#readExecutionState().executionState;
       if (current === undefined || !isDeepStrictEqual(current, request.executionState)) {
@@ -619,6 +803,7 @@ class SqliteRuntime implements Runtime {
       this.#recordTransition("activity", request.segment.id, null, "pending", "evidence_frozen", now, fencingToken);
       this.#recordTransition("segment", request.segment.id, "closing", "closed", "evidence_frozen", now, fencingToken);
       this.#recordTransition("execution_state", "primary", "active", "active", "activity_succeeded", now, fencingToken);
+      return true;
     });
   }
 
@@ -1084,6 +1269,83 @@ class SqliteRuntime implements Runtime {
     });
   }
 
+  #discardSilentOpportunitySegment(turnId: string): void {
+    this.#transaction(() => {
+      const turn = this.#database.prepare(`
+        SELECT segment_id FROM turns WHERE id = ? AND status = 'completed'
+      `).get(turnId) as unknown as { segment_id: string } | undefined;
+      if (!turn) return;
+      const segment = this.#readActiveSegment();
+      if (!segment || segment.id !== turn.segment_id || segment.status !== "active") return;
+      const lived = this.#database.prepare(`
+        SELECT 1
+        FROM turns
+        LEFT JOIN turn_inputs ON turn_inputs.turn_id = turns.id
+        LEFT JOIN inputs ON inputs.id = turn_inputs.input_id
+        LEFT JOIN effects ON effects.turn_id = turns.id
+        LEFT JOIN turn_tool_activity ON turn_tool_activity.turn_id = turns.id
+        WHERE turns.segment_id = ?
+          AND (inputs.kind = 'interaction' OR effects.id IS NOT NULL OR turn_tool_activity.tool_call_id IS NOT NULL)
+        LIMIT 1
+      `).get(segment.id);
+      if (lived) return;
+
+      const now = this.#now();
+      if (segment.starting_state_json === null) {
+        this.#database.prepare("DELETE FROM active_execution_state WHERE singleton = 1").run();
+      } else {
+        this.#database.prepare(`
+          INSERT INTO active_execution_state (singleton, state_json, updated_at)
+          VALUES (1, ?, ?)
+          ON CONFLICT(singleton) DO UPDATE SET state_json = excluded.state_json, updated_at = excluded.updated_at
+        `).run(segment.starting_state_json, now.toISOString());
+      }
+      const removed = this.#database.prepare(`
+        DELETE FROM active_segment WHERE singleton = 1 AND id = ? AND status = 'active'
+      `).run(segment.id);
+      if (removed.changes !== 1) throw new Error(`Silent Opportunity could not release Segment ${segment.id}`);
+      this.#recordTransition("segment", segment.id, "active", "discarded", "silent_opportunity", now, null);
+      this.#recordTransition("execution_state", "primary", "active", "active", "silent_opportunity_restored", now, null);
+    });
+  }
+
+  #standaloneProactiveActivity(turnId: string): ActiveSegmentRow | undefined {
+    const turn = this.#database.prepare(`
+      SELECT segment_id FROM turns WHERE id = ? AND status IN ('completed', 'failed')
+    `).get(turnId) as unknown as { segment_id: string } | undefined;
+    if (!turn) return undefined;
+    const segment = this.#readActiveSegment();
+    if (!segment || segment.id !== turn.segment_id || segment.status !== "active") return undefined;
+    const state = this.#database.prepare(`
+      SELECT
+        EXISTS(
+          SELECT 1 FROM turn_tool_activity
+          JOIN turns ON turns.id = turn_tool_activity.turn_id
+          WHERE turns.segment_id = ?
+        ) AS has_tool_activity,
+        EXISTS(
+          SELECT 1 FROM effects
+          JOIN turns ON turns.id = effects.turn_id
+          WHERE turns.segment_id = ?
+        ) AS has_effect,
+        EXISTS(
+          SELECT 1 FROM turn_inputs
+          JOIN turns ON turns.id = turn_inputs.turn_id
+          JOIN inputs ON inputs.id = turn_inputs.input_id
+          WHERE turns.segment_id = ?
+            AND turn_inputs.inclusion_status = 'included'
+            AND inputs.kind = 'interaction'
+        ) AS has_human_input
+    `).get(segment.id, segment.id, segment.id) as unknown as {
+      has_tool_activity: 0 | 1;
+      has_effect: 0 | 1;
+      has_human_input: 0 | 1;
+    };
+    return state.has_tool_activity && !state.has_effect && !state.has_human_input
+      ? segment
+      : undefined;
+  }
+
   #readExecutionState(): { executionState?: JsonValue } {
     const row = this.#database.prepare(`
       SELECT state_json FROM active_execution_state WHERE singleton = 1
@@ -1209,6 +1471,51 @@ class SqliteRuntime implements Runtime {
       );
       this.#recordTransition("effect", effectId, null, "pending", "accepted", now, fencingToken);
       return { effectId };
+    });
+  }
+
+  #recordToolActivity(
+    turnId: string,
+    fencingToken: number,
+    activity: VerifiedToolActivity,
+  ): void {
+    if (!activity.toolCallId.trim() || !activity.toolName.trim()) {
+      throw new Error("Verified tool activity requires toolCallId and toolName");
+    }
+    this.#transaction(() => {
+      const turn = this.#database.prepare(`
+        SELECT id FROM turns
+        WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+      `).get(turnId, fencingToken, this.#ownerId);
+      if (!turn) throw new Error(`Turn ${turnId} no longer accepts tool activity from lease ${fencingToken}`);
+      const position = this.#database.prepare(`
+        SELECT MAX(position) AS position FROM turn_inputs
+        WHERE turn_id = ? AND inclusion_status = 'included'
+      `).get(turnId) as unknown as { position: number | null };
+      if (position.position === null) throw new Error(`Turn ${turnId} has no included Input`);
+      const now = this.#now();
+      this.#database.prepare(`
+        INSERT INTO turn_tool_activity (
+          turn_id, tool_call_id, tool_name, call_arguments_json, result_json, input_position, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        turnId,
+        activity.toolCallId,
+        activity.toolName,
+        JSON.stringify(activity.callArguments),
+        JSON.stringify(activity.result),
+        position.position,
+        now.toISOString(),
+      );
+      this.#recordTransition(
+        "tool_activity",
+        `${turnId}:${activity.toolCallId}`,
+        null,
+        "completed",
+        "tool_succeeded",
+        now,
+        fencingToken,
+      );
     });
   }
 
@@ -1403,17 +1710,21 @@ class SqliteRuntime implements Runtime {
     fencingToken: number,
   ): void {
     const coverage = this.#database.prepare(`
-      SELECT MAX(input_position) AS position FROM effects WHERE turn_id = ?
-    `).get(turnId) as unknown as { position: number | null };
+      SELECT MAX(position) AS position FROM (
+        SELECT input_position AS position FROM effects WHERE turn_id = ?
+        UNION ALL
+        SELECT input_position AS position FROM turn_tool_activity WHERE turn_id = ?
+      )
+    `).get(turnId, turnId) as unknown as { position: number | null };
     const inputs = this.#database.prepare(`
-      SELECT inputs.id, turn_inputs.position
+      SELECT inputs.id, inputs.kind, turn_inputs.position
       FROM turn_inputs
       JOIN inputs ON inputs.id = turn_inputs.input_id
       WHERE turn_inputs.turn_id = ?
         AND turn_inputs.inclusion_status = 'included'
         AND inputs.status = 'active'
       ORDER BY turn_inputs.position
-    `).all(turnId) as unknown as Array<{ id: string; position: number }>;
+    `).all(turnId) as unknown as Array<{ id: string; kind: InputKind; position: number }>;
 
     for (const input of inputs) {
       const covered = coverage.position !== null && input.position <= coverage.position;
@@ -1511,4 +1822,12 @@ function localDateKey(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function localDateTimeLabel(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absolute = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
+  return `${localDateKey(date)} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")} ${offset}`;
 }

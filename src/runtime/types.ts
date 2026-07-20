@@ -73,6 +73,14 @@ export interface ActivityFreezeRequest {
     executionRecord?: JsonValue;
     error?: string;
   }>;
+  toolActivities: Array<{
+    turnId: string;
+    toolCallId: string;
+    toolName: string;
+    callArguments: JsonValue;
+    result: JsonValue;
+    completedAt: string;
+  }>;
   effects: Array<{
     id: string;
     turnId: string;
@@ -104,6 +112,32 @@ export interface ActivityLifecycle {
 
 export interface ActivityRecorder {
   record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
+}
+
+export interface OrientationRequest {
+  observedAt: string;
+  localTime: string;
+  lastHumanInputAt?: string;
+  recentActivities: FrozenActivity[];
+}
+
+export type OrientationResult =
+  | {
+      outcome: "opportunity";
+      runId: string;
+      narrative: string;
+      whyNow: string;
+      evidence: string[];
+    }
+  | {
+      outcome: "none";
+      runId: string;
+      whyNow: string;
+      evidence: string[];
+    };
+
+export interface Orientation {
+  form(request: OrientationRequest): Promise<OrientationResult>;
 }
 
 export interface ExecutionInput {
@@ -142,10 +176,18 @@ export interface EffectReceipt {
   effectId: string;
 }
 
+export interface VerifiedToolActivity {
+  toolCallId: string;
+  toolName: string;
+  callArguments: JsonValue;
+  result: JsonValue;
+}
+
 export interface TurnControl {
   includeInput(inputId: string): void;
   prepareExecutionState(state: JsonValue): void;
   replaceExecutionState(expected: JsonValue, replacement: JsonValue): void;
+  recordToolActivity(activity: VerifiedToolActivity): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
 }
 
@@ -246,6 +288,7 @@ export interface RuntimeOptions {
   outboundDelivery?: OutboundDelivery;
   activityLifecycle?: ActivityLifecycle;
   activityRecorder?: ActivityRecorder;
+  orientation?: Orientation;
   now?: () => Date;
   nextId?: () => string;
   ownerId?: string;
@@ -267,8 +310,15 @@ export type CloseActivityResult =
   | { disposition: "busy" }
   | { disposition: "activity_frozen"; activityId: string };
 
+export type FormOpportunityResult =
+  | { disposition: "accepted"; inputId: string; runId: string }
+  | { disposition: "none"; runId: string }
+  | { disposition: "busy" }
+  | { disposition: "stale"; runId: string };
+
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
+  formOpportunity(): Promise<FormOpportunityResult>;
   advance(): Promise<AdvanceResult>;
   closeActivity(): Promise<CloseActivityResult>;
   status(): RuntimeStatus;

@@ -360,12 +360,19 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   faux.setResponses([
     async context => {
       expectOriginalBackground(context.systemPrompt);
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /<proactive_opportunity>/);
+      assert.match(messages, /unfinished private line/);
+      assert.match(messages, /not a human message/i);
       providerStarted.resolve();
       await releaseProvider.promise;
       return fauxAssistantMessage("first response");
     },
     context => {
       expectOriginalBackground(context.systemPrompt);
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /human message arrived/i);
+      assert.match(messages, /new interaction/);
       return fauxAssistantMessage("steering response");
     },
   ]);
@@ -385,6 +392,13 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
     inputs: [{
       ...executionInput("input-1", "background opportunity"),
       kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "The unfinished private line has a concrete place to continue.",
+        observedAt: "2026-07-19T00:00:00.000Z",
+        localTime: "2026-07-19 08:00 +08:00",
+        lastHumanInputAt: "2026-07-18T22:00:00.000Z",
+      },
     }],
   }, noEffectControl());
   await providerStarted.promise;
@@ -396,6 +410,76 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   releaseProvider.resolve();
 
   await running.result;
+});
+
+test("records a successful ordinary tool before the provider can continue", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-activity-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("tool completed"),
+  ]);
+  const recorded: unknown[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    readOnlyTools: [readTool()],
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-activity",
+    leaseToken: 1,
+    inputs: [executionInput("input-activity", "read it")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  assert.deepEqual(recorded, [{
+    toolCallId: "read-attention",
+    toolName: "read",
+    callArguments: { path: "attention.md" },
+    result: {
+      content: [{ type: "text", text: "test file" }],
+      details: {},
+    },
+  }]);
+});
+
+test("does not record Context expansion as ordinary lived activity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-tool-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([fauxAssistantMessage("no expansion needed")]);
+  const recorded: unknown[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-context-tool",
+    leaseToken: 1,
+    inputs: [executionInput("input-context-tool", "continue")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  assert.deepEqual(recorded, []);
 });
 
 test("refreshes Agent Workspace materials on the next Turn", async t => {
@@ -513,6 +597,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     includeInput: inputId => included.push(inputId),
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -561,7 +646,12 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     inputs: [{
       id: "input-2",
       kind: "opportunity",
-      payload: { text: "continue" },
+      payload: {
+        version: 1,
+        narrative: "Continue from the committed activity.",
+        observedAt: "2026-07-19T00:01:00.000Z",
+        localTime: "2026-07-19 00:01 +00:00",
+      },
       occurredAt: "2026-07-19T00:01:00.000Z",
       inclusionPosition: 1,
     }],
@@ -569,6 +659,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -613,6 +704,7 @@ test("prepares a message Effect through the Main Agent action interface", async 
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: effect => {
       effects.push(effect);
       return { effectId: "effect-1" };
@@ -690,6 +782,7 @@ test("continues from the last committed Context after a failed transcript branch
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -765,6 +858,7 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -822,6 +916,7 @@ test("rejects an over-limit current Input before calling the provider", async t 
     includeInput: inputId => included.push(inputId),
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -915,6 +1010,7 @@ function noEffectControl() {
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -964,6 +1060,7 @@ test("does not include or annotate a steering Input before Pi starts its user me
     includeInput: inputId => included.push(inputId),
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1044,6 +1141,7 @@ test("does not complete or include queued steering after abort", async t => {
     includeInput: inputId => included.push(inputId),
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1107,6 +1205,7 @@ test("does not complete a Turn after Pi ends with an error", async t => {
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("This test has no Effects");
     },
@@ -1158,6 +1257,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
     includeInput: () => {},
     prepareExecutionState: () => {},
     replaceExecutionState: () => {},
+    recordToolActivity: () => {},
     prepareEffect: () => {
       throw new Error("The lookup tool is read-only");
     },
@@ -1332,6 +1432,7 @@ test("compacts committed tool traces and expands an authorized original interact
       assert.deepEqual(expected, first.executionState);
       replacement = next;
     },
+    recordToolActivity: () => {},
   }).result;
 
   assert.ok(replacement);
@@ -1419,6 +1520,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
     ...noEffectControl(),
     includeInput: inputId => failedIncluded.push(inputId),
     replaceExecutionState: (_expected, replacement) => failedReplacements.push(replacement),
+    recordToolActivity: () => {},
   }).result, /compactor unavailable/);
 
   assert.equal(faux.state.callCount, 2);
@@ -1507,6 +1609,7 @@ test("does not expose successful tool trace batches when another batch fails", a
     ...noEffectControl(),
     includeInput: inputId => included.push(inputId),
     replaceExecutionState: (_expected, replacement) => replacements.push(replacement),
+    recordToolActivity: () => {},
   }).result, /final batch failed/);
 
   assert.deepEqual(batchSizes.sort((left, right) => left - right), [1, 10]);

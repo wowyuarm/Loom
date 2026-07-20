@@ -8,7 +8,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { createWorkspaceReadTools } from "../../src/workspace/tools.js";
 
-test("retains Pi read and ls behavior for paths inside the Agent Workspace", async () => {
+test("retains Pi read, ls and grep behavior inside the Agent Workspace", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-tools-"));
   await mkdir(path.join(root, "notes"));
   await writeFile(path.join(root, "notes", "today.md"), "first\nsecond\nthird\n", "utf8");
@@ -16,21 +16,25 @@ test("retains Pi read and ls behavior for paths inside the Agent Workspace", asy
 
   const listing = await execute(tools, "ls", { path: "notes" });
   const reading = await execute(tools, "read", { path: "notes/today.md", offset: 2, limit: 1 });
+  const matches = await execute(tools, "grep", { path: "notes", pattern: "second" });
 
   assert.equal(text(listing), "today.md");
   assert.match(text(reading), /^second/);
   assert.match(text(reading), /more lines in file/);
+  assert.match(text(matches), /today\.md:2: second/);
 });
 
 test("rejects lexical paths outside the Agent Workspace", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-tools-"));
   const tools = createWorkspaceReadTools(root);
 
-  for (const candidate of ["/etc/hosts", "../outside.md", "notes/../../outside.md", "~/notes.md"]) {
-    await assert.rejects(
-      execute(tools, "read", { path: candidate }),
-      /path must stay inside the Agent Workspace/i,
-    );
+  for (const toolName of ["read", "grep"]) {
+    for (const candidate of ["/etc/hosts", "../outside.md", "notes/../../outside.md", "~/notes.md"]) {
+      await assert.rejects(
+        execute(tools, toolName, toolName === "grep" ? { path: candidate, pattern: "x" } : { path: candidate }),
+        /path must stay inside the Agent Workspace/i,
+      );
+    }
   }
 });
 

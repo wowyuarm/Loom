@@ -68,6 +68,17 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       ended_at TEXT
     ) STRICT;
 
+    CREATE TABLE IF NOT EXISTS turn_tool_activity (
+      turn_id TEXT NOT NULL REFERENCES turns(id),
+      tool_call_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      call_arguments_json TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      input_position INTEGER NOT NULL CHECK (input_position > 0),
+      completed_at TEXT NOT NULL,
+      PRIMARY KEY (turn_id, tool_call_id)
+    ) STRICT;
+
     CREATE TABLE IF NOT EXISTS delivery_attempts (
       id TEXT PRIMARY KEY,
       effect_id TEXT NOT NULL REFERENCES effects(id),
@@ -146,6 +157,6 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       UNIQUE (activity_id, attempt_number)
     ) STRICT;
 
-    PRAGMA user_version = 4;
+    PRAGMA user_version = 5;
   `);
 }

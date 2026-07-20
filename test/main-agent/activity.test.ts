@@ -99,6 +99,44 @@ test("rejects a closing state that is not anchored to the last completed Turn", 
   );
 });
 
+test("preserves only verified tool pairs from a failed Turn", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-failed-tools-"));
+  const transcriptFile = path.join(root, "agent.jsonl");
+  await writeFile(transcriptFile, transcript(root), "utf8");
+  const lifecycle = createMainAgentActivityLifecycle({ transcriptFile });
+  const value = request();
+  value.turns = [{
+    id: "turn-failed",
+    inputIds: ["input-1"],
+    status: "failed",
+    startedAt: "2026-07-19T10:00:00.500Z",
+    endedAt: "2026-07-19T10:00:05.000Z",
+    error: "provider stopped after tool activity",
+  }];
+  value.executionState = value.startingExecutionState!;
+  value.toolActivities = [{
+    turnId: "turn-failed",
+    toolCallId: "tool-complete",
+    toolName: "edit",
+    callArguments: { path: "threads/private.md" },
+    result: { content: [{ type: "text", text: "changed" }] },
+    completedAt: "2026-07-19T10:00:04.000Z",
+  }];
+  value.effects = [];
+  value.deliveries = [];
+
+  const { activity } = await lifecycle.freeze(value);
+  const toolEvents = activity.events.filter(event => event.kind === "tool_call" || event.kind === "tool_result");
+
+  assert.equal(toolEvents.length, 2);
+  assert.equal(toolEvents[0]?.eventId, "tool-call:turn-failed:tool-complete");
+  assert.equal(toolEvents[1]?.eventId, "tool-result:turn-failed:tool-complete");
+  assert.match(JSON.stringify(toolEvents), /threads\/private\.md/);
+  assert.match(JSON.stringify(toolEvents), /changed/);
+  assert.equal(activity.events.filter(event => event.kind === "thinking" || event.kind === "output").length, 0);
+  assert.equal(activity.events.at(-1)?.kind, "system");
+});
+
 test("fixes the latest four Activities into one chronological recent bridge", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-recent-"));
   const transcriptFile = path.join(root, "agent.jsonl");
@@ -236,6 +274,7 @@ function request(): ActivityFreezeRequest {
         error: "provider failed after accepting input",
       },
     ],
+    toolActivities: [],
     effects: [{
       id: "effect-1",
       turnId: "turn-1",

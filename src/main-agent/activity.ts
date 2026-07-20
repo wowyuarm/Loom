@@ -71,6 +71,9 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
         }));
     const events = orderEvents([
       ...transcriptEvents,
+      ...request.turns
+        .filter(turn => turn.status !== "completed")
+        .flatMap(turn => failedToolActivityEvents(request, turn.id)),
       ...request.turns.filter(turn => turn.status !== "completed").map(stoppedTurnEvent),
       ...request.effects.map(effectEvent),
       ...request.deliveries.map(deliveryEvent),
@@ -107,6 +110,35 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
       successorExecutionState: serializeContextWindowState(successor),
     };
   }
+}
+
+function failedToolActivityEvents(
+  request: ActivityFreezeRequest,
+  turnId: string,
+): FrozenActivityEvent[] {
+  return request.toolActivities
+    .filter(activity => activity.turnId === turnId)
+    .flatMap(activity => [{
+      eventId: `tool-call:${turnId}:${activity.toolCallId}`,
+      at: activity.completedAt,
+      actorRef: "individual" as const,
+      kind: "tool_call" as const,
+      content: serializeJson({
+        toolCallId: activity.toolCallId,
+        toolName: activity.toolName,
+        arguments: activity.callArguments,
+      }),
+    }, {
+      eventId: `tool-result:${turnId}:${activity.toolCallId}`,
+      at: activity.completedAt,
+      actorRef: "system" as const,
+      kind: "tool_result" as const,
+      content: serializeJson({
+        toolCallId: activity.toolCallId,
+        toolName: activity.toolName,
+        result: activity.result,
+      }),
+    }]);
 }
 
 function stoppedTurnEvent(turn: ActivityFreezeRequest["turns"][number]): FrozenActivityEvent {
