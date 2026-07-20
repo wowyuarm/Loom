@@ -23,6 +23,7 @@ interface VerifyTranscriptEvidenceRequest {
   transcriptFile: string;
   sessionId: string;
   inputs: InputAnnotationReference[];
+  terminalToolNames?: string[];
 }
 
 export interface VerifiedTranscriptEvidence {
@@ -207,7 +208,7 @@ export async function verifyPrimaryTranscriptEvidence(
   });
   const leaf = branch.at(-1);
   if (!leaf) throw new Error(`Transcript ${request.transcriptFile} has no selected leaf`);
-  assertCompletedTurn(leaf, request.transcriptFile);
+  assertCompletedTurn(branch, request.transcriptFile, new Set(request.terminalToolNames ?? []));
   return {
     inputAnchors,
     transcriptAnchor: { sessionId: request.sessionId, entryId: leaf.id },
@@ -299,12 +300,26 @@ export async function readReferencedToolInteraction(request: {
   };
 }
 
-function assertCompletedTurn(leaf: TranscriptEntry, transcriptFile: string): void {
+function assertCompletedTurn(
+  branch: TranscriptEntry[],
+  transcriptFile: string,
+  terminalToolNames: Set<string>,
+): void {
+  const leaf = branch.at(-1);
+  if (!leaf) throw new Error(`Transcript ${transcriptFile} has no selected leaf`);
   const message = leaf.message;
   if (leaf.type !== "message" || !message || typeof message !== "object") {
     throw new Error(`Transcript ${transcriptFile} does not end with a completed assistant message`);
   }
   const assistant = message as Record<string, unknown>;
+  if (assistant.role === "toolResult"
+    && assistant.isError === false
+    && typeof assistant.toolCallId === "string"
+    && typeof assistant.toolName === "string"
+    && terminalToolNames.has(assistant.toolName)) {
+    const call = toolCallsOnBranch(branch.slice(0, -1), transcriptFile).get(assistant.toolCallId);
+    if (call?.toolName === assistant.toolName) return;
+  }
   if (assistant.role !== "assistant") {
     throw new Error(`Transcript ${transcriptFile} does not end with a completed assistant message`);
   }

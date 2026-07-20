@@ -50,6 +50,7 @@ import {
   toolTraceCompactionRequired,
 } from "./tool-trace.js";
 import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
+import { createMessageTool, type MessageTurnDecision } from "./message.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -67,6 +68,7 @@ export interface PiAgentExecutionOptions {
   modelRuntime: ModelRuntime;
   model: Model<any>;
   harnessSystemPrompt: string;
+  defaultInteractionRoute?: string;
   readOnlyTools?: ToolDefinition[];
   skillSources?: PiSkillSources;
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
@@ -188,6 +190,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     ) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
+    private readonly defaultInteractionRoute: string | undefined,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
     private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
   ) {}
@@ -230,6 +233,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 
   async #run(request: TurnRequest): Promise<PiExecutionResult> {
     let session: PiSession | undefined;
+    const messageDecision: MessageTurnDecision = { sent: 0, noReply: false };
     try {
       const restoredWindow = parseContextWindowState(request.executionState);
       await this.#selectCommittedBranch(restoredWindow);
@@ -261,10 +265,18 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         );
         preparedWindow = replacement;
       }
-      const preparedSession = await this.createSession(systemPrompt, [createExpandTool({
+      const turnTools = [createExpandTool({
         window: preparedWindow,
         transcriptFile: this.transcriptFile,
-      })]);
+      })];
+      if (this.defaultInteractionRoute) {
+        turnTools.push(createMessageTool({
+          control: this.lifecycle.control(request.turnId),
+          routeRef: this.defaultInteractionRoute,
+          decision: messageDecision,
+        }));
+      }
+      const preparedSession = await this.createSession(systemPrompt, turnTools);
       session = preparedSession.session;
       if (preparedSession.skillDiagnostics.length > 0) {
         this.sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
@@ -300,6 +312,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         transcriptFile: this.transcriptFile,
         sessionId: this.sessionManager.getSessionId(),
         inputs: this.lifecycle.evidenceRequest(request.turnId),
+        ...(this.defaultInteractionRoute ? { terminalToolNames: ["message"] } : {}),
       });
       this.#throwIfAborted(request.turnId);
       const completedWindow = completeContextWindow(
@@ -308,7 +321,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         evidence.transcriptAnchor,
       );
       return {
-        outcome: "completed",
+        outcome: messageDecision.noReply && messageDecision.sent === 0 ? "no_reply" : "completed",
         ...evidence,
         executionState: serializeContextWindowState(completedWindow),
         executionRecord: serializeValue(materialized.plan),
@@ -359,8 +372,13 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 }
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
-  if (options.readOnlyTools?.some(tool => tool.name === "expand_tool_result")) {
-    throw new Error("expand_tool_result is maintained by Loom and cannot be supplied as a read-only tool");
+  const reservedTools = new Set(["expand_tool_result", "message"]);
+  const reservedTool = options.readOnlyTools?.find(tool => reservedTools.has(tool.name));
+  if (reservedTool) {
+    throw new Error(`${reservedTool.name} is maintained by Loom and cannot be supplied as a read-only tool`);
+  }
+  if (options.defaultInteractionRoute !== undefined && !options.defaultInteractionRoute.trim()) {
+    throw new Error("Default Interaction Route cannot be blank");
   }
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
@@ -440,6 +458,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     createSession,
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),
     options.harnessSystemPrompt,
+    options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,
   );

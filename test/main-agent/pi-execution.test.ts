@@ -15,7 +15,7 @@ import { Type } from "typebox";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
-import type { JsonValue } from "../../src/runtime/index.js";
+import type { EffectRequest, JsonValue } from "../../src/runtime/index.js";
 
 function contextWindow(result: { executionState: JsonValue }) {
   const window = parseContextWindowState(result.executionState);
@@ -582,6 +582,78 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   assert.equal(reopenedEntries.filter(entry => entry.type === "custom" && entry.customType === "loom.input.v1").length, 2);
   assert.equal(secondResult.inputAnchors[0]?.inputId, "input-2");
   assert.equal(secondResult.transcriptAnchor.sessionId, result.transcriptAnchor.sessionId);
+});
+
+test("prepares a message Effect through the Main Agent action interface", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-send-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "A message from the Individual.",
+    }, { id: "message-send" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  const result = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-1" };
+    },
+  }).result;
+
+  assert.equal(result.outcome, "completed");
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "A message from the Individual." },
+    routeRef: "primary-route",
+  }]);
+});
+
+test("finishes with no_reply without preparing an Effect", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-no-reply-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "no_reply",
+      reason: "Nothing needs to be sent.",
+    }, { id: "message-no-reply" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+
+  const result = await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+
+  assert.equal(result.outcome, "no_reply");
 });
 
 test("continues from the last committed Context after a failed transcript branch", async t => {
