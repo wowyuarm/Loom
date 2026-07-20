@@ -5,6 +5,31 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 
 import { materializeTurnContext } from "../../src/main-agent/context.js";
 
+test("keeps complete required Turn-live material outside the normal material limit", () => {
+  const input = {
+    currentInput: userMessage("current"),
+    requiredTurnLive: [userMessage(`attention-start ${"x".repeat(400)} attention-end`)],
+    turnLive: [userMessage("optional live material")],
+    windowFrozen: [],
+    committedTrace: [],
+    fixedTokens: { system: 0, toolSchemas: 0 },
+    budget: {
+      hardContext: 180,
+      normalMaterial: 20,
+      outputReserve: 20,
+      safetyMargin: 0,
+      toolTraceReservation: 100,
+    },
+  };
+
+  const result = materializeTurnContext(input);
+
+  const messages = result.messages.map(message => JSON.stringify(message)).join("\n");
+  assert.match(messages, /attention-start/);
+  assert.match(messages, /attention-end/);
+  assert.doesNotMatch(messages, /optional live material/);
+});
+
 test("rejects a required current Input that cannot fit the hard context limit", () => {
   assert.throws(() => materializeTurnContext({
     currentInput: userMessage("x".repeat(1_000)),

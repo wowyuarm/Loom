@@ -350,6 +350,47 @@ test("binds interaction Workspace materials to their system and Context levels",
   assert.doesNotMatch(await readFile(transcriptFile, "utf8"), /current attention/);
 });
 
+test("keeps the complete Current Attention when normal Context material is over budget", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-required-attention-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await writeFile(
+    path.join(workspaceRoot, "attention.md"),
+    `attention-start ${"x".repeat(400)} attention-end`,
+    "utf8",
+  );
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /attention-start/);
+      assert.match(messages, /attention-end/);
+      return fauxAssistantMessage("attention received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    contextBudget: {
+      hardContext: 5_000,
+      normalMaterial: 20,
+      outputReserve: 500,
+      safetyMargin: 100,
+      toolTraceReservation: 2_000,
+    },
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-required-attention",
+    leaseToken: 1,
+    inputs: [executionInput("input-required-attention", "hello")],
+  }, noEffectControl()).result;
+});
+
 test("presents the complete Main Agent action surface from the Agent Workspace", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-actions-"));
   const { faux, model, modelRuntime } = await createTestPi(root);

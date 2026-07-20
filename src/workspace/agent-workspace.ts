@@ -63,6 +63,10 @@ export class AgentWorkspace {
     return source;
   }
 
+  async loadCurrentAttention(): Promise<string> {
+    return this.#read("attention.md");
+  }
+
   async #read(relativePath: string): Promise<string> {
     try {
       const content = await readFile(path.join(this.root, relativePath), "utf8");

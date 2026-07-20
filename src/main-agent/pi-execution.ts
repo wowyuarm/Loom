@@ -311,7 +311,8 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       session.setAutoCompactionEnabled(false);
       const materialized = materializeTurnContext({
         currentInput: currentInputMessage(request.inputs[0]!),
-        turnLive: [currentAttentionMessage(workspaceSnapshot.currentAttention), ...structuredClone(materials.turnLive)],
+        requiredTurnLive: [currentAttentionMessage(workspaceSnapshot.currentAttention)],
+        turnLive: structuredClone(materials.turnLive),
         windowFrozen: restoreMessages(preparedWindow.frozenSeed),
         committedTrace: restoreMessages(preparedWindow.committedTrace),
         fixedTokens: {

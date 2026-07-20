@@ -95,7 +95,7 @@ export interface ContextPlanDecision {
   material: "current" | "turn-live" | "window-frozen" | "active-trace";
   unitId: string;
   action: "kept" | "dropped";
-  reason: "required_current" | "protected_trace" | "within_budget" | "hard_limit" | "normal_limit";
+  reason: "required_current" | "required_live" | "protected_trace" | "within_budget" | "hard_limit" | "normal_limit";
   estimatedTokens: number;
 }
 
@@ -117,6 +117,7 @@ export interface ContextPlanRecord {
 
 export interface MaterializeTurnContextInput {
   currentInput: AgentMessage;
+  requiredTurnLive?: AgentMessage[];
   turnLive: AgentMessage[];
   windowFrozen: AgentMessage[];
   committedTrace: AgentMessage[];
@@ -146,11 +147,15 @@ export function materializeTurnContext(input: MaterializeTurnContextInput): Mate
   const fixedTokens = input.fixedTokens.system + input.fixedTokens.toolSchemas;
   const available = budget.hardContext - budget.outputReserve - budget.safetyMargin - fixedTokens;
   const currentTokens = messageTokens(input.currentInput);
-  if (currentTokens > available) {
-    throw new Error("Context Planner cannot fit the required current Input inside the hard context limit");
+  const requiredTurnLive = input.requiredTurnLive ?? [];
+  const liveUnits = messageUnits("turn-live", [...requiredTurnLive, ...input.turnLive]);
+  const requiredLiveUnits = liveUnits.slice(0, requiredTurnLive.length);
+  const optionalLiveUnits = liveUnits.slice(requiredTurnLive.length);
+  const requiredLiveTokens = requiredLiveUnits.reduce((total, unit) => total + unit.estimatedTokens, 0);
+  if (currentTokens + requiredLiveTokens > available) {
+    throw new Error("Context Planner cannot fit the required current Input and Turn-live material inside the hard context limit");
   }
 
-  const liveUnits = messageUnits("turn-live", input.turnLive);
   const frozenUnits = messageUnits("window-frozen", input.windowFrozen);
   const traceUnits = activeTraceUnits(input.committedTrace);
   const selected = new Set<string>();
@@ -161,8 +166,13 @@ export function materializeTurnContext(input: MaterializeTurnContextInput): Mate
     reason: "required_current",
     estimatedTokens: currentTokens,
   }];
-  let selectedMaterialTokens = currentTokens;
+  let selectedMaterialTokens = currentTokens + requiredLiveTokens;
   let traceExhausted = false;
+
+  for (const unit of requiredLiveUnits) {
+    selected.add(unit.id);
+    decide(unit, "kept", "required_live");
+  }
 
   for (const unit of [...traceUnits].reverse()) {
     if (traceExhausted || selectedMaterialTokens + unit.estimatedTokens > available) {
@@ -175,7 +185,7 @@ export function materializeTurnContext(input: MaterializeTurnContextInput): Mate
     decide(unit, "kept", "protected_trace");
   }
 
-  for (const units of [liveUnits, frozenUnits]) {
+  for (const units of [optionalLiveUnits, frozenUnits]) {
     for (const unit of [...units].reverse()) {
       if (selectedMaterialTokens + unit.estimatedTokens > available) {
         decide(unit, "dropped", "hard_limit");

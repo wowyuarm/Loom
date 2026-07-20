@@ -123,3 +123,7 @@ _Avoid_: activity close, import receipt, model confirmation
 **Recent Activity Bridge**:
 将最近最多四段 Frozen Activity 作为过去证据带入后继 Context 的确定性紧凑投影。它与 Life Recorder Receipt 状态无关，在一个 Active Segment 内固定，普通工具交互成对受限并可从授权引用展开；它不是新的 Input，也不包含未对外显露的 thinking。
 _Avoid_: current request, daily narrative, conversation summary
+
+**Current Attention**:
+Agent Individual 在最近几天里无需主动回想、醒来时自然带着的中短期觉知。它包含仍在追的方向及其当前位置，也包含会影响表达、靠近、沉默或转向的关系底色与自身节奏；它不是即时任务前景、事件摘要、行为指令或长期记忆。
+_Avoid_: active attention, task list, daily narrative, opportunity, long-term memory
