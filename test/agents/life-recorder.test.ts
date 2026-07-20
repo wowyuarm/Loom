@@ -12,7 +12,8 @@ import {
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { createPiLifeRecorder, type FrozenActivity } from "../../src/agents/life-recorder.js";
+import { createPiLifeRecorder } from "../../src/agents/life-recorder.js";
+import type { FrozenActivity } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
 test("grounds a recorder run and writes protected Daily and Episode records", async () => {
@@ -131,6 +132,35 @@ test("requires stable facts before calling the recorder model", async () => {
     name: "AgentWorkspaceMaterialError",
     message: "Required Agent Workspace material facts.json is missing",
   });
+});
+
+test("confines recorder file reads to the Agent Workspace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-read-boundary-"));
+  const workspaceRoot = await createRecorderWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-read-boundary");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read_activity", { offset: 0 }, { id: "read-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "/etc/hosts" }, { id: "read-outside" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("The outside read was refused."),
+  ]);
+  const recorder = await createPiLifeRecorder({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+  });
+
+  await assert.rejects(
+    recorder.record(activity()),
+    /Life Recorder tool read failed:.*Agent Workspace/i,
+  );
 });
 
 test("refuses a receipt when the recorder did not read every frozen event", async () => {

@@ -15,8 +15,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { JsonValue } from "../runtime/index.js";
+import type {
+  ActivityRecorder,
+  FrozenActivity,
+  JsonValue,
+  LifeRecorderReceipt,
+} from "../runtime/index.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
+import { createWorkspaceReadTools } from "../workspace/tools.js";
 
 const SYSTEM_PROMPT = `You are the Life Recorder for one Agent Individual. Preserve first-hand records of what happened; do not turn them into long-term analysis.
 
@@ -108,39 +114,6 @@ Either record may have no change. Do not force a summary, candidate, episode, or
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
 
-export interface FrozenActivityEvent {
-  eventId: string;
-  at: string;
-  actorRef: "individual" | "human" | "system";
-  kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
-  content: JsonValue;
-}
-
-export interface FrozenActivity {
-  version: 1;
-  segmentId: string;
-  recordingDay: string;
-  openedAt: string;
-  closedAt: string;
-  events: FrozenActivityEvent[];
-  transcriptAnchors: JsonValue[];
-}
-
-export interface LifeRecorderReceipt {
-  version: 1;
-  segmentId: string;
-  runId: string;
-  recordedAt: string;
-  daily: {
-    status: "updated" | "no_change";
-    path: string;
-  };
-  episodes: Array<{
-    id: string;
-    path: string;
-  }>;
-}
-
 export interface PiLifeRecorderOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
@@ -151,9 +124,7 @@ export interface PiLifeRecorderOptions {
   now?: () => Date;
 }
 
-export interface LifeRecorder {
-  record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
-}
+export type LifeRecorder = ActivityRecorder;
 
 interface FileSnapshot {
   absolutePath: string;
@@ -215,6 +186,7 @@ class PiLifeRecorder implements LifeRecorder {
     let dailyUpdated = false;
 
     const tools: ToolDefinition[] = [
+      ...createWorkspaceReadTools(this.options.agentWorkspace.root),
       defineTool({
         name: "read_activity",
         label: "Read Activity",
@@ -390,7 +362,7 @@ class PiLifeRecorder implements LifeRecorder {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
-      tools: ["read", "ls", ...tools.map(tool => tool.name)],
+      noTools: "builtin",
       customTools: tools,
       resourceLoader,
       sessionManager,

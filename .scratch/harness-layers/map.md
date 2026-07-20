@@ -53,8 +53,8 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [08 — Run Life Recorder from Frozen Activity Evidence](issues/08-run-life-recorder-from-frozen-activity.md)
 - Completed: [09 — Correct Life Recorder Context and Grounding](issues/09-correct-life-recorder-context-and-grounding.md)
 - Completed: [10 — Define Replayable Episodes and the Life Recorder Method](issues/10-define-replayable-episodes-and-recorder-method.md)
-- Current frontier: Life Recorder 的 Workspace 原生 Episode、Daily candidates、完整工作方法、索引驱动 Context 和受保护写入已经收束。下一张 ticket 应共同收束 Runtime Active Segment、Frozen Activity、持久 Life Recorder Receipt、失败重试、Window Closure 与 Recent Activity Bridge；不提前进入 nmem Integration、logical day、Configuration 或 generic organ framework。
-- 已确认的失败边界：Recorder 本轮失败时回滚 Daily/Episode 且不产生 Receipt；Runtime 必须保留同一份 Frozen Activity 为 pending，之后重试，不能把回滚解释为 Activity 已被丢弃。当前代码尚未接入这条 Runtime 生命周期。
+- Completed: [11 — Close Activity without Blocking Continuity](issues/11-close-activity-lifecycle.md)。Runtime 已持久连接 Active Segment、Frozen Activity、successor Context、pending Life Recorder 与 Receipt，并建立 Workspace 受限 `read` / `ls`。durable freeze 允许后继 Input；未记录 Activity 保持 FIFO pending 并继续作为 Recent Activity Bridge，器官运行本身不进入 lived Activity。
+- Next selection: 先做一次完整阶段与架构审视，回看 Xi 中 Orientation、Life Recorder、Thread/Now Maintainer、Memory Reflector、Tool Trace Compactor 与 Runtime/Workspace/Integrations 的实际联系，再决定下一张真实 ticket。此处不预建 Ticket 12，也不默认下一步就是 nmem、logical day 或 Configuration。
 
 ## Context Follow-ups
 
@@ -62,7 +62,7 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 | Follow-up | Current handling |
 | --- | --- |
-| Window Closure and Recent Activity Bridge | Agent Workspace 与 Life Recorder 已具备；下一步与 Runtime Active Segment 和持久 receipt 一起收束。 |
+| Window Closure and Recent Activity Bridge | Ticket 11 completed：durable freeze、pending bridge、successor Context、FIFO Life Recorder 与 Receipt 已闭合。 |
 | Tool Trace Compaction and Evidence Expansion | Ticket 06 completed：真实 compactor、失败 gate、Runtime 原子替换、稳定引用分页展开与机械收回已闭合。 |
 | Logical Day and Cross-day Context Recovery | 等时间/节律配置与每日 transcript 归属明确后实现。 |
 | Workspace Material Sources | Tickets 04-05 已接入 Identity、Memory、Behavior、Current Attention 与统一 skills catalog。 |

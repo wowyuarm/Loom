@@ -1,7 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 
-import type { JsonValue, TranscriptAnchor } from "../runtime/index.js";
+import type {
+  ActivityFreezeRequest,
+  FrozenActivityEvent,
+  JsonValue,
+  TranscriptAnchor,
+} from "../runtime/index.js";
 
 interface VerifyTranscriptEntryRequest {
   transcriptFile: string;
@@ -37,6 +42,118 @@ export interface TranscriptToolInteraction {
     isError: boolean;
     content: JsonValue[];
   };
+}
+
+export async function readCommittedActivityEvents(request: {
+  transcriptFile: string;
+  startAnchor?: TranscriptAnchor;
+  endAnchor: TranscriptAnchor;
+  inputs: ActivityFreezeRequest["inputs"];
+}): Promise<FrozenActivityEvent[]> {
+  if (request.startAnchor && request.startAnchor.sessionId !== request.endAnchor.sessionId) {
+    throw new Error("Activity transcript range cannot cross sessions");
+  }
+  const branch = await readBranchToEntry(
+    request.transcriptFile,
+    request.endAnchor.sessionId,
+    request.endAnchor.entryId,
+  );
+  assertCompleteToolInteractions(branch, request.transcriptFile);
+  const startIndex = request.startAnchor
+    ? branch.findIndex(entry => entry.id === request.startAnchor!.entryId)
+    : -1;
+  if (request.startAnchor && startIndex < 0) {
+    throw new Error(`Activity start ${request.startAnchor.entryId} is not an ancestor of its closing anchor`);
+  }
+  const inputs = new Map(request.inputs.map(input => [input.id, input]));
+  const observedInputs = new Set<string>();
+  const events: FrozenActivityEvent[] = [];
+  const entries = branch.slice(startIndex + 1);
+
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index]!;
+    if (entry.type === "custom" && entry.customType === "loom.input.v1") {
+      const data = entry.data;
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw new Error(`Transcript input annotation ${entry.id} has invalid data`);
+      }
+      const inputId = (data as Record<string, unknown>).inputId;
+      const input = typeof inputId === "string" ? inputs.get(inputId) : undefined;
+      const userEntry = entries[index + 1];
+      if (!input
+        || observedInputs.has(input.id)
+        || (data as Record<string, unknown>).kind !== input.kind
+        || (data as Record<string, unknown>).occurredAt !== input.occurredAt
+        || !isDeepStrictEqual((data as Record<string, unknown>).payload, input.payload)
+        || userEntry?.type !== "message"
+        || userEntry.parentId !== entry.id
+        || !isMessageRole(userEntry, "user")) {
+        throw new Error(`Transcript input annotation ${entry.id} does not match Runtime evidence`);
+      }
+      observedInputs.add(input.id);
+      events.push({
+        eventId: `input:${input.id}`,
+        at: input.occurredAt,
+        actorRef: input.kind === "interaction" ? "human" : "system",
+        kind: "input",
+        content: structuredClone(input.payload),
+      });
+      index += 1;
+      continue;
+    }
+    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+    const message = entry.message as Record<string, unknown>;
+    if (message.role === "user") {
+      throw new Error(`Transcript user entry ${entry.id} has no matching Runtime Input annotation`);
+    }
+    if (message.role === "assistant") {
+      if (!Array.isArray(message.content)) continue;
+      for (let blockIndex = 0; blockIndex < message.content.length; blockIndex += 1) {
+        const block = message.content[blockIndex];
+        if (!block || typeof block !== "object" || Array.isArray(block)) continue;
+        const type = (block as Record<string, unknown>).type;
+        const kind = type === "thinking"
+          ? "thinking"
+          : type === "toolCall"
+            ? "tool_call"
+            : "output";
+        events.push({
+          eventId: `transcript:${entry.id}:${blockIndex}`,
+          at: transcriptEntryTime(entry),
+          actorRef: "individual",
+          kind,
+          content: asJsonValue(block),
+        });
+      }
+      continue;
+    }
+    if (message.role === "toolResult") {
+      events.push({
+        eventId: `transcript:${entry.id}`,
+        at: transcriptEntryTime(entry),
+        actorRef: "system",
+        kind: "tool_result",
+        content: asJsonValue({
+          toolCallId: message.toolCallId,
+          toolName: message.toolName,
+          isError: message.isError,
+          content: message.content,
+        }),
+      });
+    }
+  }
+
+  for (const input of request.inputs) {
+    if (observedInputs.has(input.id)) continue;
+    events.push({
+      eventId: `input:${input.id}`,
+      at: input.occurredAt,
+      actorRef: input.kind === "interaction" ? "human" : "system",
+      kind: "input",
+      content: structuredClone(input.payload),
+    });
+  }
+  return events;
 }
 
 interface TranscriptHeader extends Record<string, unknown> {
@@ -351,6 +468,19 @@ function asJsonValue(value: unknown): JsonValue {
     throw new Error("Transcript tool interaction contains a non-JSON value");
   }
   return parsed;
+}
+
+function transcriptEntryTime(entry: TranscriptEntry): string {
+  if (typeof entry.timestamp !== "string" || Number.isNaN(Date.parse(entry.timestamp))) {
+    throw new Error(`Transcript entry ${entry.id} has no valid timestamp`);
+  }
+  return new Date(entry.timestamp).toISOString();
+}
+
+function isMessageRole(entry: TranscriptEntry, role: string): boolean {
+  return Boolean(entry.message
+    && typeof entry.message === "object"
+    && (entry.message as Record<string, unknown>).role === role);
 }
 
 function parseRecord(line: string, lineNumber: number): unknown {

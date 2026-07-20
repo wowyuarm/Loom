@@ -22,6 +22,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS turns (
       id TEXT PRIMARY KEY,
+      segment_id TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'timed_out', 'cancelled', 'interrupted')),
       outcome TEXT CHECK (outcome IS NULL OR outcome IN ('completed', 'no_reply')),
       lease_owner TEXT NOT NULL,
@@ -101,6 +102,50 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL
     ) STRICT;
 
-    PRAGMA user_version = 3;
+    CREATE TABLE IF NOT EXISTS active_segment (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      id TEXT NOT NULL UNIQUE,
+      opened_at TEXT NOT NULL,
+      starting_state_json TEXT,
+      status TEXT NOT NULL CHECK (status IN ('active', 'closing')),
+      close_owner TEXT,
+      close_fencing_token INTEGER,
+      close_lease_expires_at TEXT,
+      closed_at TEXT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS activities (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      opened_at TEXT NOT NULL,
+      closed_at TEXT NOT NULL,
+      recording_day TEXT NOT NULL,
+      frozen_activity_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'recording', 'recorded')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      lease_owner TEXT,
+      fencing_token INTEGER,
+      lease_expires_at TEXT,
+      receipt_json TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      recorded_at TEXT
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS activity_attempts (
+      id TEXT PRIMARY KEY,
+      activity_id TEXT NOT NULL REFERENCES activities(id),
+      attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+      status TEXT NOT NULL CHECK (status IN ('recording', 'recorded', 'failed', 'interrupted')),
+      lease_owner TEXT NOT NULL,
+      fencing_token INTEGER NOT NULL,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      error TEXT,
+      receipt_json TEXT,
+      UNIQUE (activity_id, attempt_number)
+    ) STRICT;
+
+    PRAGMA user_version = 4;
   `);
 }

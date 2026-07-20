@@ -7,9 +7,12 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   openRuntime,
+  type ActivityLifecycle,
+  type ActivityRecorder,
   type AgentExecution,
   type EffectRequest,
   type JsonValue,
+  type FrozenActivity,
   type OutboundDelivery,
   type RunningExecution,
   type TranscriptAnchor,
@@ -230,6 +233,290 @@ const completingExecution: AgentExecution = {
     };
   },
 };
+
+class ObservedCompletingExecution implements AgentExecution {
+  readonly requests: TurnRequest[] = [];
+
+  start(request: TurnRequest, control: TurnControl): RunningExecution {
+    this.requests.push(structuredClone(request));
+    return completingExecution.start(request, control);
+  }
+}
+
+function activityLifecycle(observed: Parameters<ActivityLifecycle["freeze"]>[0][] = []): ActivityLifecycle {
+  return {
+    freeze: async request => {
+      observed.push(structuredClone(request));
+      return {
+        activity: {
+          version: 1,
+          segmentId: request.segment.id,
+          recordingDay: request.segment.recordingDay,
+          openedAt: request.segment.openedAt,
+          closedAt: request.segment.closedAt,
+          events: request.inputs.map(input => ({
+            eventId: `input:${input.id}`,
+            at: input.occurredAt,
+            actorRef: input.kind === "interaction" ? "human" : "system",
+            kind: "input",
+            content: input.payload,
+          })),
+          transcriptAnchors: request.turns.flatMap(turn => turn.transcriptAnchor ? [turn.transcriptAnchor] : []),
+        },
+        successorExecutionState: {
+          version: 1,
+          successorOf: request.segment.id,
+        },
+      };
+    },
+  };
+}
+
+function recorder(recorded: string[], failFirst = false): ActivityRecorder {
+  let attempts = 0;
+  return {
+    record: async (activity: FrozenActivity) => {
+      attempts += 1;
+      recorded.push(activity.segmentId);
+      if (failFirst && attempts === 1) throw new Error("recorder unavailable");
+      return {
+        version: 1,
+        segmentId: activity.segmentId,
+        runId: `run-${attempts}`,
+        recordedAt: "2026-07-19T12:00:00.000Z",
+        daily: { status: "no_change", path: `daily/${activity.recordingDay}.md` },
+        episodes: [],
+      };
+    },
+  };
+}
+
+test("continues interaction from the successor state while recording is pending", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-activity-"));
+  const execution = new ObservedCompletingExecution();
+  const recorded: string[] = [];
+  const runtime = openRuntime({
+    root,
+    execution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: recorder(recorded),
+    now: () => new Date("2026-07-19T11:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "first",
+    kind: "interaction",
+    payload: { text: "first activity" },
+    occurredAt: "2026-07-19T10:59:00.000Z",
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+
+  const closed = await runtime.closeActivity();
+  assert.equal(closed.disposition, "activity_frozen");
+  assert.equal(runtime.status().activities[0]?.status, "pending");
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "second",
+    kind: "interaction",
+    payload: { text: "successor activity" },
+    occurredAt: "2026-07-19T11:01:00.000Z",
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.deepEqual(execution.requests[1]?.executionState, {
+    version: 1,
+    successorOf: closed.activityId,
+  });
+  assert.deepEqual(recorded, []);
+
+  assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
+  assert.deepEqual(recorded, [closed.activityId]);
+  assert.equal(runtime.status().activities[0]?.status, "recorded");
+});
+
+test("retries failed frozen activities in FIFO order after restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-activity-retry-"));
+  const failedOrder: string[] = [];
+  const firstRuntime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: recorder(failedOrder, true),
+    now: () => new Date("2026-07-19T12:00:00.000Z"),
+  });
+
+  const frozenIds: string[] = [];
+  for (const sourceId of ["first", "second"]) {
+    await firstRuntime.acceptInput({
+      source: "test-channel",
+      sourceId,
+      kind: "interaction",
+      payload: { text: sourceId },
+    });
+    assert.deepEqual(await firstRuntime.advance(), { disposition: "turn_completed" });
+    const closed = await firstRuntime.closeActivity();
+    assert.equal(closed.disposition, "activity_frozen");
+    frozenIds.push(closed.activityId);
+  }
+
+  assert.deepEqual(await firstRuntime.advance(), { disposition: "activity_recording_failed" });
+  assert.equal(firstRuntime.status().activities[0]?.attempts, 1);
+  assert.match(firstRuntime.status().activities[0]?.lastError ?? "", /recorder unavailable/);
+  firstRuntime.close();
+
+  const recoveredOrder: string[] = [];
+  const recovered = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: recorder(recoveredOrder),
+    now: () => new Date("2026-07-19T12:05:00.000Z"),
+  });
+  try {
+    assert.deepEqual(await recovered.advance(), { disposition: "activity_recorded" });
+    assert.deepEqual(await recovered.advance(), { disposition: "activity_recorded" });
+    assert.deepEqual(recoveredOrder, frozenIds);
+    assert.deepEqual(recovered.status().activities.map(activity => activity.status), ["recorded", "recorded"]);
+  } finally {
+    recovered.close();
+  }
+});
+
+test("preserves stopped Turn facts without treating an uncommitted transcript branch as evidence", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-stopped-turn-activity-"));
+  const observed: Parameters<ActivityLifecycle["freeze"]>[0][] = [];
+  const runtime = openRuntime({
+    root,
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { version: 1, prepared: true });
+        control.includeInput(request.inputs[0]!.id);
+        control.prepareEffect({ kind: "workspace_change", payload: { path: "notes/plan.md" } });
+        return {
+          result: Promise.reject(new Error("provider stopped after workspace effect")),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+    activityLifecycle: activityLifecycle(observed),
+    now: () => new Date("2026-07-19T12:30:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "failed-turn",
+    kind: "interaction",
+    payload: { text: "change the plan" },
+  });
+  await assert.rejects(runtime.advance(), /provider stopped after workspace effect/);
+  assert.equal(runtime.status().inputs[0]?.status, "consumed");
+  assert.equal((await runtime.closeActivity()).disposition, "activity_frozen");
+
+  assert.equal(observed[0]?.turns.length, 1);
+  assert.deepEqual(observed[0]?.turns[0], {
+    id: runtime.status().turns[0]!.id,
+    inputIds: [runtime.status().inputs[0]!.id],
+    status: "failed",
+    startedAt: "2026-07-19T12:30:00.000Z",
+    endedAt: "2026-07-19T12:30:00.000Z",
+    error: "provider stopped after workspace effect",
+  });
+});
+
+test("preserves an interrupted Turn with a durable Effect when closing after restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interrupted-turn-activity-"));
+  let now = Date.parse("2026-07-19T12:40:00.000Z");
+  const execution = new EffectThenHoldExecution({
+    kind: "workspace_change",
+    payload: { path: "notes/recovered.md" },
+  });
+  const interrupted = openRuntime({
+    root,
+    execution,
+    ownerId: "interrupted-runtime",
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+  await interrupted.acceptInput({
+    source: "test-channel",
+    sourceId: "interrupted-turn",
+    kind: "opportunity",
+    payload: { reason: "continue private work" },
+  });
+  void interrupted.advance();
+  await execution.started.promise;
+  interrupted.close();
+
+  now += 2_000;
+  const observed: Parameters<ActivityLifecycle["freeze"]>[0][] = [];
+  const recovered = openRuntime({
+    root,
+    ownerId: "recovered-runtime",
+    activityLifecycle: activityLifecycle(observed),
+    leaseDurationMs: 1_000,
+    now: () => new Date(now),
+  });
+  try {
+    assert.equal(recovered.status().inputs[0]?.status, "consumed");
+    assert.equal((await recovered.closeActivity()).disposition, "activity_frozen");
+    assert.equal(observed[0]?.turns[0]?.status, "interrupted");
+    assert.equal(observed[0]?.turns[0]?.error, "runtime lease expired");
+    assert.equal(observed[0]?.effects[0]?.kind, "workspace_change");
+  } finally {
+    recovered.close();
+  }
+});
+
+test("recovers an interrupted Activity close without losing the active segment", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-activity-close-recovery-"));
+  let now = new Date("2026-07-19T13:00:00.000Z");
+  const closeStarted = deferred<Parameters<ActivityLifecycle["freeze"]>[0]>();
+  const interruptedLifecycle: ActivityLifecycle = {
+    freeze: request => {
+      closeStarted.resolve(request);
+      return new Promise(() => {});
+    },
+  };
+  const interrupted = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: interruptedLifecycle,
+    activityRecorder: recorder([]),
+    leaseDurationMs: 50,
+    now: () => now,
+  });
+  await interrupted.acceptInput({
+    source: "test-channel",
+    sourceId: "before-crash",
+    kind: "interaction",
+    payload: { text: "preserve this activity" },
+  });
+  assert.deepEqual(await interrupted.advance(), { disposition: "turn_completed" });
+  void interrupted.closeActivity();
+  const closing = await closeStarted.promise;
+  interrupted.close();
+
+  now = new Date("2026-07-19T13:01:00.000Z");
+  const recovered = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: recorder([]),
+    leaseDurationMs: 50,
+    now: () => now,
+  });
+  try {
+    assert.equal(recovered.status().activeSegment?.id, closing.segment.id);
+    const result = await recovered.closeActivity();
+    assert.deepEqual(result, { disposition: "activity_frozen", activityId: closing.segment.id });
+  } finally {
+    recovered.close();
+  }
+});
 
 test("accepts a source input exactly once", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));

@@ -14,6 +14,98 @@ export type TranscriptAnchor = {
   entryId: string;
 };
 
+export interface FrozenActivityEvent {
+  eventId: string;
+  at: string;
+  actorRef: "individual" | "human" | "system";
+  kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
+  content: JsonValue;
+}
+
+export interface FrozenActivity {
+  version: 1;
+  segmentId: string;
+  recordingDay: string;
+  openedAt: string;
+  closedAt: string;
+  events: FrozenActivityEvent[];
+  transcriptAnchors: JsonValue[];
+}
+
+export interface LifeRecorderReceipt {
+  version: 1;
+  segmentId: string;
+  runId: string;
+  recordedAt: string;
+  daily: {
+    status: "updated" | "no_change";
+    path: string;
+  };
+  episodes: Array<{
+    id: string;
+    path: string;
+  }>;
+}
+
+export interface ActivityFreezeRequest {
+  segment: {
+    id: string;
+    openedAt: string;
+    closedAt: string;
+    recordingDay: string;
+  };
+  pendingActivities: FrozenActivity[];
+  startingExecutionState?: JsonValue;
+  executionState: JsonValue;
+  inputs: Array<{
+    id: string;
+    kind: InputKind;
+    payload: JsonValue;
+    occurredAt: string;
+  }>;
+  turns: Array<{
+    id: string;
+    inputIds: string[];
+    status: "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
+    startedAt: string;
+    endedAt: string;
+    transcriptAnchor?: TranscriptAnchor;
+    executionRecord?: JsonValue;
+    error?: string;
+  }>;
+  effects: Array<{
+    id: string;
+    turnId: string;
+    kind: string;
+    payload: JsonValue;
+    routeRef?: string;
+    createdAt: string;
+    endedAt?: string;
+    status: RuntimeEffectStatus["status"];
+  }>;
+  deliveries: Array<{
+    id: string;
+    effectId: string;
+    attempt: number;
+    status: RuntimeDeliveryStatus["status"];
+    startedAt: string;
+    endedAt?: string;
+    remoteId?: string;
+    error?: string;
+  }>;
+}
+
+export interface ActivityLifecycle {
+  freeze(request: ActivityFreezeRequest): Promise<{
+    activity: FrozenActivity;
+    successorExecutionState: JsonValue;
+  }>;
+}
+
+export interface ActivityRecorder {
+  record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
+}
+
 export interface ExecutionInput {
   id: string;
   kind: InputKind;
@@ -126,17 +218,34 @@ export interface RuntimeDeliveryStatus {
   error?: string;
 }
 
+export interface RuntimeActivityStatus {
+  id: string;
+  openedAt: string;
+  closedAt: string;
+  status: "pending" | "recording" | "recorded";
+  attempts: number;
+  receipt?: LifeRecorderReceipt;
+  lastError?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
   effects: RuntimeEffectStatus[];
   deliveries: RuntimeDeliveryStatus[];
+  activeSegment?: {
+    id: string;
+    openedAt: string;
+  };
+  activities: RuntimeActivityStatus[];
 }
 
 export interface RuntimeOptions {
   root: string;
   execution?: AgentExecution;
   outboundDelivery?: OutboundDelivery;
+  activityLifecycle?: ActivityLifecycle;
+  activityRecorder?: ActivityRecorder;
   now?: () => Date;
   nextId?: () => string;
   ownerId?: string;
@@ -149,11 +258,19 @@ export type AdvanceResult =
   | { disposition: "delivery_completed" }
   | { disposition: "delivery_not_sent" }
   | { disposition: "delivery_requires_reconciliation" }
+  | { disposition: "activity_recorded" }
+  | { disposition: "activity_recording_failed" }
   | { disposition: "busy" };
+
+export type CloseActivityResult =
+  | { disposition: "no_activity" }
+  | { disposition: "busy" }
+  | { disposition: "activity_frozen"; activityId: string };
 
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   advance(): Promise<AdvanceResult>;
+  closeActivity(): Promise<CloseActivityResult>;
   status(): RuntimeStatus;
   close(): void;
 }
