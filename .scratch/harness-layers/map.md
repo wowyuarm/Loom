@@ -57,6 +57,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [12 — Bound the Recent Activity Bridge](issues/12-bound-recent-activity-bridge.md)。Recent Activity 与 Recorder 队列已解耦；successor 固定最近四段紧凑 bridge，普通工具 pair 共享 1K 额度、保留 200 字预览，并通过现有 `expand_tool_result` 读取完整证据。
 - Completed: [13 — Bind Main Agent Message Decisions](issues/13-bind-main-agent-message-decisions.md)。Main Agent 在装配默认 Interaction Route 时获得通用 `message`；`send` 先形成持久 Effect，`no_reply` 形成明确 Turn outcome，成功的 Harness terminal tool result 可作为已验证 Transcript 末尾。
 - Completed: [14 — Form Proactive Opportunities](issues/14-form-proactive-opportunities.md)。Orientation 通过隔离 Pi session、Stable Facts、Workspace 受限读取和专用 Activity 分页形成 Opportunity 或 none；Runtime 只在持续空闲时原子接纳，主动 Turn 的静默、私活、message、途中来信和失败前工具活动均已闭合到 Active Segment / Frozen Activity 生命周期。
+- Completed: [15 — Calibrate Orientation Framing](issues/15-calibrate-orientation-framing.md)。Orientation 明确把 Workspace 与 Activity 视为 Individual 的生活材料，负责交代前因和入口而不完成意义判断；关系性关切是一等 Opportunity 来源，grounded `none` 与模型可见的 `<proactive_opportunity>` 均保留。
 
 ## Context Follow-ups
 
