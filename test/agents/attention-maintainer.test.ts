@@ -7,7 +7,7 @@ import test from "node:test";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { createPiCurrentAttentionMaintainer } from "../../src/agents/current-attention-maintainer.js";
+import { createPiAttentionMaintainer } from "../../src/agents/attention-maintainer.js";
 import type { FrozenActivity } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
@@ -51,7 +51,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
     },
     fauxAssistantMessage("UPDATED"),
   ]);
-  const maintainer = await createPiCurrentAttentionMaintainer({
+  const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent"),
     transcriptDirectory: path.join(root, "transcripts"),
@@ -92,7 +92,7 @@ test("keeps Current Attention unchanged after grounded inspection", async () => 
     ),
     fauxAssistantMessage("NO_CHANGE"),
   ]);
-  const maintainer = await createPiCurrentAttentionMaintainer({
+  const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent"),
     transcriptDirectory: path.join(root, "transcripts"),
@@ -124,7 +124,7 @@ test("refuses a decision made without supporting evidence", async () => {
     ),
     fauxAssistantMessage("NO_CHANGE"),
   ]);
-  const maintainer = await createPiCurrentAttentionMaintainer({
+  const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent"),
     transcriptDirectory: path.join(root, "transcripts"),
@@ -143,6 +143,8 @@ test("refuses a decision made without supporting evidence", async () => {
 test("restores Current Attention when the provider fails after replacement", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-attention-rollback-"));
   const workspaceRoot = await createWorkspace(root);
+  const previousAttention = "\nold attention body\n\n";
+  await writeFile(path.join(workspaceRoot, "attention.md"), previousAttention, "utf8");
   const { faux, model, modelRuntime } = await createTestPi(root, "attention-rollback");
   faux.setResponses([
     fauxAssistantMessage(
@@ -162,7 +164,7 @@ test("restores Current Attention when the provider fails after replacement", asy
       errorMessage: "provider failed after replacement",
     }),
   ]);
-  const maintainer = await createPiCurrentAttentionMaintainer({
+  const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent"),
     transcriptDirectory: path.join(root, "transcripts"),
@@ -175,7 +177,7 @@ test("restores Current Attention when the provider fails after replacement", asy
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [frozenActivity()],
   }), /provider failed after replacement/i);
-  assert.equal(await readFile(path.join(workspaceRoot, "attention.md"), "utf8"), "old attention body\n");
+  assert.equal(await readFile(path.join(workspaceRoot, "attention.md"), "utf8"), previousAttention);
 });
 
 function frozenActivity(): FrozenActivity {

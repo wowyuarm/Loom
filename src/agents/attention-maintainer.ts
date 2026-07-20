@@ -23,34 +23,44 @@ const ATTENTION_PATH = "attention.md";
 const DEFAULT_ACTIVITY_PAGE_SIZE = 20;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
 
-const SYSTEM_PROMPT = `You are the Current Attention Maintainer, an internal Cognitive Organ of this Agent Harness. You maintain what one Agent Individual naturally carries from one day into the next.
+const SYSTEM_PROMPT = `You are the Attention Maintainer, an internal Cognitive Organ of this Agent Harness. You maintain what one Agent Individual naturally carries from one day into the next.
+
+You are not the Main Agent or the Agent Individual. Everything you read belongs to the Individual: its identity, memory, relationship, attention, recent life, and private work do not become your own. You look through these materials temporarily so the Individual can wake with an honest sense of what is still present.
 
 ## Current Attention
 
-Current Attention is the Individual's medium-short-term awareness between Daily Narrative and Long-term Memory. It answers "what am I naturally carrying these days?", not "what should I do next?"
+Current Attention is the Individual's cross-day awareness between Daily Narrative and Long-term Memory. It answers "what am I naturally carrying these days?", not "what should I do next?"
 
 It can hold two interwoven forms:
 
 - an explicit line the Individual is still following: what remains alive, where it has reached, the question or pull that keeps it present, and a useful Workspace entrance when one exists;
 - an implicit felt context: the current temperature of the primary relationship, the Individual's own rhythm or state, and anything that naturally changes how it approaches, speaks, stays silent, or turns elsewhere.
 
-The usual horizon is several days, roughly two to five, but this is not an expiry rule. Keep something while it still changes the Individual's natural expression or judgment. Remove it when it no longer does. A new event belongs here only when it changes that carried awareness.
+The usual horizon is several days, roughly two to five, but this is not an expiry rule. Keep something while it still changes the Individual's natural expression or judgment. Remove it when it no longer does. New material belongs here only when it changes that carried awareness.
 
 Current Attention is not a task list, next-Turn plan, Daily timeline, Recent Activity replay, Opportunity, behavior instruction, Long-term Memory, or cross-time pattern analysis. Do not preserve an event merely because it is recent. Do not turn every open matter into work.
+
+## The deciding test
+
+Ask one question: if this were absent from attention.md, would the Individual's expression, direction choices, relationship approach, or judgment about speaking and staying silent naturally be different over the next few days?
+
+Daily Narratives, Frozen Activity, Episodes, or threads may already preserve the underlying details. Recoverability does not make something Current Attention. Keep only the awareness whose presence changes how the Individual naturally carries those details.
 
 ## Grounding
 
 The system prompt ends with the complete Stable Facts for this Individual and the primary human. Use them for identity, attribution, natural forms of address, places, and language. They do not prove a current event happened and do not override an explicit correction in current evidence.
 
-The run context gives indexes, not a prewritten briefing. First read the complete existing attention.md. Then inspect enough additional Workspace or Recent Activity evidence to know whether its awareness has changed. Daily Narratives show recent lived continuity; a Daily candidate labeled [attention] is only a lead to inspect, not accepted Current Attention. Threads and private work show where an explicit line has actually reached; Recent Activity supplies immutable recent evidence; Long-term Memory supplies durable weight but does not by itself make something current.
+The run context gives indexes, not a prewritten briefing. First read the complete existing attention.md. Then inspect enough additional Workspace or Recent Activity evidence to know whether its awareness has changed. A Daily candidate labeled [attention] is only a lead to inspect, not accepted Current Attention. Threads and private work show where an explicit line has actually reached; Recent Activity supplies immutable recent evidence; Long-term Memory supplies durable weight but does not by itself make something current.
 
 Use only evidence you actually read. Do not infer that an output reached the human without Delivery evidence. Preserve quoted speech and source text in their original language. Write the surrounding attention in the predominant language of the evidence; when that is unclear, follow Stable Facts.
 
 ## Writing
 
-The file should feel like awareness the Individual itself naturally carries, not a third-party briefing. Write from the Individual's perspective or in direct natural statements. Do not mention this organ, a maintenance run, refreshing, organizing, evidence review, or the Harness.
+The Main Agent receives the complete file as the Individual's own current awareness. Write from the Individual's perspective or in direct natural statements, not as instructions addressed to the Main Agent and not as a third-party briefing.
 
-Prefer a compact whole that can be read in full. A useful entry contains enough texture to recognize what is alive and, when helpful, where to look next. It does not copy long source passages or reduce them to sterile metadata. Loose headings are allowed but no fixed schema is required.
+Do not mention this organ, a maintenance run, refreshing, organizing, or evidence review. Do not expose the Harness machinery that caused this run. The Harness itself may still appear when the evidence shows that it is a genuine subject of the Individual's work or attention.
+
+Prefer a compact whole that can be read in full. A useful entry contains enough texture to recognize what is alive and, when helpful, where to look next. A path is an entrance for resuming the material, not a reason for keeping it in attention. Do not copy long source passages or reduce them to sterile metadata. Loose headings are allowed but no fixed schema is required.
 
 These examples show the distinction only. Follow the current evidence's language and content rather than copying them.
 
@@ -72,29 +82,29 @@ Not Current Attention:
 
 1. Read the complete existing attention.md.
 2. Inspect at least one additional relevant Workspace source or indexed Frozen Activity.
-3. Compare the existing awareness with the evidence. Confirm what remains, remove what has faded from current life, and update or add only what genuinely changes the whole.
+3. Compare the existing awareness with the evidence. Confirm what remains, remove what is no longer naturally carried, and update or add only what genuinely changes the whole.
 4. If it changed, call replace_attention exactly once with the complete new file, then return exactly UPDATED.
 5. If nothing changed, do not call replace_attention and return exactly NO_CHANGE.
 
 Do not modify any other file. A stable Current Attention is better left untouched than cosmetically rewritten.`;
 
-export interface CurrentAttentionMaintenanceRequest {
+export interface AttentionMaintenanceRequest {
   observedAt: string;
   localTime: string;
   recentActivities: FrozenActivity[];
 }
 
-export type CurrentAttentionMaintenanceResult = {
+export type AttentionMaintenanceResult = {
   outcome: "updated" | "no_change";
   runId: string;
   path: typeof ATTENTION_PATH;
 };
 
-export interface CurrentAttentionMaintainer {
-  maintain(request: CurrentAttentionMaintenanceRequest): Promise<CurrentAttentionMaintenanceResult>;
+export interface AttentionMaintainer {
+  maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
 }
 
-export interface PiCurrentAttentionMaintainerOptions {
+export interface PiAttentionMaintainerOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
   transcriptDirectory: string;
@@ -103,10 +113,10 @@ export interface PiCurrentAttentionMaintainerOptions {
   nextRunId?: () => string;
 }
 
-class PiCurrentAttentionMaintainer implements CurrentAttentionMaintainer {
-  constructor(private readonly options: PiCurrentAttentionMaintainerOptions) {}
+class PiAttentionMaintainer implements AttentionMaintainer {
+  constructor(private readonly options: PiAttentionMaintainerOptions) {}
 
-  async maintain(request: CurrentAttentionMaintenanceRequest): Promise<CurrentAttentionMaintenanceResult> {
+  async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
     validateRequest(request);
     const runId = this.options.nextRunId?.() ?? randomUUID();
     const [stableFacts, previousAttention] = await Promise.all([
@@ -139,7 +149,7 @@ class PiCurrentAttentionMaintainer implements CurrentAttentionMaintainer {
         }),
         execute: async (_toolCallId, params) => {
           const activity = activities.get(params.activityId);
-          if (!activity) throw new Error("Activity is not indexed for this Current Attention run");
+          if (!activity) throw new Error("Activity is not indexed for this Attention Maintainer run");
           const offset = params.offset ?? 0;
           if (offset > activity.events.length) throw new Error("Activity offset is outside the frozen evidence");
           const limit = params.limit ?? DEFAULT_ACTIVITY_PAGE_SIZE;
@@ -185,13 +195,13 @@ class PiCurrentAttentionMaintainer implements CurrentAttentionMaintainer {
       const finalOutput = await this.#runSession(request, runId, stableFacts, tools);
       assertGrounded(attentionRead, supportingEvidenceRead);
       if (replaced) {
-        if (finalOutput !== "UPDATED") throw new Error("Current Attention Maintainer must return UPDATED after replacement");
+        if (finalOutput !== "UPDATED") throw new Error("Attention Maintainer must return UPDATED after replacement");
         return { outcome: "updated", runId, path: ATTENTION_PATH };
       }
-      if (finalOutput !== "NO_CHANGE") throw new Error("Current Attention Maintainer must return NO_CHANGE when no replacement was made");
+      if (finalOutput !== "NO_CHANGE") throw new Error("Attention Maintainer must return NO_CHANGE when no replacement was made");
       return { outcome: "no_change", runId, path: ATTENTION_PATH };
     } catch (error) {
-      if (replaced) await atomicWrite(attentionFile, normalizeAttention(previousAttention));
+      if (replaced) await atomicWrite(attentionFile, previousAttention);
       throw error;
     }
 
@@ -213,7 +223,7 @@ class PiCurrentAttentionMaintainer implements CurrentAttentionMaintainer {
   }
 
   async #runSession(
-    request: CurrentAttentionMaintenanceRequest,
+    request: AttentionMaintenanceRequest,
     runId: string,
     stableFacts: string,
     tools: ToolDefinition[],
@@ -270,19 +280,19 @@ class PiCurrentAttentionMaintainer implements CurrentAttentionMaintainer {
   }
 }
 
-export async function createPiCurrentAttentionMaintainer(
-  options: PiCurrentAttentionMaintainerOptions,
-): Promise<CurrentAttentionMaintainer> {
+export async function createPiAttentionMaintainer(
+  options: PiAttentionMaintainerOptions,
+): Promise<AttentionMaintainer> {
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
     mkdir(options.transcriptDirectory, { recursive: true }),
   ]);
-  return new PiCurrentAttentionMaintainer(options);
+  return new PiAttentionMaintainer(options);
 }
 
-function buildRunPrompt(request: CurrentAttentionMaintenanceRequest, runId: string): string {
+function buildRunPrompt(request: AttentionMaintenanceRequest, runId: string): string {
   return [
-    "Current Attention maintenance run",
+    "Attention maintenance run",
     "",
     "## Run",
     `- Run ID: ${runId}`,
@@ -326,14 +336,14 @@ function finalAssistantText(messages: AgentMessage[]): string {
     );
   }
   const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
-  if (!message) throw new Error("Current Attention Maintainer did not return an assistant message");
+  if (!message) throw new Error("Attention Maintainer did not return an assistant message");
   if (message.stopReason === "error" || message.stopReason === "aborted") {
-    throw new Error(message.errorMessage ?? `Current Attention Maintainer stopped with ${message.stopReason}`);
+    throw new Error(message.errorMessage ?? `Attention Maintainer stopped with ${message.stopReason}`);
   }
   return message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
 }
 
-function validateRequest(request: CurrentAttentionMaintenanceRequest): void {
+function validateRequest(request: AttentionMaintenanceRequest): void {
   if (!request.observedAt || Number.isNaN(Date.parse(request.observedAt))) {
     throw new Error("Current Attention observedAt must be an ISO timestamp");
   }
@@ -346,8 +356,8 @@ function validateRequest(request: CurrentAttentionMaintenanceRequest): void {
 }
 
 function assertGrounded(attentionRead: boolean, supportingEvidenceRead: boolean): void {
-  if (!attentionRead) throw new Error("Current Attention Maintainer must read attention.md before deciding");
-  if (!supportingEvidenceRead) throw new Error("Current Attention Maintainer must inspect supporting evidence before deciding");
+  if (!attentionRead) throw new Error("Attention Maintainer must read attention.md before deciding");
+  if (!supportingEvidenceRead) throw new Error("Attention Maintainer must inspect supporting evidence before deciding");
 }
 
 function isAttentionPath(value: unknown): boolean {
