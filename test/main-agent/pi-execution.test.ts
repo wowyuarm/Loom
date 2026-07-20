@@ -94,7 +94,6 @@ test("presents core and Workspace skills as one stable catalog without Pi inheri
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
-    readOnlyTools: [readTool()],
     skillSources: { core: [coreSkills], integrations: [integrationSkills] },
   });
   t.after(() => execution.close());
@@ -147,11 +146,17 @@ test("removes every skill sharing a name across sources", async t => {
   assert.match(await readFile(transcriptFile, "utf8"), /loom\.skill-diagnostics\.v1/);
 });
 
-test("requires a read tool before running a Turn with accepted skills", async t => {
+test("uses the baseline read tool with accepted skills", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-skill-read-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
   await writeSkill(path.join(workspaceRoot, "skills"), "workspace-skill", "Readable capability.");
   const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      assert.ok((context.tools ?? []).some(tool => tool.name === "read"));
+      return fauxAssistantMessage("skill can be read");
+    },
+  ]);
   const included: string[] = [];
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -163,16 +168,16 @@ test("requires a read tool before running a Turn with accepted skills", async t 
   });
   t.after(() => execution.close());
 
-  await assert.rejects(execution.start({
+  await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
     inputs: [executionInput("input-1", "hello")],
   }, {
     ...noEffectControl(),
     includeInput: inputId => included.push(inputId),
-  }).result, /accepted skills require an active read tool/i);
-  assert.equal(faux.state.callCount, 0);
-  assert.deepEqual(included, []);
+  }).result;
+  assert.equal(faux.state.callCount, 1);
+  assert.deepEqual(included, ["input-1"]);
 });
 
 test("refreshes Workspace skills between Turns but freezes them during steering", async t => {
@@ -218,7 +223,6 @@ test("refreshes Workspace skills between Turns but freezes them during steering"
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
-    readOnlyTools: [readTool()],
   });
   t.after(() => execution.close());
 
@@ -272,7 +276,6 @@ test("excludes unusable skills while exposing and recording their diagnostics", 
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
-    readOnlyTools: [readTool()],
     skillSources: { core: [skillsRoot], integrations: [] },
   });
   t.after(() => execution.close());
@@ -345,6 +348,206 @@ test("binds interaction Workspace materials to their system and Context levels",
     textTokenEstimate(providerSystemPrompt) + textTokenEstimate(JSON.stringify(providerTools)),
   );
   assert.doesNotMatch(await readFile(transcriptFile, "utf8"), /current attention/);
+});
+
+test("presents the complete Main Agent action surface from the Agent Workspace", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-actions-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      assert.deepEqual(
+        (context.tools ?? []).map(tool => tool.name).sort(),
+        ["bash", "edit", "expand_tool_result", "find", "grep", "ls", "read", "write"],
+      );
+      return fauxAssistantMessage("action surface received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-actions",
+    leaseToken: 1,
+    inputs: [executionInput("input-actions", "continue")],
+  }, noEffectControl()).result;
+});
+
+test("rejects an additional tool that overrides the Main Agent action surface", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-tool-override-"));
+  const { model, modelRuntime } = await createTestPi(root);
+
+  await assert.rejects(createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    additionalTools: [readTool()],
+  }), /read is maintained by Loom and cannot be supplied as an additional tool/i);
+});
+
+test("rejects duplicate additional Main Agent tools", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-additional-tool-duplicate-"));
+  const duplicate = () => defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Look up a test value.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async () => ({ content: [{ type: "text" as const, text: "found" }], details: {} }),
+  });
+  const { model, modelRuntime } = await createTestPi(root);
+
+  await assert.rejects(createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    additionalTools: [duplicate(), duplicate()],
+  }), /additional tool lookup is duplicated/i);
+});
+
+test("runs bash from the Agent Workspace and records it as lived activity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-bash-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const command = "mkdir -p private && printf 'from bash' > private/note.txt && pwd";
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("bash", { command }, { id: "bash-private-work" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("private work complete"),
+  ]);
+  const recorded: Array<{ toolName: string; callArguments: unknown; result: unknown }> = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-bash",
+    leaseToken: 1,
+    inputs: [executionInput("input-bash", "continue private work")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  assert.equal(await readFile(path.join(workspaceRoot, "private", "note.txt"), "utf8"), "from bash");
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0]!.toolName, "bash");
+  assert.deepEqual(recorded[0]!.callArguments, { command });
+  assert.match(JSON.stringify(recorded[0]!.result), new RegExp(workspaceRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+});
+
+test("searches Workspace material through ordinary lived activity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-search-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await mkdir(path.join(workspaceRoot, "private"), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, "private", "notes.md"),
+    "quiet line\na concrete thread to revisit\n",
+    "utf8",
+  );
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const searchArguments = { pattern: "concrete thread", path: "private", literal: true };
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("grep", searchArguments, { id: "grep-private-notes" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("thread found"),
+  ]);
+  const recorded: Array<{ toolName: string; callArguments: unknown; result: unknown }> = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-search",
+    leaseToken: 1,
+    inputs: [executionInput("input-search", "find the unfinished thread")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0]!.toolName, "grep");
+  assert.deepEqual(recorded[0]!.callArguments, searchArguments);
+  assert.match(JSON.stringify(recorded[0]!.result), /notes\.md:2: a concrete thread to revisit/);
+});
+
+test("writes and edits Workspace material through ordinary lived activity", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-mutation-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const relativePath = "private/draft.md";
+  const writeArguments = { path: relativePath, content: "first thought\n" };
+  const editArguments = {
+    path: relativePath,
+    edits: [{ oldText: "first thought", newText: "revised thought" }],
+  };
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("write", writeArguments, { id: "write-private-draft" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("edit", editArguments, { id: "edit-private-draft" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("private draft revised"),
+  ]);
+  const recorded: Array<{ toolName: string; callArguments: unknown }> = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-mutation",
+    leaseToken: 1,
+    inputs: [executionInput("input-mutation", "continue private work")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  assert.equal(await readFile(path.join(workspaceRoot, relativePath), "utf8"), "revised thought\n");
+  assert.deepEqual(recorded.map(activity => ({
+    toolName: activity.toolName,
+    callArguments: activity.callArguments,
+  })), [
+    { toolName: "write", callArguments: writeArguments },
+    { toolName: "edit", callArguments: editArguments },
+  ]);
 });
 
 test("keeps opportunity behavior frozen for same-Turn interaction steering", async t => {
@@ -431,7 +634,6 @@ test("records a successful ordinary tool before the provider can continue", asyn
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
-    readOnlyTools: [readTool()],
   });
   t.after(() => execution.close());
 
@@ -449,8 +651,7 @@ test("records a successful ordinary tool before the provider can continue", asyn
     toolName: "read",
     callArguments: { path: "attention.md" },
     result: {
-      content: [{ type: "text", text: "test file" }],
-      details: {},
+      content: [{ type: "text", text: "current attention" }],
     },
   }]);
 });
@@ -1240,7 +1441,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
-    readOnlyTools: [lookup],
+    additionalTools: [lookup],
   });
   t.after(() => execution.close());
   const running = execution.start({
@@ -1407,7 +1608,7 @@ test("compacts committed tool traces and expands an authorized original interact
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
-    readOnlyTools: [lookup],
+    additionalTools: [lookup],
     toolTraceCompactor: compactor,
     contextBudget: { toolTraceReservation: 1 },
   });
@@ -1498,7 +1699,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
-    readOnlyTools: [lookup],
+    additionalTools: [lookup],
     toolTraceCompactor: compactor,
     contextBudget: { toolTraceReservation: 1 },
   });
@@ -1587,7 +1788,7 @@ test("does not expose successful tool trace batches when another batch fails", a
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
-    readOnlyTools: [lookup],
+    additionalTools: [lookup],
     toolTraceCompactor: compactor,
     contextBudget: { toolTraceReservation: 1 },
   });

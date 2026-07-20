@@ -55,6 +55,16 @@ import { createMessageTool, type MessageTurnDecision } from "./message.js";
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
 
+const MAIN_AGENT_BUILTIN_TOOLS = [
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+] as const;
+
 interface PreparedPiSession {
   session: PiSession;
   acceptedSkillCount: number;
@@ -69,7 +79,7 @@ export interface PiAgentExecutionOptions {
   model: Model<any>;
   harnessSystemPrompt: string;
   defaultInteractionRoute?: string;
-  readOnlyTools?: ToolDefinition[];
+  additionalTools?: ToolDefinition[];
   skillSources?: PiSkillSources;
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
   contextBudget?: Partial<ContextBudget>;
@@ -306,7 +316,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         committedTrace: restoreMessages(preparedWindow.committedTrace),
         fixedTokens: {
           system: textTokens(session.systemPrompt),
-          toolSchemas: textTokens(JSON.stringify(activeToolSchemas(session))),
+          toolSchemas: textTokens(JSON.stringify(session.agent.state.tools)),
         },
         ...(this.contextBudget ? { budget: this.contextBudget } : {}),
       });
@@ -381,10 +391,20 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 }
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
-  const reservedTools = new Set(["expand_tool_result", "message"]);
-  const reservedTool = options.readOnlyTools?.find(tool => reservedTools.has(tool.name));
-  if (reservedTool) {
-    throw new Error(`${reservedTool.name} is maintained by Loom and cannot be supplied as a read-only tool`);
+  const reservedTools = new Set<string>([
+    ...MAIN_AGENT_BUILTIN_TOOLS,
+    "expand_tool_result",
+    "message",
+  ]);
+  const additionalToolNames = new Set<string>();
+  for (const tool of options.additionalTools ?? []) {
+    if (reservedTools.has(tool.name)) {
+      throw new Error(`${tool.name} is maintained by Loom and cannot be supplied as an additional tool`);
+    }
+    if (additionalToolNames.has(tool.name)) {
+      throw new Error(`Additional tool ${tool.name} is duplicated`);
+    }
+    additionalToolNames.add(tool.name);
   }
   if (options.defaultInteractionRoute !== undefined && !options.defaultInteractionRoute.trim()) {
     throw new Error("Default Interaction Route cannot be blank");
@@ -443,13 +463,13 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
-    const customTools = [...(options.readOnlyTools ?? []), ...turnTools];
+    const customTools = [...(options.additionalTools ?? []), ...turnTools];
     const { session } = await createAgentSession({
       cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
       modelRuntime: options.modelRuntime,
       model: options.model,
-      noTools: customTools.length > 0 ? "builtin" : "all",
+      tools: [...MAIN_AGENT_BUILTIN_TOOLS, ...customTools.map(tool => tool.name)],
       customTools,
       resourceLoader,
       sessionManager,
@@ -474,7 +494,10 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,
-    new Set((options.readOnlyTools ?? []).map(tool => tool.name)),
+    new Set([
+      ...MAIN_AGENT_BUILTIN_TOOLS,
+      ...(options.additionalTools ?? []).map(tool => tool.name),
+    ]),
   );
 }
 
@@ -692,24 +715,4 @@ function textTokens(text: string): number {
     content: [{ type: "text", text }],
     timestamp: 0,
   }));
-}
-
-function activeToolSchemas(session: PiSession): Array<{
-  name: string;
-  label: string;
-  description: string;
-  parameters: unknown;
-  promptGuidelines: string[] | undefined;
-}> {
-  return session.getActiveToolNames().map(name => {
-    const tool = session.getToolDefinition(name);
-    if (!tool) throw new Error(`Active tool ${name} has no registered definition`);
-    return {
-      name: tool.name,
-      label: tool.label,
-      description: tool.description,
-      parameters: tool.parameters,
-      promptGuidelines: tool.promptGuidelines,
-    };
-  });
 }
