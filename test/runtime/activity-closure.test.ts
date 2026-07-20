@@ -31,7 +31,7 @@ test("closes interaction Activity while the successor continues and Recorder cat
       const messages = JSON.stringify(context.messages);
       assert.match(messages, /<recent_activity>/);
       assert.match(messages, /first activity/);
-      assert.match(messages, /past evidence, not a new request/);
+      assert.match(messages, /past activity evidence.*not a new request/);
       return fauxAssistantMessage("I can continue from that activity.");
     },
   ]);

@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   openRuntime,
+  type ActivityFreezeRequest,
   type ActivityLifecycle,
   type ActivityRecorder,
   type AgentExecution,
@@ -334,6 +335,47 @@ test("continues interaction from the successor state while recording is pending"
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
   assert.deepEqual(recorded, [closed.activityId]);
   assert.equal(runtime.status().activities[0]?.status, "recorded");
+});
+
+test("supplies recently recorded Activities to the next lifecycle close", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-recent-activity-"));
+  const observed: Parameters<ActivityLifecycle["freeze"]>[0][] = [];
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(observed),
+    activityRecorder: recorder([]),
+    now: () => new Date("2026-07-19T12:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "first-recent",
+    kind: "interaction",
+    payload: { text: "first recent activity" },
+    occurredAt: "2026-07-19T11:58:00.000Z",
+  });
+  await runtime.advance();
+  const first = await runtime.closeActivity();
+  assert.equal(first.disposition, "activity_frozen");
+  assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "second-recent",
+    kind: "interaction",
+    payload: { text: "second recent activity" },
+    occurredAt: "2026-07-19T12:01:00.000Z",
+  });
+  await runtime.advance();
+  assert.equal((await runtime.closeActivity()).disposition, "activity_frozen");
+
+  const secondRequest = observed[1] as ActivityFreezeRequest;
+  assert.deepEqual(
+    secondRequest.recentActivities.map(activity => activity.segmentId),
+    [first.activityId],
+  );
 });
 
 test("retries failed frozen activities in FIFO order after restart", async () => {

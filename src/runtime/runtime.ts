@@ -505,11 +505,11 @@ class SqliteRuntime implements Runtime {
       WHERE turns.segment_id = ?
       ORDER BY delivery_attempts.started_at, delivery_attempts.id
     `).all(segment.id) as unknown as Array<DeliveryRow & { started_at: string; ended_at: string | null }>;
-    const pendingActivities = this.#database.prepare(`
+    const recentActivities = this.#database.prepare(`
       SELECT frozen_activity_json
       FROM activities
-      WHERE status <> 'recorded'
-      ORDER BY sequence
+      ORDER BY sequence DESC
+      LIMIT 4
     `).all() as unknown as Array<{ frozen_activity_json: string }>;
 
     return {
@@ -519,7 +519,9 @@ class SqliteRuntime implements Runtime {
         closedAt: segment.closed_at,
         recordingDay: localDateKey(new Date(segment.closed_at)),
       },
-      pendingActivities: pendingActivities.map(row => JSON.parse(row.frozen_activity_json) as FrozenActivity),
+      recentActivities: recentActivities
+        .reverse()
+        .map(row => JSON.parse(row.frozen_activity_json) as FrozenActivity),
       ...(segment.starting_state_json
         ? { startingExecutionState: JSON.parse(segment.starting_state_json) as JsonValue }
         : {}),

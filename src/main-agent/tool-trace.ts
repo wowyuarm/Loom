@@ -159,7 +159,10 @@ export function createExpandTool(options: {
   window: ContextWindowState;
   transcriptFile: string;
 }): ToolDefinition {
-  const authorized = authorizedReferences(restoreMessages(options.window.committedTrace));
+  const authorized = new Set([
+    ...options.window.recentActivityReferences,
+    ...authorizedReferences(restoreMessages(options.window.committedTrace)),
+  ]);
   return defineTool({
     name: "expand_tool_result",
     label: "Expand Tool Result",

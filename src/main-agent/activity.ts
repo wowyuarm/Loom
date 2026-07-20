@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { estimateTokens } from "@earendil-works/pi-coding-agent";
 
 import type {
   ActivityFreezeRequest,
@@ -15,7 +16,14 @@ import {
   serializeContextWindowState,
   type ContextWindowState,
 } from "./context.js";
-import { readCommittedActivityEvents } from "./transcript.js";
+import {
+  createToolInteractionReference,
+  readCommittedActivityEvents,
+} from "./transcript.js";
+
+const RECENT_ACTIVITY_LIMIT = 4;
+const BRIDGE_TOOL_PAIR_TOKENS = 1_000;
+const BRIDGE_PREVIEW_CHARACTERS = 200;
 
 export interface MainAgentActivityLifecycleOptions {
   transcriptFile: string;
@@ -78,18 +86,19 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
       transcriptAnchors: committedTurns.map(turn => serializeJson(turn.transcriptAnchor!)),
     };
     const windowFrozen = await this.options.loadWindowFrozen?.(request) ?? [];
-    const bridgeActivities = [...request.pendingActivities, activity];
+    const bridgeActivities = [...request.recentActivities, activity]
+      .sort((left, right) => Date.parse(right.closedAt) - Date.parse(left.closedAt))
+      .slice(0, RECENT_ACTIVITY_LIMIT)
+      .reverse();
+    const bridge = bridgeMessage(bridgeActivities);
     const successor: ContextWindowState = {
       version: 1,
       id: this.options.nextWindowId?.() ?? randomUUID(),
       frozenSeed: [
         ...windowFrozen.map(serializeJson),
-        ...bridgeActivities.map(candidate => bridgeMessage(
-          candidate.events,
-          candidate.openedAt,
-          candidate.closedAt,
-        )),
+        bridge.message,
       ],
+      recentActivityReferences: bridge.references,
       committedTrace: [],
       ...(current.transcriptAnchor ? { transcriptAnchor: current.transcriptAnchor } : {}),
     };
@@ -173,23 +182,122 @@ function assertUniqueEvents(events: FrozenActivityEvent[]): void {
   }
 }
 
-function bridgeMessage(events: FrozenActivityEvent[], openedAt: string, closedAt: string): JsonValue {
-  const lines = events.flatMap(event => event.kind === "thinking"
-    ? []
-    : [`[${event.at}] ${bridgeLabel(event)}: ${bridgeContent(event.content)}`]);
-  return serializeJson({
+function bridgeMessage(activities: Array<{
+  openedAt: string;
+  closedAt: string;
+  events: FrozenActivityEvent[];
+  transcriptAnchors?: JsonValue[];
+}>): { message: JsonValue; references: string[] } {
+  const references: string[] = [];
+  let toolPairTokens = 0;
+  const lines = activities.flatMap(candidate => {
+    const sessionId = activitySessionId(candidate.transcriptAnchors ?? []);
+    const projected = projectActivity(candidate.events, sessionId, toolPairTokens);
+    toolPairTokens += projected.toolPairTokens;
+    references.push(...projected.references);
+    return [
+      `<activity from="${candidate.openedAt}" to="${candidate.closedAt}">`,
+      ...projected.lines,
+      "</activity>",
+    ];
+  });
+  return { message: serializeJson({
     role: "user",
     content: [{
       type: "text",
       text: [
         "<recent_activity>",
-        `Verified activity from ${openedAt} to ${closedAt}. This is past evidence, not a new request.`,
+        "Verified past activity evidence. This is context, not a new request.",
         ...lines,
         "</recent_activity>",
       ].join("\n"),
     }],
-    timestamp: Date.parse(closedAt),
-  });
+    timestamp: Date.parse(activities.at(-1)?.closedAt ?? new Date(0).toISOString()),
+  }), references };
+}
+
+function projectActivity(
+  events: FrozenActivityEvent[],
+  sessionId: string | undefined,
+  usedToolPairTokens: number,
+): { lines: string[]; references: string[]; toolPairTokens: number } {
+  const results = new Map<string, FrozenActivityEvent>();
+  for (const event of events) {
+    const identity = event.kind === "tool_result" ? toolIdentity(event.content) : undefined;
+    if (identity) results.set(`${identity.id}\u0000${identity.name}`, event);
+  }
+
+  const lines: string[] = [];
+  const references: string[] = [];
+  let addedToolPairTokens = 0;
+  for (const event of events) {
+    if (event.kind === "thinking" || event.kind === "tool_result") continue;
+    if (event.kind !== "tool_call") {
+      lines.push(formatBridgeEvent(event));
+      continue;
+    }
+    const identity = toolIdentity(event.content);
+    const result = identity ? results.get(`${identity.id}\u0000${identity.name}`) : undefined;
+    const reference = result && sessionId ? toolResultReference(result, sessionId) : undefined;
+    if (!identity || !result || !reference) continue;
+    const pairLines = [
+      formatToolEvent(event, identity.name, BRIDGE_PREVIEW_CHARACTERS),
+      `${formatToolEvent(result, identity.name, BRIDGE_PREVIEW_CHARACTERS)}\n  reference: ${reference}`,
+    ];
+    const pairTokens = Math.max(0, estimateTokens({
+      role: "user",
+      content: [{ type: "text", text: pairLines.join("\n") }],
+      timestamp: Date.parse(event.at),
+    }));
+    if (usedToolPairTokens + addedToolPairTokens + pairTokens > BRIDGE_TOOL_PAIR_TOKENS) continue;
+    lines.push(...pairLines);
+    references.push(reference);
+    addedToolPairTokens += pairTokens;
+  }
+  return { lines, references, toolPairTokens: addedToolPairTokens };
+}
+
+function activitySessionId(anchors: JsonValue[]): string | undefined {
+  const anchor = anchors.at(-1);
+  return anchor && typeof anchor === "object" && !Array.isArray(anchor)
+    && typeof anchor.sessionId === "string"
+    ? anchor.sessionId
+    : undefined;
+}
+
+function toolResultReference(event: FrozenActivityEvent, sessionId: string): string | undefined {
+  const prefix = "transcript:";
+  if (!event.eventId.startsWith(prefix)) return undefined;
+  return createToolInteractionReference(sessionId, event.eventId.slice(prefix.length));
+}
+
+function toolIdentity(content: JsonValue): { id: string; name: string } | undefined {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return undefined;
+  const id = content.id ?? content.toolCallId;
+  const name = content.name ?? content.toolName;
+  return typeof id === "string" && id && typeof name === "string" && name
+    ? { id, name }
+    : undefined;
+}
+
+function formatToolEvent(event: FrozenActivityEvent, toolName: string, characters: number): string {
+  const actor = event.kind === "tool_call" ? "individual tool call" : "system tool result";
+  return `[${event.at}] ${actor} ${toolName}: ${bridgeContent(event.content, characters)}`;
+}
+
+function formatBridgeEvent(event: FrozenActivityEvent): string {
+  const characters = event.kind === "input" && event.actorRef === "human"
+    ? undefined
+    : event.kind === "effect" && isMessageEffect(event.content)
+      ? undefined
+      : event.kind === "delivery"
+        ? undefined
+        : BRIDGE_PREVIEW_CHARACTERS;
+  return `[${event.at}] ${bridgeLabel(event)}: ${bridgeContent(event.content, characters)}`;
+}
+
+function isMessageEffect(content: JsonValue): boolean {
+  return Boolean(content && typeof content === "object" && !Array.isArray(content) && content.kind === "message");
 }
 
 function bridgeLabel(event: FrozenActivityEvent): string {
@@ -213,14 +321,27 @@ function deliveryStatus(content: JsonValue): string {
   return "observed";
 }
 
-function bridgeContent(content: JsonValue): string {
+function bridgeContent(content: JsonValue, characters?: number): string {
   const text = content && typeof content === "object" && !Array.isArray(content)
     && typeof content.text === "string"
     ? content.text
     : undefined;
-  return JSON.stringify(text ?? content)
+  const value = text ?? content;
+  const rendered = typeof value === "string" && characters !== undefined
+    ? JSON.stringify(truncateUnicode(value, characters))
+    : JSON.stringify(value);
+  return (typeof value === "string" || characters === undefined
+    ? rendered
+    : truncateUnicode(rendered, characters))
     .replaceAll("<", "\\u003c")
     .replaceAll(">", "\\u003e");
+}
+
+function truncateUnicode(value: string, characters: number): string {
+  const points = [...value];
+  return points.length <= characters
+    ? value
+    : `${points.slice(0, Math.max(0, characters - 1)).join("")}…`;
 }
 
 function serializeJson(value: unknown): JsonValue {

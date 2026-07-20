@@ -712,6 +712,10 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
 
   assert.deepEqual(contextWindow(first).frozenSeed, [contextMessage("frozen-1")]);
   assert.deepEqual(contextWindow(second).frozenSeed, contextWindow(first).frozenSeed);
+  assert.deepEqual(
+    contextWindow(second).recentActivityReferences,
+    contextWindow(first).recentActivityReferences,
+  );
   assert.equal(revision, 2);
 });
 

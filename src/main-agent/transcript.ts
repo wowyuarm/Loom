@@ -244,7 +244,7 @@ export async function readCommittedToolInteractions(request: {
       throw new Error(`Transcript does not contain one complete interaction for tool call ${message.toolCallId}`);
     }
     interactions.set(message.toolCallId, {
-      reference: encodeToolInteractionReference(request.transcriptAnchor.sessionId, entry.id),
+      reference: createToolInteractionReference(request.transcriptAnchor.sessionId, entry.id),
       toolCallId: message.toolCallId,
       toolName: call.toolName,
       callArguments: asJsonValue(call.callArguments),
@@ -429,7 +429,7 @@ function toolCallsOnBranch(
   return calls;
 }
 
-function encodeToolInteractionReference(sessionId: string, resultEntryId: string): string {
+export function createToolInteractionReference(sessionId: string, resultEntryId: string): string {
   const payload = Buffer.from(JSON.stringify({ sessionId, resultEntryId }), "utf8").toString("base64url");
   return `loom-tool-interaction:v1:${payload}`;
 }

@@ -54,7 +54,7 @@ export interface ActivityFreezeRequest {
     closedAt: string;
     recordingDay: string;
   };
-  pendingActivities: FrozenActivity[];
+  recentActivities: FrozenActivity[];
   startingExecutionState?: JsonValue;
   executionState: JsonValue;
   inputs: Array<{

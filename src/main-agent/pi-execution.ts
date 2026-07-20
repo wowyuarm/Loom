@@ -242,6 +242,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         version: 1,
         id: request.turnId,
         frozenSeed: serializeMessages(materials.windowFrozen),
+        recentActivityReferences: [],
         committedTrace: [],
       };
       this.lifecycle.control(request.turnId).prepareExecutionState(serializeContextWindowState(preparedWindow));

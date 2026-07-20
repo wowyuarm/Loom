@@ -9,6 +9,7 @@ export interface ContextWindowState {
   version: 1;
   id: string;
   frozenSeed: JsonValue[];
+  recentActivityReferences: string[];
   committedTrace: JsonValue[];
   transcriptAnchor?: TranscriptAnchor;
 }
@@ -24,6 +25,8 @@ export function parseContextWindowState(value: JsonValue | undefined): ContextWi
     || typeof state.id !== "string"
     || !state.id
     || !Array.isArray(state.frozenSeed)
+    || !Array.isArray(state.recentActivityReferences)
+    || !state.recentActivityReferences.every(reference => typeof reference === "string" && reference.length > 0)
     || !Array.isArray(state.committedTrace)
     || (anchor !== undefined && (!anchor
       || typeof anchor !== "object"
@@ -47,6 +50,7 @@ export function assertContextWindowReplacement(
 ): void {
   if (replacement.id !== expected.id
     || !isDeepStrictEqual(replacement.frozenSeed, expected.frozenSeed)
+    || !isDeepStrictEqual(replacement.recentActivityReferences, expected.recentActivityReferences)
     || !isDeepStrictEqual(replacement.transcriptAnchor, expected.transcriptAnchor)) {
     throw new Error(`Context replacement must preserve window ${expected.id} identity and anchors`);
   }
@@ -65,6 +69,7 @@ export function completeContextWindow(
     version: 1,
     id: prepared.id,
     frozenSeed: prepared.frozenSeed,
+    recentActivityReferences: prepared.recentActivityReferences,
     committedTrace: [...prepared.committedTrace, ...appendedTrace],
     transcriptAnchor,
   };

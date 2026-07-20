@@ -9,6 +9,7 @@ import {
   serializeContextWindowState,
   type ContextWindowState,
 } from "../../src/main-agent/context.js";
+import { createExpandTool } from "../../src/main-agent/tool-trace.js";
 import type { ActivityFreezeRequest } from "../../src/runtime/index.js";
 
 test("freezes verified transcript and Runtime evidence into a successor Context", async () => {
@@ -50,17 +51,35 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
     sessionId: "session-1",
     entryId: "assistant-final",
   });
-  assert.equal(successor.frozenSeed.length, 3);
+  assert.equal(successor.frozenSeed.length, 2);
   const bridge = JSON.stringify(successor.frozenSeed);
   assert.match(bridge, /Recent Daily Narrative/);
   assert.match(bridge, /older pending activity/);
   assert.match(bridge, /<recent_activity>/);
-  assert.match(bridge, /past evidence, not a new request/);
+  assert.match(bridge, /past activity evidence.*not a new request/);
   assert.match(bridge, /human input.*Please check the plan/);
   assert.match(bridge, /individual output \(not known delivered\).*I will inspect it/);
   assert.match(bridge, /system event.*turn_stopped.*failed/);
   assert.match(bridge, /delivery delivered/);
   assert.doesNotMatch(bridge, /private chain of thought/);
+  const bridgeReferences = (successor as ContextWindowState & {
+    recentActivityReferences?: string[];
+  }).recentActivityReferences;
+  assert.equal(bridgeReferences?.length, 1);
+  assert.match(bridge, new RegExp(`reference: ${bridgeReferences![0]}`));
+
+  const expansion = await createExpandTool({
+    window: successor,
+    transcriptFile,
+  }).execute(
+    "expand-bridge",
+    { reference: bridgeReferences![0]!, offset: 0 },
+    undefined,
+    undefined,
+    {} as never,
+  );
+  assert.match(JSON.stringify(expansion.content), /plan\.md/);
+  assert.match(JSON.stringify(expansion.content), /Plan contents/);
 });
 
 test("rejects a closing state that is not anchored to the last completed Turn", async () => {
@@ -80,11 +99,75 @@ test("rejects a closing state that is not anchored to the last completed Turn", 
   );
 });
 
+test("fixes the latest four Activities into one chronological recent bridge", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-recent-"));
+  const transcriptFile = path.join(root, "agent.jsonl");
+  await writeFile(transcriptFile, transcript(root), "utf8");
+  const lifecycle = createMainAgentActivityLifecycle({
+    transcriptFile,
+    nextWindowId: () => "window-2",
+  });
+  const closing = request();
+  closing.recentActivities = [
+    historicalActivity(0),
+    historicalActivity(1),
+    historicalActivity(2),
+    historicalActivity(3),
+    historicalActivity(4),
+  ];
+
+  const result = await lifecycle.freeze(closing);
+  const successor = result.successorExecutionState as unknown as ContextWindowState;
+  const bridge = JSON.stringify(successor.frozenSeed);
+
+  assert.equal(successor.frozenSeed.length, 1);
+  assert.doesNotMatch(bridge, /historical activity 0/);
+  assert.doesNotMatch(bridge, /historical activity 1/);
+  const positions = [2, 3, 4].map(index => bridge.indexOf(`historical activity ${index}`));
+  assert.ok(positions.every(position => position >= 0));
+  assert.ok(positions[0]! < positions[1]! && positions[1]! < positions[2]!);
+  assert.ok(positions[2]! < bridge.indexOf("Please check the plan"));
+});
+
+test("bounds recent bridge previews without splitting tool interactions", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-bounded-"));
+  const transcriptFile = path.join(root, "agent.jsonl");
+  await writeFile(transcriptFile, transcript(root), "utf8");
+  const lifecycle = createMainAgentActivityLifecycle({ transcriptFile });
+  const closing = request();
+  closing.recentActivities = [denseBridgeActivity()];
+
+  const result = await lifecycle.freeze(closing);
+  const successor = result.successorExecutionState as unknown as ContextWindowState;
+  const bridge = JSON.stringify(successor.frozenSeed);
+
+  assert.match(bridge, /human input remains complete .*human-tail/);
+  assert.match(bridge, /individual output.*output-head/);
+  assert.doesNotMatch(bridge, /output-tail/);
+  assert.doesNotMatch(bridge, /system-tail/);
+  assert.doesNotMatch(bridge, /orphan-tool-call/);
+
+  let includedPairs = 0;
+  for (let index = 0; index < 12; index += 1) {
+    const hasCall = bridge.includes(`tool-call-${index}`);
+    const hasResult = bridge.includes(`tool-result-${index}`);
+    assert.equal(hasCall, hasResult, `tool pair ${index} must be kept or dropped together`);
+    if (hasCall) includedPairs += 1;
+  }
+  assert.ok(includedPairs > 0);
+  assert.ok(includedPairs < 12);
+  assert.equal(
+    (bridge.match(/reference: loom-tool-interaction/g) ?? []).length,
+    successor.recentActivityReferences.length,
+  );
+});
+
 function request(): ActivityFreezeRequest {
   const starting = serializeContextWindowState({
     version: 1,
     id: "window-1",
     frozenSeed: [],
+    recentActivityReferences: [],
     committedTrace: [],
     transcriptAnchor: { sessionId: "session-1", entryId: "before-segment" },
   });
@@ -92,6 +175,7 @@ function request(): ActivityFreezeRequest {
     version: 1,
     id: "window-1",
     frozenSeed: [],
+    recentActivityReferences: [],
     committedTrace: [],
     transcriptAnchor: { sessionId: "session-1", entryId: "assistant-final" },
   });
@@ -102,7 +186,7 @@ function request(): ActivityFreezeRequest {
       closedAt: "2026-07-19T10:04:00.000Z",
       recordingDay: "2026-07-19",
     },
-    pendingActivities: [{
+    recentActivities: [{
       version: 1,
       segmentId: "segment-0",
       recordingDay: "2026-07-19",
@@ -171,6 +255,93 @@ function request(): ActivityFreezeRequest {
       endedAt: "2026-07-19T10:00:07.000Z",
       remoteId: "remote-1",
     }],
+  };
+}
+
+function historicalActivity(index: number): ActivityFreezeRequest["recentActivities"][number] {
+  const minute = String(50 + index).padStart(2, "0");
+  return {
+    version: 1,
+    segmentId: `segment-history-${index}`,
+    recordingDay: "2026-07-19",
+    openedAt: `2026-07-19T09:${minute}:00.000Z`,
+    closedAt: `2026-07-19T09:${minute}:30.000Z`,
+    events: [{
+      eventId: `input:history-${index}`,
+      at: `2026-07-19T09:${minute}:00.000Z`,
+      actorRef: "human",
+      kind: "input",
+      content: { text: `historical activity ${index}` },
+    }],
+    transcriptAnchors: [],
+  };
+}
+
+function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number] {
+  const events: ActivityFreezeRequest["recentActivities"][number]["events"] = [{
+    eventId: "input:dense",
+    at: "2026-07-19T09:40:00.000Z",
+    actorRef: "human",
+    kind: "input",
+    content: { text: `human input remains complete ${"h".repeat(260)} human-tail` },
+  }, {
+    eventId: "transcript:output-dense",
+    at: "2026-07-19T09:40:01.000Z",
+    actorRef: "individual",
+    kind: "output",
+    content: { type: "text", text: `output-head ${"o".repeat(260)} output-tail` },
+  }, {
+    eventId: "turn:stopped-dense",
+    at: "2026-07-19T09:40:02.000Z",
+    actorRef: "system",
+    kind: "system",
+    content: { type: "turn_stopped", error: `system-head ${"s".repeat(260)} system-tail` },
+  }];
+  for (let index = 0; index < 12; index += 1) {
+    events.push({
+      eventId: `transcript:call-${index}`,
+      at: `2026-07-19T09:41:${String(index * 2).padStart(2, "0")}.000Z`,
+      actorRef: "individual",
+      kind: "tool_call",
+      content: {
+        type: "toolCall",
+        id: `pair-${index}`,
+        name: "lookup",
+        arguments: { query: `tool-call-${index} ${"a".repeat(300)}` },
+      },
+    }, {
+      eventId: `transcript:result-${index}`,
+      at: `2026-07-19T09:41:${String(index * 2 + 1).padStart(2, "0")}.000Z`,
+      actorRef: "system",
+      kind: "tool_result",
+      content: {
+        toolCallId: `pair-${index}`,
+        toolName: "lookup",
+        isError: false,
+        content: [{ type: "text", text: `tool-result-${index} ${"r".repeat(300)}` }],
+      },
+    });
+  }
+  events.push({
+    eventId: "transcript:orphan-call",
+    at: "2026-07-19T09:42:00.000Z",
+    actorRef: "individual",
+    kind: "tool_call",
+    content: {
+      type: "toolCall",
+      id: "orphan",
+      name: "lookup",
+      arguments: { query: "orphan-tool-call" },
+    },
+  });
+  return {
+    version: 1,
+    segmentId: "segment-dense",
+    recordingDay: "2026-07-19",
+    openedAt: "2026-07-19T09:40:00.000Z",
+    closedAt: "2026-07-19T09:45:00.000Z",
+    events,
+    transcriptAnchors: [{ sessionId: "session-dense", entryId: "dense-end" }],
   };
 }
 
