@@ -49,6 +49,12 @@ export interface NmemThreadCreate {
   metadata: Record<string, unknown>;
 }
 
+export interface NmemWorkingMemorySnapshot {
+  exists: boolean;
+  content: string;
+  sourceDate?: string;
+}
+
 const MAX_EVIDENCE_CONTENT_CHARS = 4_000;
 
 export class NmemRequestError extends Error {
@@ -184,6 +190,25 @@ export class NmemClient {
         throw new NmemRequestError("nmem reported an existing Thread but could not verify its identity", "incompatible");
       }
     }
+  }
+
+  async getWorkingMemory(): Promise<NmemWorkingMemorySnapshot> {
+    const query = this.#spaceId ? `?space_id=${encodeURIComponent(this.#spaceId)}` : "";
+    const response = await this.#request(`/agent/working-memory${query}`, { method: "GET" });
+    const value = await readJson(response);
+    if (!isObject(value)
+      || typeof value.exists !== "boolean"
+      || (value.exists && typeof value.content !== "string")
+      || (value.content !== undefined && value.content !== null && typeof value.content !== "string")
+      || (value.date !== undefined && value.date !== null && typeof value.date !== "string")
+      || (this.#spaceId && value.space_id !== undefined && value.space_id !== this.#spaceId)) {
+      throw new NmemRequestError("nmem returned an incompatible Working Memory response", "incompatible");
+    }
+    return {
+      exists: value.exists,
+      content: typeof value.content === "string" ? value.content : "",
+      ...(typeof value.date === "string" && value.date ? { sourceDate: value.date } : {}),
+    };
   }
 
   async #request(resource: string, init: RequestInit): Promise<Response> {

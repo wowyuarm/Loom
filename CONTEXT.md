@@ -86,6 +86,10 @@ _Avoid_: workspace metadata, life recorder receipt, external truth
 一份 Frozen Activity 向 nmem 投影形成的外部会话来源。它保留真实人类输入、确认送达的回复，以及有实际动作或结果的简洁私人活动，但不包含模型 thinking 或原始工具结果；它服务于外部记忆演化，不是 Agent Workspace 中的私人工作线。
 _Avoid_: Thread, transcript archive, episode, raw activity trace
 
+**nmem Working Memory Evidence**:
+nmem 对近期跨时间重点形成的外部派生证据。Loom 保存其来源日期、成功抓取时间和失败后的 stale 状态，供需要跨时间校准的 Cognitive Organ 按需读取；它不是 Agent Workspace 材料，也不能阻断 Runtime 或当前活动。
+_Avoid_: Current Attention, long-term memory, workspace projection, runtime gate
+
 **Cognitive Organ**:
 由 Loom 内置并版本化维护的专职能力。它的职责、方法、工具面、触发条件和保护规则由 Harness 定义。
 _Avoid_: optional plugin, workspace-defined agent, self-evolving organ

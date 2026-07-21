@@ -15,3 +15,9 @@ export {
   type NmemThreadReconcilerOptions,
   type NmemThreadReconcileResult,
 } from "./threads.js";
+export {
+  createNmemWorkingMemoryReader,
+  type NmemWorkingMemoryEvidence,
+  type NmemWorkingMemoryReader,
+  type NmemWorkingMemoryReaderOptions,
+} from "./working-memory.js";

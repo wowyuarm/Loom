@@ -63,6 +63,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [18 — Maintain Thread Continuity and Structure](issues/18-maintain-thread-continuity.md)。Thread Maintainer 在完整读取当前变更 Turn 后维护 `threads/` 的入口、独立 notes、全局导航、关联和可恢复生命周期；稳定 Thread Evidence Reference 保留跨调用来源，结构写入在失败时整轮回滚。
 - Completed: [19 — Integrate nmem Episodes and Recall](issues/19-integrate-nmem-episodes-and-recall.md)。nmem 第一纵切只从 durable Life Recorder Receipt 幂等投影 Workspace Episode，并向 Main Agent 提供显式、bounded、failure-soft 的 `nmem_recall`；Integration Receipt、退避与 diagnostics 留在 Runtime Store 的 nmem 状态中，Runtime 与 Life Recorder 不依赖外部服务。
 - Completed: [20 — Project Conversation Activities to nmem Threads](issues/20-project-conversation-activities-to-nmem-threads.md)。每份 Frozen Activity 独立、幂等投影为 nmem Conversation Thread，保留真实 human input、delivered reply 和简洁 private activity；thinking、raw tool result 与未送达正文保持在外部投影之外，且不等待 Life Recorder。
+- Completed: [21 — Read nmem Working Memory Evidence](issues/21-read-nmem-working-memory-evidence.md)。nmem Working Memory 通过 REST 成为 Integration-owned derived evidence；最近成功内容按连接隔离缓存在 Runtime Store，读取失败时明确返回 stale 或 unavailable，不进入 Agent Workspace，也不阻断 Runtime。
 
 ## Context Follow-ups
 

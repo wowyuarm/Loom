@@ -1,6 +1,6 @@
 # nmem Integration Boundary Research
 
-Status: incorporated into Tickets 19-20
+Status: incorporated into Tickets 19-21
 Date: 2026-07-21
 
 ## Question
@@ -100,7 +100,7 @@ Do not make Life Recorder call nmem. The Integration reconciler may only discove
 - Main Agent and selected Cognitive Organs receive explicit `nmem-recall`, not automatic search on every Turn.
 - Life Recorder does not receive recall because it records current evidence.
 - Memory results and Thread results remain distinguishable, carry stable references/provenance, and are described as untrusted historical evidence.
-- Working Memory is a later Integration evidence surface for Attention Maintainer and Memory Reflector. It should be fetched via REST and cached with source time/freshness; whether that cache is exposed as a Workspace projection or an Integration-only tool remains a product boundary decision.
+- Working Memory is Integration-owned derived evidence for selected Cognitive Organs. It is fetched through REST, cached in Runtime Store with source date and local freshness, and exposed later through a narrow Integration tool rather than projected into Agent Workspace.
 
 ### Degraded Behavior
 
@@ -112,17 +112,19 @@ Do not make Life Recorder call nmem. The Integration reconciler may only discove
 
 ## Interface Review
 
-The implemented nmem Module presents three nmem-specific narrow Interfaces rather than exposing a generic provider or wire client:
+The implemented nmem Module presents four nmem-specific narrow Interfaces rather than exposing a generic provider or wire client:
 
 - a recall Interface used to build the `nmem-recall` tool;
 - an Episode reconciliation Interface that consumes committed Episode references and owns idempotent export, receipts, backoff and diagnostics.
 - a Conversation Thread reconciliation Interface that consumes immutable Frozen Activity and owns deterministic projection, idempotent creation, receipts, backoff and diagnostics.
+- a Working Memory read Interface that owns response validation, connection-isolated caching and explicit available, stale or unavailable evidence.
 
-HTTP, auth, capability checks, response normalization and receipt schema remain internal to the nmem Module. Tests and callers cross these Interfaces; they do not call the REST client or inspect nmem tables directly. Working Memory should add its own evidence Interface only when implemented.
+HTTP, auth, capability checks, response normalization, cache schema and receipt schema remain internal to the nmem Module. Tests and callers cross these Interfaces; they do not call the REST client or inspect nmem tables directly.
 
-## Decisions Still Worth Discussing
+## Integration Scope Closure
 
-1. Should cached nmem Working Memory be a clearly marked derived file inside Agent Workspace, or remain Integration state exposed to organs through a dedicated tool?
-2. Should Loom ever manually trigger nmem maintenance, or rely on nmem's reactive and periodic processing and only observe freshness? Current evidence favors observation, with manual triggering deferred until a real unmet need appears.
+- Cached Working Memory remains Integration state and is not projected into Agent Workspace.
+- Loom relies on nmem's reactive and periodic processing and observes resulting evidence. Manual maintenance triggers remain out of scope until an actual processing gap is observed.
+- Which Cognitive Organs may read Working Memory, and the model-visible tool and prompt semantics for doing so, belong to those organ tickets rather than this Integration boundary.
 
-The first vertical slice was completed by [Ticket 19](../issues/19-integrate-nmem-episodes-and-recall.md). Conversation Thread projection, including compact private activity, was completed by [Ticket 20](../issues/20-project-conversation-activities-to-nmem-threads.md). The questions above remain follow-up decisions.
+The first vertical slice was completed by [Ticket 19](../issues/19-integrate-nmem-episodes-and-recall.md). Conversation Thread projection, including compact private activity, was completed by [Ticket 20](../issues/20-project-conversation-activities-to-nmem-threads.md). Working Memory evidence was completed by [Ticket 21](../issues/21-read-nmem-working-memory-evidence.md). This closes the current nmem Integration scope; later consumption remains part of each Cognitive Organ's design.
