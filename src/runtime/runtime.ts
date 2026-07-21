@@ -12,6 +12,7 @@ import type {
   ActivityLifecycle,
   ActivityRecorder,
   AgentExecution,
+  CloseActivityOptions,
   CloseActivityResult,
   DeliveryAttemptRequest,
   DeliveryObservation,
@@ -61,6 +62,7 @@ interface TurnRow {
 interface ActiveSegmentRow {
   id: string;
   opened_at: string;
+  last_activity_at: string;
   starting_state_json: string | null;
   status: "active" | "closing";
   close_fencing_token: number | null;
@@ -350,7 +352,7 @@ class SqliteRuntime implements Runtime {
     return this.#advanceActivityRecording();
   }
 
-  async closeActivity(): Promise<CloseActivityResult> {
+  async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
     if (this.#active || this.#activeDeliveryId || this.#closingActivityId || this.#activeActivityAttemptId) {
       return { disposition: "busy" };
     }
@@ -358,14 +360,20 @@ class SqliteRuntime implements Runtime {
     if (this.#hasRunningTurn() || this.#hasPendingInput()) return { disposition: "busy" };
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
-    return this.#freezeActivity(segment);
+    return this.#freezeActivity(segment, options.inactiveBefore);
   }
 
-  async #freezeActivity(segment: ActiveSegmentRow): Promise<CloseActivityResult> {
-    if (!this.#activityLifecycle) throw new Error("Activity closure requires a Main Agent lifecycle adapter");
-
-    const claimed = this.#claimActivityClose(segment.id);
+  async #freezeActivity(
+    segment: ActiveSegmentRow,
+    inactiveBefore?: string,
+  ): Promise<CloseActivityResult> {
+    const claimed = this.#claimActivityClose(segment.id, inactiveBefore);
     if (!claimed) return { disposition: "busy" };
+    if (claimed.disposition === "not_due") return claimed;
+    if (!this.#activityLifecycle) {
+      this.#failActivityClose(segment.id, claimed.fencingToken, new Error("Activity closure requires a Main Agent lifecycle adapter"));
+      throw new Error("Activity closure requires a Main Agent lifecycle adapter");
+    }
     this.#closingActivityId = segment.id;
     this.#startHeartbeat("activity_close", segment.id, claimed.fencingToken);
     try {
@@ -466,6 +474,7 @@ class SqliteRuntime implements Runtime {
         activeSegment: {
           id: activeSegment.id,
           openedAt: activeSegment.opened_at,
+          lastActivityAt: activeSegment.last_activity_at,
         },
       } : {}),
       activities: activityRows.map(row => ({
@@ -494,7 +503,7 @@ class SqliteRuntime implements Runtime {
 
   #readActiveSegment(): ActiveSegmentRow | undefined {
     return this.#database.prepare(`
-      SELECT id, opened_at, starting_state_json, status, close_fencing_token, closed_at
+      SELECT id, opened_at, last_activity_at, starting_state_json, status, close_fencing_token, closed_at
       FROM active_segment WHERE singleton = 1
     `).get() as unknown as ActiveSegmentRow | undefined;
   }
@@ -566,14 +575,17 @@ class SqliteRuntime implements Runtime {
     return row.sequence;
   }
 
-  #claimActivityClose(segmentId: string): {
-    request: ActivityFreezeRequest;
-    fencingToken: number;
-  } | undefined {
+  #claimActivityClose(segmentId: string, inactiveBefore?: string):
+    | { request: ActivityFreezeRequest; fencingToken: number; disposition?: never }
+    | { disposition: "not_due"; lastActivityAt: string }
+    | undefined {
     return this.#transaction(() => {
       if (this.#hasRunningTurn() || this.#hasPendingInput() || this.#hasPendingDeliveryWork()) return undefined;
       const segment = this.#readActiveSegment();
       if (!segment || segment.id !== segmentId || segment.status !== "active") return undefined;
+      if (inactiveBefore !== undefined && segment.last_activity_at > inactiveBefore) {
+        return { disposition: "not_due", lastActivityAt: segment.last_activity_at };
+      }
       const executionState = this.#readExecutionState().executionState;
       if (executionState === undefined) throw new Error(`Active segment ${segmentId} has no committed execution state`);
       const tokenRow = this.#database.prepare(`
@@ -1155,10 +1167,11 @@ class SqliteRuntime implements Runtime {
         const startingState = this.#readExecutionState().executionState;
         this.#database.prepare(`
           INSERT INTO active_segment (
-            singleton, id, opened_at, starting_state_json, status
-          ) VALUES (1, ?, ?, ?, 'active')
+            singleton, id, opened_at, last_activity_at, starting_state_json, status
+          ) VALUES (1, ?, ?, ?, ?, 'active')
         `).run(
           segmentId,
+          now.toISOString(),
           now.toISOString(),
           startingState === undefined ? null : JSON.stringify(startingState),
         );
@@ -1255,6 +1268,7 @@ class SqliteRuntime implements Runtime {
         this.#ownerId,
       );
       if (changed.changes !== 1) throw new Error(`Turn ${turnId} no longer accepts writes from lease ${fencingToken}`);
+      this.#touchSegmentForTurn(turnId, now);
       const preparedState = this.#readExecutionState().executionState;
       if (preparedState === undefined) {
         throw new Error(`Turn ${turnId} did not prepare execution state before completion`);
@@ -1453,6 +1467,7 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).run(now.toISOString(), error instanceof Error ? error.message : String(error), turnId, fencingToken, this.#ownerId);
       if (changed.changes !== 1) return;
+      this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("turn", turnId, "running", "failed", "execution_failed", now, fencingToken);
       this.#settleInputsAfterStoppedTurn(turnId, "failed", now, fencingToken);
     });
@@ -1487,6 +1502,7 @@ class SqliteRuntime implements Runtime {
         position.position,
         now.toISOString(),
       );
+      this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("effect", effectId, null, "pending", "accepted", now, fencingToken);
       return { effectId };
     });
@@ -1525,6 +1541,7 @@ class SqliteRuntime implements Runtime {
         position.position,
         now.toISOString(),
       );
+      this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition(
         "tool_activity",
         `${turnId}:${activity.toolCallId}`,
@@ -1565,6 +1582,7 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'pending'
       `).run(turnId, inputId);
       if (input.changes !== 1) throw new Error(`Input ${inputId} could not join Turn ${turnId}`);
+      this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("input", inputId, "pending", "active", "execution_included", now, fencingToken);
     });
   }
@@ -1619,6 +1637,7 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'prepared'
       `).run(attemptId);
       this.#recordTransition("delivery", attemptId, "prepared", "dispatching", "external_io_started", now, tokenRow.value);
+      this.#touchSegmentForEffect(effect.id, now);
 
       return {
         request: {
@@ -1665,6 +1684,7 @@ class SqliteRuntime implements Runtime {
           UPDATE effects SET status = ?, ended_at = ? WHERE id = ? AND status = 'pending'
         `).run(effectState, now.toISOString(), attempt.effect_id);
       }
+      this.#touchSegmentForEffect(attempt.effect_id, now);
       this.#recordTransition("delivery", attemptId, "dispatching", observation.status, "integration_result", now, fencingToken);
       if (effectState !== "pending") {
         this.#recordTransition("effect", attempt.effect_id, "pending", effectState, `delivery_${observation.status}`, now, fencingToken);
@@ -1761,6 +1781,29 @@ class SqliteRuntime implements Runtime {
         fencingToken,
       );
     }
+  }
+
+  #touchSegmentForTurn(turnId: string, now: Date): void {
+    this.#database.prepare(`
+      UPDATE active_segment
+      SET last_activity_at = MAX(last_activity_at, ?)
+      WHERE singleton = 1 AND status = 'active'
+        AND id = (SELECT segment_id FROM turns WHERE id = ?)
+    `).run(now.toISOString(), turnId);
+  }
+
+  #touchSegmentForEffect(effectId: string, now: Date): void {
+    this.#database.prepare(`
+      UPDATE active_segment
+      SET last_activity_at = MAX(last_activity_at, ?)
+      WHERE singleton = 1 AND status = 'active'
+        AND id = (
+          SELECT turns.segment_id
+          FROM effects
+          JOIN turns ON turns.id = effects.turn_id
+          WHERE effects.id = ?
+        )
+    `).run(now.toISOString(), effectId);
   }
 
   #recordTransition(

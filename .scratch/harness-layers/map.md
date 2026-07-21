@@ -67,6 +67,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [22 — Apply Instance Time Policy to Runtime](issues/22-apply-instance-time-policy.md)。可选 `instance.yaml` 的时间分支现在形成 DST-safe Time Policy；缺省使用机器 IANA 时区与 03:00 logical-day boundary，Runtime 的 Orientation local time 与 Activity recording day 使用同一政策。
 - Completed: [23 — Close Logical-Day Context and Transcript Continuity](issues/23-close-logical-day-context-and-transcript.md)。Runtime 在 Turn 准入时固定 transcript day；Primary Transcript 按日写入 `agent.jsonl`，source-aware Anchor 支持跨日 Context、Activity 与工具证据；两日 Daily 正文作为完整的 window-frozen material 进入 Main Agent Context。
 - Completed: [24 — Maintain Core Memory and Behavior](issues/24-maintain-core-memory-and-behavior.md)。Memory Reflector 已通过索引式 evidence、受限工具、五类核心材料整份替换、持久备份和整轮回滚闭合；prompt 已完成 Xi/Loom 横向审视，并保护 candidate 语义、材料门槛、完整基线读取与写作品味。
+- Completed: [25 — Schedule Runtime Lifecycle](issues/25-schedule-runtime-lifecycle.md)。Scheduler 以单一 `runOnce` Interface 推进 Runtime pending work、idle Activity close 与 Recorder retry；Active Segment 的单调活动时间和 guarded close 保持在 Runtime Store 权威内。
 
 ## Context Follow-ups
 
@@ -86,13 +87,13 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
+1. Scheduler 第一纵切已闭合 pending work、idle close 与 Recorder retry；process driver、soft split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 尚未接线。
 2. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
 3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
-当前依赖顺序：durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+当前依赖顺序：Model Runtime Revision -> Instance Assembly -> 其余 cadence 接线 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Cognitive Organs 第一阶段已由 Ticket 24 闭合；进入下一张 ticket 前先回读 scheduler 与 assembly 的 source evidence，确认真实生命周期顺序和恢复语义。
+Current work item: none。Ticket 25 已闭合 Scheduler 第一纵切；下一步先核对当前稳定 Pi 接口与 Loom/Xi 已用能力，再建立 Model Runtime Revision ticket。
 
 ### Memory Reflector Completion Checkpoint
 

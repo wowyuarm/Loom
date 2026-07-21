@@ -1,4 +1,6 @@
 export { openRuntime } from "./runtime.js";
+export { createScheduler, DEFAULT_ACTIVITY_IDLE_MS } from "./scheduler.js";
+export type { Scheduler, SchedulerOptions, SchedulerRunResult } from "./scheduler.js";
 export type {
   AcceptedInput,
   AdvanceResult,
@@ -7,6 +9,7 @@ export type {
   ActivityRecorder,
   AgentExecution,
   CloseActivityResult,
+  CloseActivityOptions,
   DeliveryAttemptRequest,
   DeliveryObservation,
   EffectReceipt,

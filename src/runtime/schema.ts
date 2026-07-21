@@ -118,6 +118,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       id TEXT NOT NULL UNIQUE,
       opened_at TEXT NOT NULL,
+      last_activity_at TEXT NOT NULL,
       starting_state_json TEXT,
       status TEXT NOT NULL CHECK (status IN ('active', 'closing')),
       close_owner TEXT,
@@ -158,6 +159,6 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       UNIQUE (activity_id, attempt_number)
     ) STRICT;
 
-    PRAGMA user_version = 6;
+    PRAGMA user_version = 7;
   `);
 }

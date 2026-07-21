@@ -291,6 +291,7 @@ export interface RuntimeStatus {
   activeSegment?: {
     id: string;
     openedAt: string;
+    lastActivityAt: string;
   };
   activities: RuntimeActivityStatus[];
 }
@@ -321,8 +322,13 @@ export type AdvanceResult =
 
 export type CloseActivityResult =
   | { disposition: "no_activity" }
+  | { disposition: "not_due"; lastActivityAt: string }
   | { disposition: "busy" }
   | { disposition: "activity_frozen"; activityId: string };
+
+export interface CloseActivityOptions {
+  inactiveBefore?: string;
+}
 
 export type FormOpportunityResult =
   | { disposition: "accepted"; inputId: string; runId: string }
@@ -334,7 +340,7 @@ export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   formOpportunity(): Promise<FormOpportunityResult>;
   advance(): Promise<AdvanceResult>;
-  closeActivity(): Promise<CloseActivityResult>;
+  closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;
   status(): RuntimeStatus;
   close(): void;

@@ -30,6 +30,10 @@ _Avoid_: workspace root, shared state directory
 Loom 内部负责 input、时间、调度、turn、effect、delivery 与恢复的运行模块。它提供可靠的生命周期条件，不决定 Individual 的关注、表达或关系判断。
 _Avoid_: Agent Harness, daemon, scheduler
 
+**Scheduler**:
+Runtime 内依据持久事实与时间政策推进已有生命周期的一种能力。它只调度 Loom 已定义的工作，不是可注册任意任务的 cron 或 workflow engine。
+_Avoid_: daemon, job queue, workflow engine, Runtime
+
 **Main Agent**:
 Loom 内部负责主 Agent 的 Pi 执行、Context 组装、Primary Agent Transcript 和 tool trace 的模块。它不负责 Runtime 生命周期，也不定义认知器官如何运行。
 _Avoid_: Agent Individual, Agent Harness, runtime, cognitive organ
