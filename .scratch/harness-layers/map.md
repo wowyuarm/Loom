@@ -61,6 +61,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [16 — Bind Main Agent Workspace Actions](issues/16-bind-main-agent-workspace-actions.md)。真实 Main Agent 以 Agent Workspace 为 `cwd`，固定获得 Pi `read` / `bash` / `edit` / `write` / `grep` / `find` / `ls`；这些动作沿用 ordinary-tool Activity 路径，Workspace 仍不宣称为宿主机级安全 sandbox。
 - Completed: [17 — Maintain Current Attention](issues/17-maintain-current-attention.md)。Current Attention 已定义为跨天自然带着的 Workspace 觉知；Main Agent 完整保留该 Turn-live 材料，受限 Maintainer 可依据 Workspace 与近期 Activity 原子更新或明确不改。
 - Completed: [18 — Maintain Thread Continuity and Structure](issues/18-maintain-thread-continuity.md)。Thread Maintainer 在完整读取当前变更 Turn 后维护 `threads/` 的入口、独立 notes、全局导航、关联和可恢复生命周期；稳定 Thread Evidence Reference 保留跨调用来源，结构写入在失败时整轮回滚。
+- Completed: [19 — Integrate nmem Episodes and Recall](issues/19-integrate-nmem-episodes-and-recall.md)。nmem 第一纵切只从 durable Life Recorder Receipt 幂等投影 Workspace Episode，并向 Main Agent 提供显式、bounded、failure-soft 的 `nmem_recall`；Integration Receipt、退避与 diagnostics 留在 Runtime Store 的 nmem 状态中，Runtime 与 Life Recorder 不依赖外部服务。
 
 ## Context Follow-ups
 
@@ -83,5 +84,6 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 - Xi [04 — Runtime Instance, Workspace, and Individual](../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
 - Xi [05 — Harness Capability Composition](../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
 - Xi [07 — Interaction Route and Message Contract](../../../Xi/.scratch/harness-generalization/issues/07-define-interaction-route-and-message-contract.md)
+- Xi [08 — nmem Cognitive Integration Boundary](../../../Xi/.scratch/harness-generalization/issues/08-define-nmem-cognitive-integration-boundary.md)
 - Xi [09 — Runtime Store and Recovery](../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md)
 - Xi [10 — Primary Agent Transcript](../../../Xi/.scratch/harness-generalization/issues/10-define-primary-agent-transcript-protocol.md)

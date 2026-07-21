@@ -78,6 +78,10 @@ _Avoid_: persona configuration, workspace material, runtime state
 Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。它为 Harness 提供能力，不定义 Individual 的身份或关系。
 _Avoid_: individual capability, relationship material, executor abstraction
 
+**Integration Receipt**:
+Runtime Store 中证明一份本地证据已经由某个 Integration 完成外部投影的持久事实。它用于幂等恢复，不改变本地证据的成立或语义。
+_Avoid_: workspace metadata, life recorder receipt, external truth
+
 **Cognitive Organ**:
 由 Loom 内置并版本化维护的专职能力。它的职责、方法、工具面、触发条件和保护规则由 Harness 定义。
 _Avoid_: optional plugin, workspace-defined agent, self-evolving organ

@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { createNmemRecallTool } from "../../src/integrations/nmem/index.js";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
@@ -455,6 +456,55 @@ test("rejects duplicate additional Main Agent tools", async () => {
     harnessSystemPrompt: "harness guidance",
     additionalTools: [duplicate(), duplicate()],
   }), /additional tool lookup is duplicated/i);
+});
+
+test("presents explicit nmem recall as a fallible ordinary Main Agent tool", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-nmem-recall-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const recall = (context.tools ?? []).find(tool => tool.name === "nmem_recall");
+      assert.ok(recall);
+      assert.match(recall.description, /only when older experience would materially help/i);
+      assert.match(recall.description, /stale, incomplete, or wrong/i);
+      assert.match(recall.description, /verify important conclusions.*Agent Workspace/i);
+      return fauxAssistantMessage(
+        fauxToolCall("nmem_recall", { query: "an older decision" }, { id: "recall-1" }),
+        { stopReason: "toolUse" },
+      );
+    },
+    context => {
+      assert.match(JSON.stringify(context.messages), /not_configured/);
+      return fauxAssistantMessage("continued without external memory");
+    },
+  ]);
+  const recorded: Array<{ toolName: string; result: JsonValue }> = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent-config"),
+    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    additionalTools: [createNmemRecallTool({})],
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-recall",
+    leaseToken: 1,
+    inputs: [executionInput("input-recall", "remember the older decision")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push({
+      toolName: activity.toolName,
+      result: activity.result,
+    }),
+  }).result;
+
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0]?.toolName, "nmem_recall");
+  assert.match(JSON.stringify(recorded[0]?.result), /loom\.nmem-recall/);
 });
 
 test("runs bash from the Agent Workspace and records it as lived activity", async t => {
