@@ -84,7 +84,7 @@ export function isRawCompactableToolResult(message: AgentMessage): boolean {
 
 export async function compactCommittedToolTraces(options: {
   window: ContextWindowState;
-  transcriptFile: string;
+  transcriptDirectory: string;
   compactor?: ToolTraceCompactor;
 }): Promise<ContextWindowState> {
   const messages = restoreMessages(options.window.committedTrace);
@@ -93,13 +93,13 @@ export async function compactCommittedToolTraces(options: {
   if (collected.raw.length > 0 && !options.compactor) {
     throw new Error("Tool trace compaction is required but no Tool Trace Compactor is configured");
   }
-  if (collected.raw.length > 0 && !options.window.transcriptAnchor) {
-    throw new Error("Tool trace compaction requires a committed transcript anchor");
+  if (collected.raw.length > 0 && options.window.transcriptSources.length === 0) {
+    throw new Error("Tool trace compaction requires committed transcript sources");
   }
 
   const sources = collected.raw.length === 0 ? [] : await readCommittedToolInteractions({
-    transcriptFile: options.transcriptFile,
-    transcriptAnchor: options.window.transcriptAnchor!,
+    transcriptDirectory: options.transcriptDirectory,
+    transcriptSources: options.window.transcriptSources,
     toolCallIds: collected.raw.map(interaction => interaction.toolCallId),
   });
   const sourceById = new Map(sources.map(source => [source.toolCallId, source]));
@@ -157,7 +157,7 @@ export async function compactCommittedToolTraces(options: {
 
 export function createExpandTool(options: {
   window: ContextWindowState;
-  transcriptFile: string;
+  transcriptDirectory: string;
 }): ToolDefinition {
   const authorized = new Set([
     ...options.window.recentActivityReferences,
@@ -176,7 +176,7 @@ export function createExpandTool(options: {
         throw new Error("The tool interaction reference is not authorized by the current Context");
       }
       const interaction = await readReferencedToolInteraction({
-        transcriptFile: options.transcriptFile,
+        transcriptDirectory: options.transcriptDirectory,
         reference: params.reference,
       });
       const original = JSON.stringify({

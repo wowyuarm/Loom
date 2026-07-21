@@ -12,6 +12,7 @@ export interface RuntimeInput {
 }
 
 export type TranscriptAnchor = {
+  sourceId: string;
   sessionId: string;
   entryId: string;
 };
@@ -162,6 +163,7 @@ export interface ExecutionInput {
 export interface TurnRequest {
   turnId: string;
   leaseToken: number;
+  recordingDay: string;
   inputs: ExecutionInput[];
   executionState?: JsonValue;
 }

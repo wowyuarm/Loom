@@ -1,5 +1,10 @@
+import { mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
+
+import { Temporal } from "@js-temporal/polyfill";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 import type {
   ActivityFreezeRequest,
@@ -9,9 +14,8 @@ import type {
 } from "../runtime/index.js";
 
 interface VerifyTranscriptEntryRequest {
-  transcriptFile: string;
-  sessionId: string;
-  entryId: string;
+  transcriptDirectory: string;
+  transcriptAnchor: TranscriptAnchor;
 }
 
 export interface InputAnnotationReference {
@@ -20,7 +24,8 @@ export interface InputAnnotationReference {
 }
 
 interface VerifyTranscriptEvidenceRequest {
-  transcriptFile: string;
+  transcriptDirectory: string;
+  sourceId: string;
   sessionId: string;
   inputs: InputAnnotationReference[];
   terminalToolNames?: string[];
@@ -46,48 +51,90 @@ export interface TranscriptToolInteraction {
 }
 
 export async function readCommittedActivityEvents(request: {
-  transcriptFile: string;
+  transcriptDirectory: string;
   startAnchor?: TranscriptAnchor;
   endAnchor: TranscriptAnchor;
   inputs: ActivityFreezeRequest["inputs"];
   turns: ActivityFreezeRequest["turns"];
 }): Promise<FrozenActivityEvent[]> {
-  if (request.startAnchor && request.startAnchor.sessionId !== request.endAnchor.sessionId) {
-    throw new Error("Activity transcript range cannot cross sessions");
-  }
-  const branch = await readBranchToEntry(
-    request.transcriptFile,
-    request.endAnchor.sessionId,
-    request.endAnchor.entryId,
-  );
-  assertCompleteToolInteractions(branch, request.transcriptFile);
-  const startIndex = request.startAnchor
-    ? branch.findIndex(entry => entry.id === request.startAnchor!.entryId)
-    : -1;
-  if (request.startAnchor && startIndex < 0) {
-    throw new Error(`Activity start ${request.startAnchor.entryId} is not an ancestor of its closing anchor`);
-  }
   const inputs = new Map(request.inputs.map(input => [input.id, input]));
   const turnByInput = new Map(request.turns.flatMap(turn => turn.inputIds.map(inputId => [inputId, turn.id] as const)));
   const observedInputs = new Set<string>();
   const events: FrozenActivityEvent[] = [];
-  const entries = branch.slice(startIndex + 1);
-  let currentTurnId: string | undefined;
+  const completedTurns = request.turns.filter(turn => turn.status === "completed");
+  const lastAnchor = completedTurns.findLast(turn => turn.transcriptAnchor)?.transcriptAnchor;
+  if (lastAnchor && !isDeepStrictEqual(lastAnchor, request.endAnchor)) {
+    throw new Error("Activity closing anchor does not match its last completed Turn");
+  }
+  if (!lastAnchor && !isDeepStrictEqual(request.startAnchor, request.endAnchor)) {
+    throw new Error("Activity without a completed Turn cannot advance its transcript anchor");
+  }
 
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index]!;
+  let previousAnchor = request.startAnchor;
+  for (const turn of completedTurns) {
+    const anchor = turn.transcriptAnchor;
+    if (!anchor) throw new Error(`Completed Turn ${turn.id} has no transcript anchor`);
+    const transcriptFile = primaryTranscriptFile(request.transcriptDirectory, anchor.sourceId);
+    const branch = await readBranchToEntry(transcriptFile, anchor.sessionId, anchor.entryId);
+    assertCompleteToolInteractions(branch, transcriptFile);
+    const sameBranch = previousAnchor?.sourceId === anchor.sourceId
+      && previousAnchor.sessionId === anchor.sessionId;
+    const startIndex = sameBranch
+      ? branch.findIndex(entry => entry.id === previousAnchor!.entryId)
+      : -1;
+    if (sameBranch && startIndex < 0) {
+      throw new Error(`Activity start ${previousAnchor!.entryId} is not an ancestor of Turn ${turn.id}`);
+    }
+    projectActivityEntries({
+      entries: branch.slice(startIndex + 1),
+      expectedTurnId: turn.id,
+      inputs,
+      turnByInput,
+      observedInputs,
+      events,
+    });
+    previousAnchor = anchor;
+  }
+
+  for (const input of request.inputs) {
+    if (observedInputs.has(input.id)) continue;
+    const turnId = turnByInput.get(input.id);
+    if (!turnId) throw new Error(`Runtime Input ${input.id} has no owning Turn`);
+    events.push({
+      eventId: `input:${input.id}`,
+      turnId,
+      at: input.occurredAt,
+      actorRef: input.kind === "interaction" ? "human" : "system",
+      kind: "input",
+      content: structuredClone(input.payload),
+    });
+  }
+  return events;
+}
+
+function projectActivityEntries(request: {
+  entries: TranscriptEntry[];
+  expectedTurnId: string;
+  inputs: Map<string, ActivityFreezeRequest["inputs"][number]>;
+  turnByInput: Map<string, string>;
+  observedInputs: Set<string>;
+  events: FrozenActivityEvent[];
+}): void {
+  let currentTurnId: string | undefined;
+  for (let index = 0; index < request.entries.length; index += 1) {
+    const entry = request.entries[index]!;
     if (entry.type === "custom" && entry.customType === "loom.input.v1") {
       const data = entry.data;
       if (!data || typeof data !== "object" || Array.isArray(data)) {
         throw new Error(`Transcript input annotation ${entry.id} has invalid data`);
       }
       const inputId = (data as Record<string, unknown>).inputId;
-      const input = typeof inputId === "string" ? inputs.get(inputId) : undefined;
-      const turnId = typeof inputId === "string" ? turnByInput.get(inputId) : undefined;
-      const userEntry = entries[index + 1];
+      const input = typeof inputId === "string" ? request.inputs.get(inputId) : undefined;
+      const turnId = typeof inputId === "string" ? request.turnByInput.get(inputId) : undefined;
+      const userEntry = request.entries[index + 1];
       if (!input
-        || !turnId
-        || observedInputs.has(input.id)
+        || turnId !== request.expectedTurnId
+        || request.observedInputs.has(input.id)
         || (data as Record<string, unknown>).turnId !== turnId
         || (data as Record<string, unknown>).kind !== input.kind
         || (data as Record<string, unknown>).occurredAt !== input.occurredAt
@@ -98,8 +145,8 @@ export async function readCommittedActivityEvents(request: {
         throw new Error(`Transcript input annotation ${entry.id} does not match Runtime evidence`);
       }
       currentTurnId = turnId;
-      observedInputs.add(input.id);
-      events.push({
+      request.observedInputs.add(input.id);
+      request.events.push({
         eventId: `input:${input.id}`,
         turnId,
         at: input.occurredAt,
@@ -122,17 +169,12 @@ export async function readCommittedActivityEvents(request: {
         const block = message.content[blockIndex];
         if (!block || typeof block !== "object" || Array.isArray(block)) continue;
         const type = (block as Record<string, unknown>).type;
-        const kind = type === "thinking"
-          ? "thinking"
-          : type === "toolCall"
-            ? "tool_call"
-            : "output";
-        events.push({
+        request.events.push({
           eventId: `transcript:${entry.id}:${blockIndex}`,
           turnId: currentTurnId,
           at: transcriptEntryTime(entry),
           actorRef: "individual",
-          kind,
+          kind: type === "thinking" ? "thinking" : type === "toolCall" ? "tool_call" : "output",
           content: asJsonValue(block),
         });
       }
@@ -140,7 +182,7 @@ export async function readCommittedActivityEvents(request: {
     }
     if (message.role === "toolResult") {
       if (!currentTurnId) throw new Error(`Transcript tool result ${entry.id} has no owning Turn`);
-      events.push({
+      request.events.push({
         eventId: `transcript:${entry.id}`,
         turnId: currentTurnId,
         at: transcriptEntryTime(entry),
@@ -155,21 +197,6 @@ export async function readCommittedActivityEvents(request: {
       });
     }
   }
-
-  for (const input of request.inputs) {
-    if (observedInputs.has(input.id)) continue;
-    const turnId = turnByInput.get(input.id);
-    if (!turnId) throw new Error(`Runtime Input ${input.id} has no owning Turn`);
-    events.push({
-      eventId: `input:${input.id}`,
-      turnId,
-      at: input.occurredAt,
-      actorRef: input.kind === "interaction" ? "human" : "system",
-      kind: "input",
-      content: structuredClone(input.payload),
-    });
-  }
-  return events;
 }
 
 interface TranscriptHeader extends Record<string, unknown> {
@@ -185,18 +212,21 @@ interface TranscriptEntry extends Record<string, unknown> {
 export async function verifyPrimaryTranscriptEntry(
   request: VerifyTranscriptEntryRequest,
 ): Promise<TranscriptAnchor> {
-  const branch = await readSelectedBranch(request.transcriptFile, request.sessionId);
-  if (!branch.some(entry => entry.id === request.entryId)) {
-    throw new Error(`Transcript entry ${request.entryId} is not on the selected branch`);
+  const anchor = request.transcriptAnchor;
+  const transcriptFile = primaryTranscriptFile(request.transcriptDirectory, anchor.sourceId);
+  const branch = await readSelectedBranch(transcriptFile, anchor.sessionId);
+  if (!branch.some(entry => entry.id === anchor.entryId)) {
+    throw new Error(`Transcript entry ${anchor.entryId} is not on the selected branch`);
   }
-  return { sessionId: request.sessionId, entryId: request.entryId };
+  return structuredClone(anchor);
 }
 
 export async function verifyPrimaryTranscriptEvidence(
   request: VerifyTranscriptEvidenceRequest,
 ): Promise<VerifiedTranscriptEvidence> {
-  const branch = await readSelectedBranch(request.transcriptFile, request.sessionId);
-  assertCompleteToolInteractions(branch, request.transcriptFile);
+  const transcriptFile = primaryTranscriptFile(request.transcriptDirectory, request.sourceId);
+  const branch = await readSelectedBranch(transcriptFile, request.sessionId);
+  assertCompleteToolInteractions(branch, transcriptFile);
   const inputAnchors = request.inputs.map(input => {
     const annotationIndex = branch.findIndex(entry => entry.id === input.annotationEntryId);
     const annotation = branch[annotationIndex];
@@ -218,57 +248,57 @@ export async function verifyPrimaryTranscriptEvidence(
     }
     return {
       inputId: input.inputId,
-      transcriptAnchor: { sessionId: request.sessionId, entryId: userEntry.id },
+      transcriptAnchor: { sourceId: request.sourceId, sessionId: request.sessionId, entryId: userEntry.id },
     };
   });
   const leaf = branch.at(-1);
-  if (!leaf) throw new Error(`Transcript ${request.transcriptFile} has no selected leaf`);
-  assertCompletedTurn(branch, request.transcriptFile, new Set(request.terminalToolNames ?? []));
+  if (!leaf) throw new Error(`Transcript ${transcriptFile} has no selected leaf`);
+  assertCompletedTurn(branch, transcriptFile, new Set(request.terminalToolNames ?? []));
   return {
     inputAnchors,
-    transcriptAnchor: { sessionId: request.sessionId, entryId: leaf.id },
+    transcriptAnchor: { sourceId: request.sourceId, sessionId: request.sessionId, entryId: leaf.id },
   };
 }
 
 export async function readCommittedToolInteractions(request: {
-  transcriptFile: string;
-  transcriptAnchor: TranscriptAnchor;
+  transcriptDirectory: string;
+  transcriptSources: TranscriptAnchor[];
   toolCallIds: string[];
 }): Promise<TranscriptToolInteraction[]> {
   if (new Set(request.toolCallIds).size !== request.toolCallIds.length) {
     throw new Error("Context contains duplicate tool call IDs");
   }
-  const branch = await readBranchToEntry(
-    request.transcriptFile,
-    request.transcriptAnchor.sessionId,
-    request.transcriptAnchor.entryId,
-  );
   const expected = new Set(request.toolCallIds);
-  const calls = toolCallsOnBranch(branch, request.transcriptFile);
   const interactions = new Map<string, TranscriptToolInteraction>();
-  for (const entry of branch) {
-    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
-    const message = entry.message as Record<string, unknown>;
-    if (message.role !== "toolResult" || typeof message.toolCallId !== "string" || !expected.has(message.toolCallId)) continue;
-    const call = calls.get(message.toolCallId);
-    if (!call
-      || typeof message.toolName !== "string"
-      || message.toolName !== call.toolName
-      || !Array.isArray(message.content)
-      || typeof message.isError !== "boolean"
-      || interactions.has(message.toolCallId)) {
-      throw new Error(`Transcript does not contain one complete interaction for tool call ${message.toolCallId}`);
+  for (const anchor of request.transcriptSources) {
+    const transcriptFile = primaryTranscriptFile(request.transcriptDirectory, anchor.sourceId);
+    const branch = await readBranchToEntry(transcriptFile, anchor.sessionId, anchor.entryId);
+    assertCompleteToolInteractions(branch, transcriptFile);
+    const calls = toolCallsOnBranch(branch, transcriptFile);
+    for (const entry of branch) {
+      if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
+      const message = entry.message as Record<string, unknown>;
+      if (message.role !== "toolResult" || typeof message.toolCallId !== "string" || !expected.has(message.toolCallId)) continue;
+      const call = calls.get(message.toolCallId);
+      if (!call
+        || typeof message.toolName !== "string"
+        || message.toolName !== call.toolName
+        || !Array.isArray(message.content)
+        || typeof message.isError !== "boolean"
+        || interactions.has(message.toolCallId)) {
+        throw new Error(`Transcript does not contain one complete interaction for tool call ${message.toolCallId}`);
+      }
+      interactions.set(message.toolCallId, {
+        reference: createToolInteractionReference(anchor.sourceId, anchor.sessionId, entry.id),
+        toolCallId: message.toolCallId,
+        toolName: call.toolName,
+        callArguments: asJsonValue(call.callArguments),
+        toolResult: {
+          isError: message.isError,
+          content: message.content.map(asJsonValue),
+        },
+      });
     }
-    interactions.set(message.toolCallId, {
-      reference: createToolInteractionReference(request.transcriptAnchor.sessionId, entry.id),
-      toolCallId: message.toolCallId,
-      toolName: call.toolName,
-      callArguments: asJsonValue(call.callArguments),
-      toolResult: {
-        isError: message.isError,
-        content: message.content.map(asJsonValue),
-      },
-    });
   }
   if (interactions.size !== expected.size) {
     const missing = request.toolCallIds.filter(id => !interactions.has(id));
@@ -278,11 +308,12 @@ export async function readCommittedToolInteractions(request: {
 }
 
 export async function readReferencedToolInteraction(request: {
-  transcriptFile: string;
+  transcriptDirectory: string;
   reference: string;
 }): Promise<TranscriptToolInteraction> {
   const source = decodeToolInteractionReference(request.reference);
-  const branch = await readBranchToEntry(request.transcriptFile, source.sessionId, source.resultEntryId);
+  const transcriptFile = primaryTranscriptFile(request.transcriptDirectory, source.sourceId);
+  const branch = await readBranchToEntry(transcriptFile, source.sessionId, source.resultEntryId);
   const resultEntry = branch.at(-1);
   const message = resultEntry?.message;
   if (resultEntry?.id !== source.resultEntryId
@@ -299,7 +330,7 @@ export async function readReferencedToolInteraction(request: {
     || !Array.isArray(result.content)) {
     throw new Error("Tool interaction reference does not identify a transcript result");
   }
-  const call = toolCallsOnBranch(branch.slice(0, -1), request.transcriptFile).get(result.toolCallId);
+  const call = toolCallsOnBranch(branch.slice(0, -1), transcriptFile).get(result.toolCallId);
   if (!call || call.toolName !== result.toolName) {
     throw new Error("Tool interaction reference has no matching transcript call");
   }
@@ -459,12 +490,33 @@ function toolCallsOnBranch(
   return calls;
 }
 
-export function createToolInteractionReference(sessionId: string, resultEntryId: string): string {
-  const payload = Buffer.from(JSON.stringify({ sessionId, resultEntryId }), "utf8").toString("base64url");
+export function openPrimaryTranscriptSession(
+  transcriptDirectory: string,
+  sourceId: string,
+  cwd: string,
+): SessionManager {
+  const transcriptFile = primaryTranscriptFile(transcriptDirectory, sourceId);
+  mkdirSync(path.dirname(transcriptFile), { recursive: true });
+  return SessionManager.open(transcriptFile, path.dirname(transcriptFile), cwd);
+}
+
+export function primaryTranscriptFile(transcriptDirectory: string, sourceId: string): string {
+  assertTranscriptSourceId(sourceId);
+  return path.join(path.resolve(transcriptDirectory), sourceId, "agent.jsonl");
+}
+
+export function createToolInteractionReference(
+  sourceId: string,
+  sessionId: string,
+  resultEntryId: string,
+): string {
+  assertTranscriptSourceId(sourceId);
+  const payload = Buffer.from(JSON.stringify({ sourceId, sessionId, resultEntryId }), "utf8").toString("base64url");
   return `loom-tool-interaction:v1:${payload}`;
 }
 
 function decodeToolInteractionReference(reference: string): {
+  sourceId: string;
   sessionId: string;
   resultEntryId: string;
 } {
@@ -480,14 +532,27 @@ function decodeToolInteractionReference(reference: string): {
     throw new Error("Invalid tool interaction reference");
   }
   const record = parsed as Record<string, unknown>;
-  if (Object.keys(record).length !== 2
+  if (Object.keys(record).length !== 3
+    || typeof record.sourceId !== "string"
     || typeof record.sessionId !== "string"
     || !record.sessionId
     || typeof record.resultEntryId !== "string"
     || !record.resultEntryId) {
     throw new Error("Invalid tool interaction reference");
   }
-  return { sessionId: record.sessionId, resultEntryId: record.resultEntryId };
+  assertTranscriptSourceId(record.sourceId);
+  return { sourceId: record.sourceId, sessionId: record.sessionId, resultEntryId: record.resultEntryId };
+}
+
+function assertTranscriptSourceId(sourceId: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(sourceId)) {
+    throw new Error(`Primary Transcript source is not a logical date: ${sourceId}`);
+  }
+  try {
+    if (Temporal.PlainDate.from(sourceId).toString() !== sourceId) throw new Error();
+  } catch {
+    throw new Error(`Primary Transcript source is not a logical date: ${sourceId}`);
+  }
 }
 
 function asJsonValue(value: unknown): JsonValue {

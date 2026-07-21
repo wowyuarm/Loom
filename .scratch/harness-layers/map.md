@@ -65,6 +65,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [20 — Project Conversation Activities to nmem Threads](issues/20-project-conversation-activities-to-nmem-threads.md)。每份 Frozen Activity 独立、幂等投影为 nmem Conversation Thread，保留真实 human input、delivered reply 和简洁 private activity；thinking、raw tool result 与未送达正文保持在外部投影之外，且不等待 Life Recorder。
 - Completed: [21 — Read nmem Working Memory Evidence](issues/21-read-nmem-working-memory-evidence.md)。nmem Working Memory 通过 REST 成为 Integration-owned derived evidence；最近成功内容按连接隔离缓存在 Runtime Store，读取失败时明确返回 stale 或 unavailable，不进入 Agent Workspace，也不阻断 Runtime。
 - Completed: [22 — Apply Instance Time Policy to Runtime](issues/22-apply-instance-time-policy.md)。可选 `instance.yaml` 的时间分支现在形成 DST-safe Time Policy；缺省使用机器 IANA 时区与 03:00 logical-day boundary，Runtime 的 Orientation local time 与 Activity recording day 使用同一政策。
+- Completed: [23 — Close Logical-Day Context and Transcript Continuity](issues/23-close-logical-day-context-and-transcript.md)。Runtime 在 Turn 准入时固定 transcript day；Primary Transcript 按日写入 `agent.jsonl`，source-aware Anchor 支持跨日 Context、Activity 与工具证据；两日 Daily 正文作为完整的 window-frozen material 进入 Main Agent Context。
 
 ## Context Follow-ups
 
@@ -74,7 +75,7 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 | --- | --- |
 | Window Closure and Recent Activity Bridge | Tickets 11-12 completed：durable freeze、successor Context、FIFO Life Recorder 与 Receipt 已闭合；bridge 独立选择最近四段、固定于 Segment，并提供受限可展开的工具证据。 |
 | Tool Trace Compaction and Evidence Expansion | Ticket 06 completed：真实 compactor、失败 gate、Runtime 原子替换、稳定引用分页展开与机械收回已闭合。 |
-| Logical Day and Cross-day Context Recovery | 等时间/节律配置与每日 transcript 归属明确后实现。 |
+| Logical Day and Cross-day Context Recovery | Ticket 23 completed：Turn 固定 transcript day、每日 `agent.jsonl`、跨来源 Anchor / branch / Activity / tool evidence 与两日 Daily snapshot 已闭合。 |
 | Workspace Material Sources | Tickets 04-05 已接入 Identity、Memory、Behavior、Current Attention 与统一 skills catalog。 |
 | Configuration and Model Revision Input | 等 Instance Configuration 层提供预算与每 Turn revision。 |
 
@@ -84,15 +85,14 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Daily Narrative 尚未成为 Main Agent 的正式 window-frozen Context source；它必须和 logical day、跨日 Context 与每日 Transcript 一起闭合。
-2. Stable Facts 已有读取合同，权威维护者是未来的 Memory Reflector；Life Recorder 只读当前事实并留下 `[fact]` evidence lead。维护和受保护演化尚未实现。
-3. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
-4. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
-5. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
+1. Stable Facts 已有读取合同，权威维护者是未来的 Memory Reflector；Life Recorder 只读当前事实并留下 `[fact]` evidence lead。维护和受保护演化尚未实现。
+2. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
+3. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
+4. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
-当前依赖顺序：Instance Configuration + Time Policy -> logical day / Daily Context / daily Transcript -> Memory Reflector -> durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+当前依赖顺序：Memory Reflector -> durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Ticket 22 已完成。下一项进入 logical day / Daily Context / daily Transcript 的同一跨日闭环；在明确其共同 Interface 前不先拆成三个互不相连的票。
+Current work item: none。下一步先回读 source Memory Reflector 的完整职责、Stable Facts 所有权和 nmem evidence 使用方式，再讨论其模型可见 prompt 与工具合同；不在本票夹带实现。
 
 ## Source References
 

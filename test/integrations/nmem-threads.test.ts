@@ -196,9 +196,9 @@ function completedExecution(withTool = false): AgentExecution {
           outcome: "completed",
           inputAnchors: request.inputs.map(input => ({
             inputId: input.id,
-            transcriptAnchor: { sessionId: "session-1", entryId: `entry-${input.id}` },
+            transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: `entry-${input.id}` },
           })),
-          transcriptAnchor: { sessionId: "session-1", entryId: "entry-final" },
+          transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "entry-final" },
           executionState: { version: 1, windowId: "window-1" },
           executionRecord: { messages: [] },
         }),

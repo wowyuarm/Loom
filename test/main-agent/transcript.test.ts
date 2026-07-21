@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,7 +11,9 @@ import {
 
 test("verifies an entry on the selected continuous transcript branch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-18", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
   await writeFile(transcriptFile, [
     JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: "2026-07-18T00:00:00.000Z", cwd: root }),
     JSON.stringify({ type: "custom", customType: "loom.input.v1", data: { inputId: "input-1" }, id: "annotation-1", parentId: null, timestamp: "2026-07-18T00:00:01.000Z" }),
@@ -21,18 +23,24 @@ test("verifies an entry on the selected continuous transcript branch", async () 
   ].join("\n"), "utf8");
 
   assert.deepEqual(await verifyPrimaryTranscriptEntry({
-    transcriptFile,
-    sessionId: "session-1",
-    entryId: "assistant-1",
+    transcriptDirectory,
+    transcriptAnchor: { sourceId: "2026-07-18", sessionId: "session-1", entryId: "assistant-1" },
   }), {
+    sourceId: "2026-07-18",
     sessionId: "session-1",
     entryId: "assistant-1",
   });
+  await assert.rejects(verifyPrimaryTranscriptEntry({
+    transcriptDirectory,
+    transcriptAnchor: { sourceId: "2026-07-18", sessionId: "session-other", entryId: "assistant-1" },
+  }), /does not belong to session/i);
 });
 
 test("rejects Turn evidence with an incomplete tool interaction", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-18", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
   await writeFile(transcriptFile, [
     JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: "2026-07-18T00:00:00.000Z", cwd: root }),
     JSON.stringify({ type: "custom", customType: "loom.input.v1", data: { inputId: "input-1" }, id: "annotation-1", parentId: null, timestamp: "2026-07-18T00:00:01.000Z" }),
@@ -42,7 +50,8 @@ test("rejects Turn evidence with an incomplete tool interaction", async () => {
   ].join("\n"), "utf8");
 
   await assert.rejects(verifyPrimaryTranscriptEvidence({
-    transcriptFile,
+    transcriptDirectory,
+    sourceId: "2026-07-18",
     sessionId: "session-1",
     inputs: [{ inputId: "input-1", annotationEntryId: "annotation-1" }],
   }), /incomplete tool interaction/);

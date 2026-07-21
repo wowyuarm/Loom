@@ -11,6 +11,7 @@ import type {
   JsonValue,
   TranscriptAnchor,
 } from "../runtime/index.js";
+import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import {
   parseContextWindowState,
   serializeContextWindowState,
@@ -20,13 +21,15 @@ import {
   createToolInteractionReference,
   readCommittedActivityEvents,
 } from "./transcript.js";
+import { loadDailyContext } from "./daily-context.js";
 
 const RECENT_ACTIVITY_LIMIT = 4;
 const BRIDGE_TOOL_PAIR_TOKENS = 1_000;
 const BRIDGE_PREVIEW_CHARACTERS = 200;
 
 export interface MainAgentActivityLifecycleOptions {
-  transcriptFile: string;
+  agentWorkspace: AgentWorkspace;
+  transcriptDirectory: string;
   nextWindowId?: () => string;
   loadWindowFrozen?: (request: ActivityFreezeRequest) => Promise<AgentMessage[]>;
 }
@@ -57,7 +60,7 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
 
     const transcriptEvents = current.transcriptAnchor
       ? await readCommittedActivityEvents({
-          transcriptFile: this.options.transcriptFile,
+          transcriptDirectory: this.options.transcriptDirectory,
           ...(starting?.transcriptAnchor ? { startAnchor: starting.transcriptAnchor } : {}),
           endAnchor: current.transcriptAnchor,
           inputs: request.inputs,
@@ -100,7 +103,10 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
         ...(turn.transcriptAnchor ? { transcriptAnchor: turn.transcriptAnchor } : {}),
       })),
     };
-    const windowFrozen = await this.options.loadWindowFrozen?.(request) ?? [];
+    const [dailyContext, windowFrozen] = await Promise.all([
+      loadDailyContext(this.options.agentWorkspace, request.segment.recordingDay),
+      this.options.loadWindowFrozen?.(request) ?? Promise.resolve([]),
+    ]);
     const bridgeActivities = [...request.recentActivities, activity]
       .sort((left, right) => Date.parse(right.closedAt) - Date.parse(left.closedAt))
       .slice(0, RECENT_ACTIVITY_LIMIT)
@@ -110,11 +116,13 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
       version: 1,
       id: this.options.nextWindowId?.() ?? randomUUID(),
       frozenSeed: [
+        ...(dailyContext ? [serializeJson(dailyContext)] : []),
         ...windowFrozen.map(serializeJson),
         bridge.message,
       ],
       recentActivityReferences: bridge.references,
       committedTrace: [],
+      transcriptSources: current.transcriptAnchor ? [current.transcriptAnchor] : [],
       ...(current.transcriptAnchor ? { transcriptAnchor: current.transcriptAnchor } : {}),
     };
     return {
@@ -240,13 +248,12 @@ function bridgeMessage(activities: Array<{
   openedAt: string;
   closedAt: string;
   events: FrozenActivityEvent[];
-  turns?: Array<{ transcriptAnchor?: TranscriptAnchor }>;
+  turns?: Array<{ turnId: string; transcriptAnchor?: TranscriptAnchor }>;
 }>): { message: JsonValue; references: string[] } {
   const references: string[] = [];
   let toolPairTokens = 0;
   const lines = activities.flatMap(candidate => {
-    const sessionId = activitySessionId(candidate.turns ?? []);
-    const projected = projectActivity(candidate.events, sessionId, toolPairTokens);
+    const projected = projectActivity(candidate.events, candidate.turns ?? [], toolPairTokens);
     toolPairTokens += projected.toolPairTokens;
     references.push(...projected.references);
     return [
@@ -272,7 +279,7 @@ function bridgeMessage(activities: Array<{
 
 function projectActivity(
   events: FrozenActivityEvent[],
-  sessionId: string | undefined,
+  turns: Array<{ turnId: string; transcriptAnchor?: TranscriptAnchor }>,
   usedToolPairTokens: number,
 ): { lines: string[]; references: string[]; toolPairTokens: number } {
   const results = new Map<string, FrozenActivityEvent>();
@@ -292,7 +299,8 @@ function projectActivity(
     }
     const identity = toolIdentity(event.content);
     const result = identity ? results.get(`${identity.id}\u0000${identity.name}`) : undefined;
-    const reference = result && sessionId ? toolResultReference(result, sessionId) : undefined;
+    const anchor = result ? activityTranscriptAnchor(turns, result.turnId) : undefined;
+    const reference = result && anchor ? toolResultReference(result, anchor) : undefined;
     if (!identity || !result || !reference) continue;
     const pairLines = [
       formatToolEvent(event, identity.name, BRIDGE_PREVIEW_CHARACTERS),
@@ -311,14 +319,21 @@ function projectActivity(
   return { lines, references, toolPairTokens: addedToolPairTokens };
 }
 
-function activitySessionId(turns: Array<{ transcriptAnchor?: TranscriptAnchor }>): string | undefined {
-  return turns.findLast(turn => turn.transcriptAnchor)?.transcriptAnchor?.sessionId;
+function activityTranscriptAnchor(
+  turns: Array<{ turnId: string; transcriptAnchor?: TranscriptAnchor }>,
+  turnId: string,
+): TranscriptAnchor | undefined {
+  return turns.find(turn => turn.turnId === turnId)?.transcriptAnchor;
 }
 
-function toolResultReference(event: FrozenActivityEvent, sessionId: string): string | undefined {
+function toolResultReference(event: FrozenActivityEvent, anchor: TranscriptAnchor): string | undefined {
   const prefix = "transcript:";
   if (!event.eventId.startsWith(prefix)) return undefined;
-  return createToolInteractionReference(sessionId, event.eventId.slice(prefix.length));
+  return createToolInteractionReference(
+    anchor.sourceId,
+    anchor.sessionId,
+    event.eventId.slice(prefix.length),
+  );
 }
 
 function toolIdentity(content: JsonValue): { id: string; name: string } | undefined {

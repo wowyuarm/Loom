@@ -272,6 +272,7 @@ class SqliteRuntime implements Runtime {
           const running = this.#execution.start({
             turnId: claimed.turnId,
             leaseToken: claimed.fencingToken,
+            recordingDay: claimed.recordingDay,
             inputs: [claimed.input],
             ...(claimed.executionState !== undefined ? { executionState: claimed.executionState } : {}),
           }, {
@@ -1130,6 +1131,7 @@ class SqliteRuntime implements Runtime {
   #claimNextInput(): {
     turnId: string;
     fencingToken: number;
+    recordingDay: string;
     input: ExecutionInput;
     executionState?: JsonValue;
   } | undefined {
@@ -1147,6 +1149,7 @@ class SqliteRuntime implements Runtime {
       if (!input) return undefined;
 
       const now = this.#now();
+      const recordingDay = this.#timePolicy.recordingDay(now);
       const segmentId = existingSegment?.id ?? this.#nextId();
       if (!existingSegment) {
         const startingState = this.#readExecutionState().executionState;
@@ -1170,8 +1173,9 @@ class SqliteRuntime implements Runtime {
       const turnId = this.#nextId();
       this.#database.prepare(`
         INSERT INTO turns (
-          id, segment_id, status, lease_owner, fencing_token, lease_expires_at, started_at
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?)
+          id, segment_id, status, lease_owner, fencing_token, lease_expires_at, started_at,
+          recording_day
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
       `).run(
         turnId,
         segmentId,
@@ -1179,6 +1183,7 @@ class SqliteRuntime implements Runtime {
         tokenRow.value,
         new Date(now.getTime() + this.#leaseDurationMs).toISOString(),
         now.toISOString(),
+        recordingDay,
       );
       this.#database.prepare(`
         INSERT INTO turn_inputs (
@@ -1190,6 +1195,7 @@ class SqliteRuntime implements Runtime {
       return {
         turnId,
         fencingToken: tokenRow.value,
+        recordingDay,
         input: {
           id: input.id,
           kind: input.kind,
@@ -1203,7 +1209,9 @@ class SqliteRuntime implements Runtime {
   }
 
   #completeTurn(turnId: string, fencingToken: number, result: ExecutionResult): void {
-    if (!result.transcriptAnchor.sessionId || !result.transcriptAnchor.entryId) {
+    if (!result.transcriptAnchor.sourceId
+      || !result.transcriptAnchor.sessionId
+      || !result.transcriptAnchor.entryId) {
       throw new Error("Completed Turn requires a verified Transcript Anchor");
     }
     this.#transaction(() => {
@@ -1218,7 +1226,7 @@ class SqliteRuntime implements Runtime {
       const includedIds = new Set(includedInputs.map(input => input.input_id));
       for (const input of includedInputs) {
         const anchor = anchors.get(input.input_id);
-        if (!anchor?.sessionId || !anchor.entryId) {
+        if (!anchor?.sourceId || !anchor.sessionId || !anchor.entryId) {
           throw new Error(`Turn ${turnId} requires a verified Transcript Anchor for Input ${input.input_id}`);
         }
         this.#database.prepare(`

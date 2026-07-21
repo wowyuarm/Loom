@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { Temporal } from "@js-temporal/polyfill";
+
 export type WorkspaceTurnKind = "interaction" | "opportunity";
 
 export interface AgentWorkspaceTurnSnapshot {
@@ -8,6 +10,13 @@ export interface AgentWorkspaceTurnSnapshot {
   longTermMemory: string;
   behavior: string;
   currentAttention: string;
+}
+
+export interface DailyNarrativeSources {
+  currentDay: string;
+  previousDay: string;
+  current?: string;
+  previous?: string;
 }
 
 export class AgentWorkspaceMaterialError extends Error {
@@ -67,6 +76,30 @@ export class AgentWorkspace {
     return this.#read("attention.md");
   }
 
+  async loadDailyNarratives(recordingDay: string): Promise<DailyNarrativeSources> {
+    let current: Temporal.PlainDate;
+    try {
+      current = Temporal.PlainDate.from(recordingDay);
+    } catch {
+      throw new Error(`Daily Narrative recording day is invalid: ${recordingDay}`);
+    }
+    const currentDay = current.toString();
+    if (currentDay !== recordingDay) {
+      throw new Error(`Daily Narrative recording day is invalid: ${recordingDay}`);
+    }
+    const previousDay = current.subtract({ days: 1 }).toString();
+    const [currentSource, previousSource] = await Promise.all([
+      this.#readOptional(`daily/${currentDay}.md`),
+      this.#readOptional(`daily/${previousDay}.md`),
+    ]);
+    return {
+      currentDay,
+      previousDay,
+      ...(currentSource !== undefined ? { current: currentSource } : {}),
+      ...(previousSource !== undefined ? { previous: previousSource } : {}),
+    };
+  }
+
   async #read(relativePath: string): Promise<string> {
     try {
       const content = await readFile(path.join(this.root, relativePath), "utf8");
@@ -78,6 +111,16 @@ export class AgentWorkspace {
       if (isMissingFile(error)) {
         throw new AgentWorkspaceMaterialError(relativePath, "missing");
       }
+      throw error;
+    }
+  }
+
+  async #readOptional(relativePath: string): Promise<string | undefined> {
+    try {
+      const content = await readFile(path.join(this.root, relativePath), "utf8");
+      return content.trim().length > 0 ? content : undefined;
+    } catch (error) {
+      if (isMissingFile(error)) return undefined;
       throw error;
     }
   }

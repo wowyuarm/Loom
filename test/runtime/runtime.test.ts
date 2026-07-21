@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { createTimePolicy } from "../../src/configuration/index.js";
 import {
   openRuntime,
   type ActivityFreezeRequest,
@@ -95,10 +96,10 @@ class HeldExecution implements AgentExecution {
       outcome: "completed",
       inputAnchors: inputs.map(input => ({
         inputId: input.id,
-        transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-held", entryId: `input-${input.id}` },
       })),
-      transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
-      ...executionResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-held", entryId: `entry-${request.turnId}` },
+      ...executionResult(request, { sourceId: request.recordingDay, sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -195,10 +196,10 @@ class IncludedWithoutEvidenceExecution extends HeldExecution {
       outcome: "completed",
       inputAnchors: request.inputs.map(input => ({
         inputId: input.id,
-        transcriptAnchor: { sessionId: "session-held", entryId: `input-${input.id}` },
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-held", entryId: `input-${input.id}` },
       })),
-      transcriptAnchor: { sessionId: "session-held", entryId: `entry-${request.turnId}` },
-      ...executionResult(request, { sessionId: "session-held", entryId: `entry-${request.turnId}` }),
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-held", entryId: `entry-${request.turnId}` },
+      ...executionResult(request, { sourceId: request.recordingDay, sessionId: "session-held", entryId: `entry-${request.turnId}` }),
     });
   }
 }
@@ -237,10 +238,10 @@ const completingExecution: AgentExecution = {
         outcome: "completed",
         inputAnchors: request.inputs.map(input => ({
           inputId: input.id,
-          transcriptAnchor: { sessionId: "session-1", entryId: `input-${input.id}` },
+          transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: `input-${input.id}` },
         })),
-        transcriptAnchor: { sessionId: "session-1", entryId: `entry-${request.turnId}` },
-        ...executionResult(request, { sessionId: "session-1", entryId: `entry-${request.turnId}` }),
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: `entry-${request.turnId}` },
+        ...executionResult(request, { sourceId: request.recordingDay, sessionId: "session-1", entryId: `entry-${request.turnId}` }),
       }),
       steer: async input => control.includeInput(input.id),
       abort: async () => {},
@@ -632,9 +633,45 @@ test("completes one pending input through a main Agent Turn", async t => {
   assert.equal(status.turns[0]?.status, "completed");
   assert.equal(status.turns[0]?.inputIds[0], accepted.inputId);
   assert.deepEqual(status.turns[0]?.transcriptAnchor, {
+    sourceId: "2026-07-19",
     sessionId: "session-1",
     entryId: `entry-${status.turns[0]?.id}`,
   });
+});
+
+test("fixes each Turn to the logical day at admission", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-turn-day-"));
+  const execution = new ObservedCompletingExecution();
+  let now = new Date("2026-07-20T02:59:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "before-boundary",
+    kind: "interaction",
+    payload: { text: "before" },
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+
+  now = new Date("2026-07-20T03:01:00.000Z");
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "after-boundary",
+    kind: "interaction",
+    payload: { text: "after" },
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+
+  assert.deepEqual(
+    execution.requests.map(request => request.recordingDay),
+    ["2026-07-19", "2026-07-20"],
+  );
 });
 
 test("restores opaque execution state for the next Turn after restart", async t => {
@@ -649,6 +686,7 @@ test("restores opaque execution state for the next Turn after restart", async t 
       });
       control.includeInput(request.inputs[0]!.id);
       const transcriptAnchor = {
+        sourceId: "2026-07-19",
         sessionId: "session-agent",
         entryId: `entry-${request.turnId}`,
       };
@@ -659,6 +697,7 @@ test("restores opaque execution state for the next Turn after restart", async t 
           inputAnchors: request.inputs.map(input => ({
             inputId: input.id,
             transcriptAnchor: {
+              sourceId: "2026-07-19",
               sessionId: "session-agent",
               entryId: `input-${input.id}`,
             },
@@ -719,13 +758,13 @@ test("keeps an atomic execution state replacement when the following execution f
         };
         control.prepareExecutionState(prepared);
         control.includeInput(request.inputs[0]!.id);
-        const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-first" };
+        const transcriptAnchor = { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "entry-first" };
         return {
           result: Promise.resolve({
             outcome: "completed" as const,
             inputAnchors: [{
               inputId: request.inputs[0]!.id,
-              transcriptAnchor: { sessionId: "session-agent", entryId: "input-first" },
+              transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "input-first" },
             }],
             transcriptAnchor,
             executionState: {
@@ -801,13 +840,13 @@ test("rejects a stale execution state replacement without changing current state
           };
           control.prepareExecutionState(prepared);
           control.includeInput(request.inputs[0]!.id);
-          const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-first" };
+          const transcriptAnchor = { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "entry-first" };
           return {
             result: Promise.resolve({
               outcome: "completed" as const,
               inputAnchors: [{
                 inputId: request.inputs[0]!.id,
-                transcriptAnchor: { sessionId: "session-agent", entryId: "input-first" },
+                transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "input-first" },
               }],
               transcriptAnchor,
               executionState: {
@@ -929,13 +968,13 @@ test("persists completed execution state without interpreting its schema", async
         schema: "private-before-provider",
       });
       control.includeInput(request.inputs[0]!.id);
-      const transcriptAnchor = { sessionId: "session-agent", entryId: "entry-complete" };
+      const transcriptAnchor = { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "entry-complete" };
       return {
         result: Promise.resolve({
           outcome: "completed",
           inputAnchors: [{
             inputId: request.inputs[0]!.id,
-            transcriptAnchor: { sessionId: "session-agent", entryId: "entry-input" },
+            transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-agent", entryId: "entry-input" },
           }],
           transcriptAnchor,
           executionState: {
@@ -1102,7 +1141,13 @@ test("renews the lease while a main Agent Turn is still running", async t => {
 test("accepts a live Input without waiting for Agent Execution to include it", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
   const execution = new SlowSteeringExecution();
-  const runtime = openRuntime({ root, execution });
+  let now = new Date("2026-07-20T02:59:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    now: () => now,
+  });
   t.after(() => runtime.close());
 
   await runtime.acceptInput({
@@ -1113,6 +1158,7 @@ test("accepts a live Input without waiting for Agent Execution to include it", a
   });
   const advance = runtime.advance();
   const turn = await execution.started.promise;
+  now = new Date("2026-07-20T03:01:00.000Z");
 
   const acceptance = runtime.acceptInput({
     source: "test-channel",
@@ -1132,6 +1178,7 @@ test("accepts a live Input without waiting for Agent Execution to include it", a
   await advance;
 
   assert.equal(observed, "accepted");
+  assert.equal(turn.recordingDay, "2026-07-19");
 });
 
 test("does not replay an input after its Turn created an Effect", async t => {

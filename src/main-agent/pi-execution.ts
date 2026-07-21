@@ -31,6 +31,7 @@ import type {
 } from "../workspace/agent-workspace.js";
 import {
   type InputAnnotationReference,
+  openPrimaryTranscriptSession,
   verifyPrimaryTranscriptEntry,
   verifyPrimaryTranscriptEvidence,
 } from "./transcript.js";
@@ -51,6 +52,7 @@ import {
 } from "./tool-trace.js";
 import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
 import { createMessageTool, type MessageTurnDecision } from "./message.js";
+import { loadDailyContext } from "./daily-context.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -74,7 +76,7 @@ interface PreparedPiSession {
 export interface PiAgentExecutionOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
-  transcriptFile: string;
+  transcriptDirectory: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
   harnessSystemPrompt: string;
@@ -190,14 +192,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
   #closed = false;
 
   constructor(
-    private readonly sessionManager: SessionManager,
-    private readonly transcriptFile: string,
-    private readonly lifecycle: InputAnnotationLifecycle,
+    private readonly transcriptDirectory: string,
     private readonly agentWorkspace: AgentWorkspace,
     private readonly createSession: (
       systemPrompt: string,
       turnTools: ToolDefinition[],
       activityExtension: InlineExtension,
+      annotationLifecycle: InputAnnotationLifecycle,
+      sessionManager: SessionManager,
     ) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
@@ -211,24 +213,30 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     if (this.#closed) throw new Error("Agent Execution is closed");
     if (this.#runningTurnId) throw new Error(`Agent Execution is already running Turn ${this.#runningTurnId}`);
     if (request.inputs.length !== 1) throw new Error("A new Pi Turn requires exactly one initial Input");
+    const sessionManager = openPrimaryTranscriptSession(
+      this.transcriptDirectory,
+      request.recordingDay,
+      this.agentWorkspace.root,
+    );
+    const lifecycle = new InputAnnotationLifecycle(sessionManager);
     this.#runningTurnId = request.turnId;
     this.#abortReason = undefined;
     this.#acceptsSteering = true;
     this.#sessionReady = deferred<PiSession>();
-    this.lifecycle.begin(request, control);
-    const result = this.#run(request);
+    lifecycle.begin(request, control);
+    const result = this.#run(request, sessionManager, lifecycle);
     return {
       result,
       steer: async input => {
         if (this.#runningTurnId !== request.turnId || !this.#acceptsSteering) {
           throw new Error(`Turn ${request.turnId} no longer accepts steering`);
         }
-        this.lifecycle.enqueue(request.turnId, input);
+        lifecycle.enqueue(request.turnId, input);
         try {
           const session = await this.#sessionReady!.promise;
           await session.steer(inputText(input, request.inputs[0]!.kind === "opportunity"));
         } catch (error) {
-          this.lifecycle.removePending(request.turnId, input.id);
+          lifecycle.removePending(request.turnId, input.id);
           throw error;
         }
       },
@@ -243,35 +251,46 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     this.#closed = true;
   }
 
-  async #run(request: TurnRequest): Promise<PiExecutionResult> {
+  async #run(
+    request: TurnRequest,
+    sessionManager: SessionManager,
+    lifecycle: InputAnnotationLifecycle,
+  ): Promise<PiExecutionResult> {
     let session: PiSession | undefined;
     const messageDecision: MessageTurnDecision = { sent: 0, noReply: false };
     try {
       const restoredWindow = parseContextWindowState(request.executionState);
-      await this.#selectCommittedBranch(restoredWindow);
-      const [workspaceSnapshot, materials] = await Promise.all([
+      await this.#selectCommittedBranch(restoredWindow, request.recordingDay, sessionManager);
+      const [workspaceSnapshot, materials, dailyContext] = await Promise.all([
         this.agentWorkspace.loadTurnSnapshot(request.inputs[0]!.kind),
         this.loadContextMaterials(request),
+        restoredWindow
+          ? Promise.resolve(undefined)
+          : loadDailyContext(this.agentWorkspace, request.recordingDay),
       ]);
       const systemPrompt = composeSystemPrompt(this.harnessSystemPrompt, workspaceSnapshot);
       let preparedWindow: ContextWindowState = restoredWindow ?? {
         version: 1,
         id: request.turnId,
-        frozenSeed: serializeMessages(materials.windowFrozen),
+        frozenSeed: serializeMessages([
+          ...(dailyContext ? [dailyContext] : []),
+          ...materials.windowFrozen,
+        ]),
         recentActivityReferences: [],
         committedTrace: [],
+        transcriptSources: [],
       };
-      this.lifecycle.control(request.turnId).prepareExecutionState(serializeContextWindowState(preparedWindow));
+      lifecycle.control(request.turnId).prepareExecutionState(serializeContextWindowState(preparedWindow));
       const reservation = this.contextBudget?.toolTraceReservation
         ?? DEFAULT_CONTEXT_BUDGET.toolTraceReservation;
       if (toolTraceCompactionRequired(restoreMessages(preparedWindow.committedTrace), reservation)) {
         const replacement = await compactCommittedToolTraces({
           window: preparedWindow,
-          transcriptFile: this.transcriptFile,
+          transcriptDirectory: this.transcriptDirectory,
           ...(this.toolTraceCompactor ? { compactor: this.toolTraceCompactor } : {}),
         });
         assertContextWindowReplacement(preparedWindow, replacement);
-        this.lifecycle.control(request.turnId).replaceExecutionState(
+        lifecycle.control(request.turnId).replaceExecutionState(
           serializeContextWindowState(preparedWindow),
           serializeContextWindowState(replacement),
         );
@@ -279,11 +298,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       }
       const turnTools = [createExpandTool({
         window: preparedWindow,
-        transcriptFile: this.transcriptFile,
+        transcriptDirectory: this.transcriptDirectory,
       })];
       if (this.defaultInteractionRoute) {
         turnTools.push(createMessageTool({
-          control: this.lifecycle.control(request.turnId),
+          control: lifecycle.control(request.turnId),
           routeRef: this.defaultInteractionRoute,
           decision: messageDecision,
         }));
@@ -292,13 +311,15 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         systemPrompt,
         turnTools,
         toolActivityExtension(
-          this.lifecycle.control(request.turnId),
+          lifecycle.control(request.turnId),
           this.ordinaryToolNames,
         ),
+        lifecycle,
+        sessionManager,
       );
       session = preparedSession.session;
       if (preparedSession.skillDiagnostics.length > 0) {
-        this.sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
+        sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
           version: 1,
           turnId: request.turnId,
           diagnostics: preparedSession.skillDiagnostics,
@@ -329,9 +350,10 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       this.#acceptsSteering = false;
       this.#throwIfAborted(request.turnId);
       const evidence = await verifyPrimaryTranscriptEvidence({
-        transcriptFile: this.transcriptFile,
-        sessionId: this.sessionManager.getSessionId(),
-        inputs: this.lifecycle.evidenceRequest(request.turnId),
+        transcriptDirectory: this.transcriptDirectory,
+        sourceId: request.recordingDay,
+        sessionId: sessionManager.getSessionId(),
+        inputs: lifecycle.evidenceRequest(request.turnId),
         ...(this.defaultInteractionRoute ? { terminalToolNames: ["message"] } : {}),
       });
       this.#throwIfAborted(request.turnId);
@@ -351,7 +373,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       throw error;
     } finally {
       session?.dispose();
-      this.lifecycle.end(request.turnId);
+      lifecycle.end(request.turnId);
       this.#runningTurnId = undefined;
       this.#abortReason = undefined;
       this.#acceptsSteering = false;
@@ -374,20 +396,30 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     }
   }
 
-  async #selectCommittedBranch(window: ContextWindowState | undefined): Promise<void> {
+  async #selectCommittedBranch(
+    window: ContextWindowState | undefined,
+    sourceId: string,
+    sessionManager: SessionManager,
+  ): Promise<void> {
     if (!window?.transcriptAnchor) {
-      this.sessionManager.resetLeaf();
+      sessionManager.resetLeaf();
       return;
     }
-    const anchor = await verifyPrimaryTranscriptEntry({
-      transcriptFile: this.transcriptFile,
-      sessionId: window.transcriptAnchor.sessionId,
-      entryId: window.transcriptAnchor.entryId,
-    });
-    if (anchor.sessionId !== this.sessionManager.getSessionId()) {
+    for (const transcriptAnchor of window.transcriptSources) {
+      await verifyPrimaryTranscriptEntry({
+        transcriptDirectory: this.transcriptDirectory,
+        transcriptAnchor,
+      });
+    }
+    const anchor = window.transcriptAnchor;
+    if (anchor.sourceId !== sourceId) {
+      sessionManager.resetLeaf();
+      return;
+    }
+    if (anchor.sessionId !== sessionManager.getSessionId()) {
       throw new Error(`Context Window ${window.id} belongs to a different transcript session`);
     }
-    this.sessionManager.branch(anchor.entryId);
+    sessionManager.branch(anchor.entryId);
   }
 }
 
@@ -412,20 +444,8 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
   }
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
-    mkdir(path.dirname(options.transcriptFile), { recursive: true }),
+    mkdir(options.transcriptDirectory, { recursive: true }),
   ]);
-  const sessionManager = SessionManager.open(
-    options.transcriptFile,
-    path.dirname(options.transcriptFile),
-    options.agentWorkspace.root,
-  );
-  const lifecycle = new InputAnnotationLifecycle(sessionManager);
-  const annotationExtension: InlineExtension = {
-    name: "loom-input-annotation",
-    factory: pi => {
-      pi.on("message_start", event => lifecycle.onMessageStart(event.message));
-    },
-  };
   // Agent Workspace files are Individual material, not a Pi project configuration source.
   const settingsManager = SettingsManager.create(
     options.agentWorkspace.root,
@@ -436,7 +456,15 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     systemPrompt: string,
     turnTools: ToolDefinition[],
     activityExtension: InlineExtension,
+    annotationLifecycle: InputAnnotationLifecycle,
+    sessionManager: SessionManager,
   ) => {
+    const annotationExtension: InlineExtension = {
+      name: "loom-input-annotation",
+      factory: pi => {
+        pi.on("message_start", event => annotationLifecycle.onMessageStart(event.message));
+      },
+    };
     const workspaceSkills = path.join(options.agentWorkspace.root, "skills");
     const hasWorkspaceSkills = await exists(workspaceSkills);
     const additionalSkillPaths = [
@@ -485,9 +513,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     };
   };
   return new PerTurnPiAgentExecution(
-    sessionManager,
-    options.transcriptFile,
-    lifecycle,
+    options.transcriptDirectory,
     options.agentWorkspace,
     createSession,
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),

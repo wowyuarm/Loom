@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,13 +11,14 @@ import {
 } from "../../src/main-agent/context.js";
 import { createExpandTool } from "../../src/main-agent/tool-trace.js";
 import type { ActivityFreezeRequest } from "../../src/runtime/index.js";
+import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
 test("freezes verified transcript and Runtime evidence into a successor Context", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
-  await writeFile(transcriptFile, transcript(root), "utf8");
+  const { transcriptDirectory, transcriptFile } = await writePrimaryTranscript(root, transcript(root));
   const lifecycle = createMainAgentActivityLifecycle({
-    transcriptFile,
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
     nextWindowId: () => "window-2",
     loadWindowFrozen: async () => [{
       role: "user",
@@ -58,7 +59,7 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
       startedAt: "2026-07-19T10:00:00.500Z",
       endedAt: "2026-07-19T10:00:05.000Z",
       status: "completed",
-      transcriptAnchor: { sessionId: "session-1", entryId: "assistant-final" },
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "assistant-final" },
     },
     {
       turnId: "turn-2",
@@ -72,6 +73,7 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
   assert.equal(successor.id, "window-2");
   assert.deepEqual(successor.committedTrace, []);
   assert.deepEqual(successor.transcriptAnchor, {
+    sourceId: "2026-07-19",
     sessionId: "session-1",
     entryId: "assistant-final",
   });
@@ -94,7 +96,7 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
 
   const expansion = await createExpandTool({
     window: successor,
-    transcriptFile,
+    transcriptDirectory,
   }).execute(
     "expand-bridge",
     { reference: bridgeReferences![0]!, offset: 0 },
@@ -106,15 +108,135 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
   assert.match(JSON.stringify(expansion.content), /Plan contents/);
 });
 
+test("freezes one Activity from committed Turns across daily transcripts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-cross-day-"));
+  const transcriptDirectory = path.join(root, "transcripts");
+  await Promise.all([
+    writeTranscriptDay(transcriptDirectory, "2026-07-19", crossDayTranscript(root, "prior")),
+    writeTranscriptDay(transcriptDirectory, "2026-07-20", crossDayTranscript(root, "current")),
+  ]);
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+    nextWindowId: () => "window-after-cross-day",
+  });
+  const startingAnchor = { sourceId: "2026-07-19", sessionId: "session-prior", entryId: "before-segment" };
+  const priorAnchor = { sourceId: "2026-07-19", sessionId: "session-prior", entryId: "prior-final" };
+  const currentAnchor = { sourceId: "2026-07-20", sessionId: "session-current", entryId: "current-final" };
+  const result = await lifecycle.freeze({
+    segment: {
+      id: "segment-cross-day",
+      openedAt: "2026-07-20T02:59:00.000Z",
+      closedAt: "2026-07-20T03:02:00.000Z",
+      recordingDay: "2026-07-20",
+    },
+    recentActivities: [],
+    startingExecutionState: serializeContextWindowState({
+      version: 1,
+      id: "window-cross-day",
+      frozenSeed: [],
+      recentActivityReferences: [],
+      committedTrace: [],
+      transcriptSources: [startingAnchor],
+      transcriptAnchor: startingAnchor,
+    }),
+    executionState: serializeContextWindowState({
+      version: 1,
+      id: "window-cross-day",
+      frozenSeed: [],
+      recentActivityReferences: [],
+      committedTrace: [],
+      transcriptSources: [priorAnchor, currentAnchor],
+      transcriptAnchor: currentAnchor,
+    }),
+    inputs: [{
+      id: "input-prior",
+      kind: "interaction",
+      payload: { text: "before boundary" },
+      occurredAt: "2026-07-20T02:59:00.000Z",
+    }, {
+      id: "input-current",
+      kind: "interaction",
+      payload: { text: "after boundary" },
+      occurredAt: "2026-07-20T03:01:00.000Z",
+    }],
+    turns: [{
+      id: "turn-prior",
+      inputIds: ["input-prior"],
+      status: "completed",
+      startedAt: "2026-07-20T02:59:00.000Z",
+      endedAt: "2026-07-20T02:59:30.000Z",
+      transcriptAnchor: priorAnchor,
+      executionRecord: { version: 1 },
+    }, {
+      id: "turn-current",
+      inputIds: ["input-current"],
+      status: "completed",
+      startedAt: "2026-07-20T03:01:00.000Z",
+      endedAt: "2026-07-20T03:01:30.000Z",
+      transcriptAnchor: currentAnchor,
+      executionRecord: { version: 1 },
+    }],
+    toolActivities: [],
+    effects: [],
+    deliveries: [],
+  });
+
+  assert.deepEqual(
+    result.activity.events.filter(event => event.kind === "input").map(event => event.content),
+    [{ text: "before boundary" }, { text: "after boundary" }],
+  );
+  const successor = result.successorExecutionState as unknown as ContextWindowState;
+  assert.deepEqual(successor.transcriptSources, [currentAnchor]);
+  assert.equal(successor.recentActivityReferences.length, 1);
+  const expanded = await createExpandTool({ window: successor, transcriptDirectory }).execute(
+    "expand-prior-day",
+    { reference: successor.recentActivityReferences[0]!, offset: 0 },
+    undefined,
+    undefined,
+    {} as never,
+  );
+  assert.match(JSON.stringify(expanded.content), /prior-day tool result/);
+});
+
+test("refreshes Daily Context only when creating a successor window", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-daily-successor-"));
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
+  const workspaceRoot = path.join(root, "workspace");
+  await mkdir(path.join(workspaceRoot, "daily"), { recursive: true });
+  const dailyFile = path.join(workspaceRoot, "daily", "2026-07-19.md");
+  await writeFile(dailyFile, "# 2026-07-19\n\nfirst successor narrative\n", "utf8");
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    transcriptDirectory,
+  });
+
+  const first = await lifecycle.freeze(request());
+  await writeFile(
+    dailyFile,
+    "# 2026-07-19\n\nsecond successor narrative\n\n## candidates\n- hidden [attention]\n",
+    "utf8",
+  );
+  const second = await lifecycle.freeze(request());
+
+  assert.match(JSON.stringify(first.successorExecutionState), /first successor narrative/);
+  assert.doesNotMatch(JSON.stringify(first.successorExecutionState), /second successor narrative/);
+  assert.match(JSON.stringify(second.successorExecutionState), /second successor narrative/);
+  assert.doesNotMatch(JSON.stringify(second.successorExecutionState), /hidden|## candidates/);
+});
+
 test("rejects a closing state that is not anchored to the last completed Turn", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-anchor-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
-  await writeFile(transcriptFile, transcript(root), "utf8");
-  const lifecycle = createMainAgentActivityLifecycle({ transcriptFile });
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+  });
   const invalid = request();
   invalid.executionState = serializeContextWindowState({
     ...(invalid.executionState as unknown as ContextWindowState),
-    transcriptAnchor: { sessionId: "session-1", entryId: "tool-result" },
+    transcriptSources: [{ sourceId: "2026-07-19", sessionId: "session-1", entryId: "tool-result" }],
+    transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "tool-result" },
   });
 
   await assert.rejects(
@@ -125,9 +247,11 @@ test("rejects a closing state that is not anchored to the last completed Turn", 
 
 test("preserves only verified tool pairs from a failed Turn", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-failed-tools-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
-  await writeFile(transcriptFile, transcript(root), "utf8");
-  const lifecycle = createMainAgentActivityLifecycle({ transcriptFile });
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+  });
   const value = request();
   value.turns = [{
     id: "turn-failed",
@@ -164,10 +288,10 @@ test("preserves only verified tool pairs from a failed Turn", async () => {
 
 test("fixes the latest four Activities into one chronological recent bridge", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-recent-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
-  await writeFile(transcriptFile, transcript(root), "utf8");
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
   const lifecycle = createMainAgentActivityLifecycle({
-    transcriptFile,
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
     nextWindowId: () => "window-2",
   });
   const closing = request();
@@ -194,9 +318,11 @@ test("fixes the latest four Activities into one chronological recent bridge", as
 
 test("bounds recent bridge previews without splitting tool interactions", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-activity-bounded-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
-  await writeFile(transcriptFile, transcript(root), "utf8");
-  const lifecycle = createMainAgentActivityLifecycle({ transcriptFile });
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+  });
   const closing = request();
   closing.recentActivities = [denseBridgeActivity()];
 
@@ -232,7 +358,8 @@ function request(): ActivityFreezeRequest {
     frozenSeed: [],
     recentActivityReferences: [],
     committedTrace: [],
-    transcriptAnchor: { sessionId: "session-1", entryId: "before-segment" },
+    transcriptSources: [{ sourceId: "2026-07-19", sessionId: "session-1", entryId: "before-segment" }],
+    transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "before-segment" },
   });
   const current = serializeContextWindowState({
     version: 1,
@@ -240,7 +367,8 @@ function request(): ActivityFreezeRequest {
     frozenSeed: [],
     recentActivityReferences: [],
     committedTrace: [],
-    transcriptAnchor: { sessionId: "session-1", entryId: "assistant-final" },
+    transcriptSources: [{ sourceId: "2026-07-19", sessionId: "session-1", entryId: "assistant-final" }],
+    transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "assistant-final" },
   });
   return {
     segment: {
@@ -293,7 +421,7 @@ function request(): ActivityFreezeRequest {
         status: "completed",
         startedAt: "2026-07-19T10:00:00.500Z",
         endedAt: "2026-07-19T10:00:05.000Z",
-        transcriptAnchor: { sessionId: "session-1", entryId: "assistant-final" },
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "assistant-final" },
         executionRecord: { version: 1 },
       },
       {
@@ -428,7 +556,7 @@ function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number
       startedAt: "2026-07-19T09:40:00.000Z",
       endedAt: "2026-07-19T09:45:00.000Z",
       status: "completed",
-      transcriptAnchor: { sessionId: "session-dense", entryId: "dense-end" },
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-dense", entryId: "dense-end" },
     }],
   };
 }
@@ -505,4 +633,49 @@ function transcript(root: string): string {
     },
     "",
   ].map(record => typeof record === "string" ? record : JSON.stringify(record)).join("\n");
+}
+
+async function writePrimaryTranscript(root: string, content: string): Promise<{
+  transcriptDirectory: string;
+  transcriptFile: string;
+}> {
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
+  await writeFile(transcriptFile, content, "utf8");
+  return { transcriptDirectory, transcriptFile };
+}
+
+async function writeTranscriptDay(
+  transcriptDirectory: string,
+  sourceId: string,
+  content: string,
+): Promise<void> {
+  const transcriptFile = path.join(transcriptDirectory, sourceId, "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
+  await writeFile(transcriptFile, content, "utf8");
+}
+
+function crossDayTranscript(root: string, day: "prior" | "current"): string {
+  const sessionId = `session-${day}`;
+  const records: unknown[] = [{
+    type: "session", version: 3, id: sessionId, timestamp: "2026-07-20T02:00:00.000Z", cwd: root,
+  }];
+  if (day === "prior") {
+    records.push(
+      { type: "message", id: "before-segment", parentId: null, timestamp: "2026-07-20T02:58:00.000Z", message: { role: "assistant", content: [{ type: "text", text: "before" }] } },
+      { type: "custom", customType: "loom.input.v1", data: { version: 1, turnId: "turn-prior", inputId: "input-prior", inclusionPosition: 1, kind: "interaction", occurredAt: "2026-07-20T02:59:00.000Z", payload: { text: "before boundary" } }, id: "prior-annotation", parentId: "before-segment", timestamp: "2026-07-20T02:59:01.000Z" },
+      { type: "message", id: "prior-user", parentId: "prior-annotation", timestamp: "2026-07-20T02:59:02.000Z", message: { role: "user", content: [{ type: "text", text: "before boundary" }] } },
+      { type: "message", id: "prior-call", parentId: "prior-user", timestamp: "2026-07-20T02:59:03.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "prior-tool", name: "read", arguments: { path: "prior.md" } }], stopReason: "toolUse" } },
+      { type: "message", id: "prior-result", parentId: "prior-call", timestamp: "2026-07-20T02:59:04.000Z", message: { role: "toolResult", toolCallId: "prior-tool", toolName: "read", isError: false, content: [{ type: "text", text: "prior-day tool result" }] } },
+      { type: "message", id: "prior-final", parentId: "prior-result", timestamp: "2026-07-20T02:59:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "prior complete" }] } },
+    );
+  } else {
+    records.push(
+      { type: "custom", customType: "loom.input.v1", data: { version: 1, turnId: "turn-current", inputId: "input-current", inclusionPosition: 1, kind: "interaction", occurredAt: "2026-07-20T03:01:00.000Z", payload: { text: "after boundary" } }, id: "current-annotation", parentId: null, timestamp: "2026-07-20T03:01:01.000Z" },
+      { type: "message", id: "current-user", parentId: "current-annotation", timestamp: "2026-07-20T03:01:02.000Z", message: { role: "user", content: [{ type: "text", text: "after boundary" }] } },
+      { type: "message", id: "current-final", parentId: "current-user", timestamp: "2026-07-20T03:01:03.000Z", message: { role: "assistant", content: [{ type: "text", text: "current complete" }] } },
+    );
+  }
+  return [...records.map(record => JSON.stringify(record)), ""].join("\n");
 }

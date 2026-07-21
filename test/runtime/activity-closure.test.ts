@@ -49,11 +49,11 @@ test("closes interaction Activity while the successor continues and Recorder cat
     fauxAssistantMessage("Recorded the first activity."),
   ]);
 
-  const transcriptFile = path.join(root, "transcripts", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcripts", "main-agent");
   const execution = await createPiAgentExecution({
     agentWorkspace: workspace,
     agentDir: path.join(root, "main-agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model: main.model,
     harnessSystemPrompt: "Act as one continuing Agent Individual.",
@@ -72,7 +72,8 @@ test("closes interaction Activity while the successor continues and Recorder cat
     root: path.join(root, "runtime"),
     execution,
     activityLifecycle: createMainAgentActivityLifecycle({
-      transcriptFile,
+      agentWorkspace: workspace,
+      transcriptDirectory,
       nextWindowId: () => "successor-window",
     }),
     activityRecorder: lifeRecorder,

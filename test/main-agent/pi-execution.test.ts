@@ -91,7 +91,7 @@ test("presents core and Workspace skills as one stable catalog without Pi inheri
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir,
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -102,6 +102,7 @@ test("presents core and Workspace skills as one stable catalog without Pi inheri
   await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
   assert.equal(faux.state.callCount, 1);
@@ -115,7 +116,8 @@ test("removes every skill sharing a name across sources", async t => {
     writeSkill(coreSkills, "shared-name", "Core version."),
     writeSkill(path.join(workspaceRoot, "skills"), "shared-name", "Workspace version."),
   ]);
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     context => {
@@ -130,7 +132,7 @@ test("removes every skill sharing a name across sources", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -141,6 +143,7 @@ test("removes every skill sharing a name across sources", async t => {
   await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
   assert.equal(faux.state.callCount, 1);
@@ -162,7 +165,7 @@ test("uses the baseline read tool with accepted skills", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -172,6 +175,7 @@ test("uses the baseline read tool with accepted skills", async t => {
   await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, {
     ...noEffectControl(),
@@ -220,7 +224,7 @@ test("refreshes Workspace skills between Turns but freezes them during steering"
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -230,6 +234,7 @@ test("refreshes Workspace skills between Turns but freezes them during steering"
   const firstTurn = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl());
   await providerStarted.promise;
@@ -245,6 +250,7 @@ test("refreshes Workspace skills between Turns but freezes them during steering"
   await execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-3", "new Turn")],
   }, noEffectControl()).result;
   assert.equal(faux.state.callCount, 3);
@@ -258,7 +264,8 @@ test("excludes unusable skills while exposing and recording their diagnostics", 
     writeSkill(skillsRoot, "Invalid_Name", "Invalid name capability."),
     writeSkill(skillsRoot, "manual-only", "Human-invoked capability.", "disable-model-invocation: true\n"),
   ]);
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     context => {
@@ -273,7 +280,7 @@ test("excludes unusable skills while exposing and recording their diagnostics", 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -284,6 +291,7 @@ test("excludes unusable skills while exposing and recording their diagnostics", 
   await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
 
@@ -304,7 +312,8 @@ test("binds interaction Workspace materials to their system and Context levels",
     "export default pi => pi.on('before_agent_start', event => ({ systemPrompt: `${event.systemPrompt}\\nworkspace config leak` }));",
     "utf8",
   );
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   let providerSystemPrompt = "";
   let providerTools: unknown[] = [];
@@ -330,7 +339,7 @@ test("binds interaction Workspace materials to their system and Context levels",
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -340,6 +349,7 @@ test("binds interaction Workspace materials to their system and Context levels",
   const result = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
 
@@ -371,7 +381,7 @@ test("keeps the complete Current Attention when normal Context material is over 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -388,6 +398,7 @@ test("keeps the complete Current Attention when normal Context material is over 
   await execution.start({
     turnId: "turn-required-attention",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-required-attention", "hello")],
   }, noEffectControl()).result;
 });
@@ -407,7 +418,7 @@ test("presents the complete Main Agent action surface from the Agent Workspace",
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -417,6 +428,7 @@ test("presents the complete Main Agent action surface from the Agent Workspace",
   await execution.start({
     turnId: "turn-actions",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-actions", "continue")],
   }, noEffectControl()).result;
 });
@@ -428,7 +440,7 @@ test("rejects an additional tool that overrides the Main Agent action surface", 
   await assert.rejects(createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -450,7 +462,7 @@ test("rejects duplicate additional Main Agent tools", async () => {
   await assert.rejects(createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -482,7 +494,7 @@ test("presents explicit nmem recall as a fallible ordinary Main Agent tool", asy
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -493,6 +505,7 @@ test("presents explicit nmem recall as a fallible ordinary Main Agent tool", asy
   await execution.start({
     turnId: "turn-recall",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-recall", "remember the older decision")],
   }, {
     ...noEffectControl(),
@@ -523,7 +536,7 @@ test("runs bash from the Agent Workspace and records it as lived activity", asyn
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -533,6 +546,7 @@ test("runs bash from the Agent Workspace and records it as lived activity", asyn
   await execution.start({
     turnId: "turn-bash",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-bash", "continue private work")],
   }, {
     ...noEffectControl(),
@@ -568,7 +582,7 @@ test("searches Workspace material through ordinary lived activity", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -578,6 +592,7 @@ test("searches Workspace material through ordinary lived activity", async t => {
   await execution.start({
     turnId: "turn-search",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-search", "find the unfinished thread")],
   }, {
     ...noEffectControl(),
@@ -615,7 +630,7 @@ test("writes and edits Workspace material through ordinary lived activity", asyn
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -625,6 +640,7 @@ test("writes and edits Workspace material through ordinary lived activity", asyn
   await execution.start({
     turnId: "turn-mutation",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-mutation", "continue private work")],
   }, {
     ...noEffectControl(),
@@ -673,7 +689,7 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -683,6 +699,7 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       ...executionInput("input-1", "background opportunity"),
       kind: "opportunity",
@@ -721,7 +738,7 @@ test("records a successful ordinary tool before the provider can continue", asyn
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -731,6 +748,7 @@ test("records a successful ordinary tool before the provider can continue", asyn
   await execution.start({
     turnId: "turn-activity",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-activity", "read it")],
   }, {
     ...noEffectControl(),
@@ -755,7 +773,7 @@ test("does not record Context expansion as ordinary lived activity", async t => 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -765,6 +783,7 @@ test("does not record Context expansion as ordinary lived activity", async t => 
   await execution.start({
     turnId: "turn-context-tool",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-context-tool", "continue")],
   }, {
     ...noEffectControl(),
@@ -800,7 +819,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -810,6 +829,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
   const first = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "first input")],
   }, noEffectControl()).result;
   await Promise.all([
@@ -822,6 +842,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
   await execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "second input")],
     executionState: first.executionState,
   }, noEffectControl()).result;
@@ -831,13 +852,14 @@ test("rejects incomplete Workspace material before provider or Input evidence", 
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-workspace-incomplete-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
   await writeFile(path.join(workspaceRoot, "attention.md"), "\n", "utf8");
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([fauxAssistantMessage("must not run")]);
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
@@ -848,6 +870,7 @@ test("rejects incomplete Workspace material before provider or Input evidence", 
   await assert.rejects(execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, {
     ...noEffectControl(),
@@ -861,14 +884,15 @@ test("rejects incomplete Workspace material before provider or Input evidence", 
 
 test("runs an Input through Pi and returns verified transcript evidence", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-execution-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([fauxAssistantMessage("hello back")]);
 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -878,6 +902,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-1",
       kind: "interaction",
@@ -918,6 +943,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   assert.equal((user?.message as { role?: string } | undefined)?.role, "user");
   assert.equal(user?.parentId, annotation?.id);
   assert.deepEqual(result.transcriptAnchor, {
+    sourceId: "2026-07-19",
     sessionId: entries[0]?.id,
     entryId: final?.id,
   });
@@ -926,7 +952,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   const reopened = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -935,6 +961,7 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   const second = reopened.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-2",
       kind: "opportunity",
@@ -967,6 +994,49 @@ test("runs an Input through Pi and returns verified transcript evidence", async 
   assert.equal(secondResult.transcriptAnchor.sessionId, result.transcriptAnchor.sessionId);
 });
 
+test("continues committed Context across daily Primary Transcripts", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-daily-transcript-"));
+  const transcriptDirectory = path.join(root, "transcripts");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("evidence from the prior logical day"),
+    context => {
+      assert.match(JSON.stringify(context.messages), /evidence from the prior logical day/);
+      return fauxAssistantMessage("continued on the next logical day");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-before-boundary",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-before-boundary", "before")],
+  }, noEffectControl()).result;
+  const second = await execution.start({
+    turnId: "turn-after-boundary",
+    leaseToken: 2,
+    recordingDay: "2026-07-20",
+    inputs: [executionInput("input-after-boundary", "after")],
+    executionState: first.executionState,
+  }, noEffectControl()).result;
+
+  assert.equal(first.transcriptAnchor.sourceId, "2026-07-19");
+  assert.equal(second.transcriptAnchor.sourceId, "2026-07-20");
+  await Promise.all([
+    readFile(path.join(transcriptDirectory, "2026-07-19", "agent.jsonl"), "utf8"),
+    readFile(path.join(transcriptDirectory, "2026-07-20", "agent.jsonl"), "utf8"),
+  ]);
+});
+
 test("prepares a message Effect through the Main Agent action interface", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-send-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
@@ -979,7 +1049,7 @@ test("prepares a message Effect through the Main Agent action interface", async 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -991,6 +1061,7 @@ test("prepares a message Effect through the Main Agent action interface", async 
   const result = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, {
     includeInput: () => {},
@@ -1023,7 +1094,7 @@ test("finishes with no_reply without preparing an Effect", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile: path.join(root, "transcript", "agent.jsonl"),
+    transcriptDirectory: path.join(root, "transcript"),
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1034,15 +1105,16 @@ test("finishes with no_reply without preparing an Effect", async t => {
   const result = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "hello")],
   }, noEffectControl()).result;
 
   assert.equal(result.outcome, "no_reply");
 });
 
-test("continues from the last committed Context after a failed transcript branch", async t => {
+test("continues across days from committed Context after a failed new-day branch", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-branch-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     fauxAssistantMessage("committed reply"),
@@ -1064,7 +1136,7 @@ test("continues from the last committed Context after a failed transcript branch
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1083,12 +1155,14 @@ test("continues from the last committed Context after a failed transcript branch
   const committed = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "committed input")],
   }, control).result;
 
   await assert.rejects(execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-20",
     inputs: [executionInput("input-2", "failed input")],
     executionState: committed.executionState,
   }, control).result, /provider failure/);
@@ -1096,6 +1170,7 @@ test("continues from the last committed Context after a failed transcript branch
   const recovered = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
+    recordingDay: "2026-07-20",
     inputs: [executionInput("input-3", "recovered input")],
     executionState: committed.executionState,
   }, control).result;
@@ -1106,7 +1181,8 @@ test("continues from the last committed Context after a failed transcript branch
 
 test("refreshes Turn-live material while keeping the window-frozen seed", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-materials-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   let revision = 0;
   faux.setResponses([
@@ -1133,7 +1209,7 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1159,11 +1235,13 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   const first = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "first input")],
   }, control).result;
   const second = await execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "second input")],
     executionState: first.executionState,
   }, control).result;
@@ -1177,15 +1255,84 @@ test("refreshes Turn-live material while keeping the window-frozen seed", async 
   assert.equal(revision, 2);
 });
 
+test("fixes current and previous Daily Narratives for one Context Window", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-daily-context-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  await mkdir(path.join(workspaceRoot, "daily"), { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(workspaceRoot, "daily", "2026-07-18.md"),
+      "# 2026-07-18\n\n昨天继续使用中文。\n\n## candidates\n- 不应进入主上下文 [attention]\n",
+      "utf8",
+    ),
+    writeFile(
+      path.join(workspaceRoot, "daily", "2026-07-19.md"),
+      "# 2026-07-19\n\nToday remained mixed-language.\n",
+      "utf8",
+    ),
+  ]);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const daily = context.messages.find(message =>
+        message.role === "user"
+        && Array.isArray(message.content)
+        && message.content.some(block => block.type === "text" && block.text.startsWith("<daily_context>")));
+      assert.ok(daily);
+      const content = JSON.stringify(daily);
+      assert.match(content, /2026-07-18[\s\S]*昨天继续使用中文/);
+      assert.match(content, /2026-07-19[\s\S]*Today remained mixed-language/);
+      assert.doesNotMatch(content, /不应进入主上下文|## candidates/);
+      return fauxAssistantMessage("daily snapshot observed");
+    },
+    context => {
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /昨天继续使用中文/);
+      assert.match(messages, /Today remained mixed-language/);
+      assert.doesNotMatch(messages, /changed after the window began/);
+      return fauxAssistantMessage("same daily snapshot retained");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-daily-first",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-daily-first", "first")],
+  }, noEffectControl()).result;
+  await writeFile(
+    path.join(workspaceRoot, "daily", "2026-07-19.md"),
+    "# 2026-07-19\n\nchanged after the window began\n",
+    "utf8",
+  );
+  await execution.start({
+    turnId: "turn-daily-second",
+    leaseToken: 2,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-daily-second", "second")],
+    executionState: first.executionState,
+  }, noEffectControl()).result;
+});
+
 test("rejects an over-limit current Input before calling the provider", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-limit-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([fauxAssistantMessage("must not run")]);
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "primary Agent",
@@ -1203,6 +1350,7 @@ test("rejects an over-limit current Input before calling the provider", async t 
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "x".repeat(1_000))],
   }, {
     includeInput: inputId => included.push(inputId),
@@ -1221,19 +1369,27 @@ test("rejects an over-limit current Input before calling the provider", async t 
 
 test("rejects an invalid non-empty transcript without changing it", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-invalid-transcript-"));
-  const transcriptFile = path.join(root, "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
   const original = `${JSON.stringify({ type: "message", id: "orphan", parentId: null })}\n`;
   await writeFile(transcriptFile, original, "utf8");
   const { model, modelRuntime } = await createTestPi(root);
 
-  await assert.rejects(createPiAgentExecution({
+  const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
-  }), /valid pi session/i);
+  });
+  assert.throws(() => execution.start({
+    turnId: "turn-invalid-transcript",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-invalid-transcript", "hello")],
+  }, noEffectControl()), /valid pi session/i);
   assert.equal(await readFile(transcriptFile, "utf8"), original);
 });
 
@@ -1315,7 +1471,8 @@ function textTokenEstimate(text: string): number {
 
 test("does not include or annotate a steering Input before Pi starts its user message", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-steering-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   const providerStarted = deferred();
   const releaseProvider = deferred();
@@ -1331,7 +1488,7 @@ test("does not include or annotate a steering Input before Pi starts its user me
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1341,6 +1498,7 @@ test("does not include or annotate a steering Input before Pi starts its user me
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-1",
       kind: "interaction",
@@ -1396,7 +1554,8 @@ test("does not include or annotate a steering Input before Pi starts its user me
 
 test("does not complete or include queued steering after abort", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-abort-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   const providerStarted = deferred();
   const releaseProvider = deferred();
@@ -1412,7 +1571,7 @@ test("does not complete or include queued steering after abort", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1422,6 +1581,7 @@ test("does not complete or include queued steering after abort", async t => {
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-1",
       kind: "interaction",
@@ -1465,7 +1625,8 @@ test("does not complete or include queued steering after abort", async t => {
 
 test("does not complete a Turn after Pi ends with an error", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-error-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     fauxAssistantMessage("provider rejected the request", {
@@ -1476,7 +1637,7 @@ test("does not complete a Turn after Pi ends with an error", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1486,6 +1647,7 @@ test("does not complete a Turn after Pi ends with an error", async t => {
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-1",
       kind: "interaction",
@@ -1508,7 +1670,8 @@ test("does not complete a Turn after Pi ends with an error", async t => {
 
 test("waits for Pi tool results before returning Turn evidence", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     fauxAssistantMessage(fauxToolCall("lookup", { query: "Loom" }, { id: "call-1" }), { stopReason: "toolUse" }),
@@ -1528,7 +1691,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1538,6 +1701,7 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
   const running = execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [{
       id: "input-1",
       kind: "interaction",
@@ -1569,7 +1733,8 @@ test("waits for Pi tool results before returning Turn evidence", async t => {
 
 test("compacts committed tool traces and expands an authorized original interaction", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-compaction-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   const originalResult = `found:original question\n${"x".repeat(45_000)}\noriginal end`;
   let compactedReference = "";
@@ -1695,7 +1860,7 @@ test("compacts committed tool traces and expands an authorized original interact
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1708,6 +1873,7 @@ test("compacts committed tool traces and expands an authorized original interact
   const first = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "use the lookup")],
   }, noEffectControl()).result;
   let replacement: unknown;
@@ -1715,6 +1881,7 @@ test("compacts committed tool traces and expands an authorized original interact
   const second = await execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "inspect the evidence")],
     executionState: first.executionState,
   }, {
@@ -1734,6 +1901,7 @@ test("compacts committed tool traces and expands an authorized original interact
   const third = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-3", "continue after expansion")],
     executionState: second.executionState,
   }, noEffectControl()).result;
@@ -1743,9 +1911,110 @@ test("compacts committed tool traces and expands an authorized original interact
   assert.match(JSON.stringify(contextWindow(third).committedTrace), /expansion-compacted/);
 });
 
+test("compacts and expands committed tool evidence across daily transcripts", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-cross-day-tool-trace-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  let priorReference = "";
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "prior-day" }, { id: "call-prior" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("prior turn complete"),
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "current-day" }, { id: "call-current" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("current turn complete"),
+    context => {
+      const compacted = context.messages.flatMap(message => {
+        if (message.role !== "toolResult") return [];
+        return message.content.flatMap(block => {
+          if (block.type !== "text") return [];
+          try {
+            const value = JSON.parse(block.text) as { type?: string; reference?: string };
+            return value.type === "loom.tool-interaction.compacted" && value.reference ? [value] : [];
+          } catch {
+            return [];
+          }
+        });
+      });
+      assert.equal(compacted.length, 2);
+      priorReference = compacted[0]!.reference!;
+      return fauxAssistantMessage(fauxToolCall(
+        "expand_tool_result",
+        { reference: priorReference, offset: 0 },
+        { id: "expand-prior-day" },
+      ), { stopReason: "toolUse" });
+    },
+    context => {
+      const expanded = [...context.messages].reverse().find(message =>
+        message.role === "toolResult" && message.toolCallId === "expand-prior-day");
+      assert.ok(expanded && expanded.role === "toolResult");
+      assert.match(JSON.stringify(expanded.content), /prior-day-result/);
+      return fauxAssistantMessage("cross-day evidence expanded");
+    },
+  ]);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Return deterministic evidence.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `${params.query}-result` }],
+      details: {},
+    }),
+  });
+  const compactedBatches: string[][] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    additionalTools: [lookup],
+    toolTraceCompactor: {
+      async compact(inputs) {
+        compactedBatches.push(inputs.map(input => input.toolCallId));
+        return inputs.map(input => ({
+          toolCallId: input.toolCallId,
+          callSummary: `Called ${input.toolName}.`,
+          resultSummary: "Received deterministic evidence.",
+          confirmedFacts: [],
+          sourceClaims: [],
+          limitations: [],
+        }));
+      },
+    },
+    contextBudget: { toolTraceReservation: 1 },
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-prior-day",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-prior-day", "look up prior evidence")],
+  }, noEffectControl()).result;
+  const second = await execution.start({
+    turnId: "turn-current-day",
+    leaseToken: 2,
+    recordingDay: "2026-07-20",
+    inputs: [executionInput("input-current-day", "look up current evidence")],
+    executionState: first.executionState,
+  }, noEffectControl()).result;
+  const third = await execution.start({
+    turnId: "turn-expand-cross-day",
+    leaseToken: 3,
+    recordingDay: "2026-07-20",
+    inputs: [executionInput("input-expand-cross-day", "inspect both")],
+    executionState: second.executionState,
+  }, noEffectControl()).result;
+
+  assert.deepEqual(compactedBatches, [["call-prior"], ["call-current"]]);
+  assert.match(priorReference, /^loom-tool-interaction:v1:/);
+  assert.equal(third.transcriptAnchor.sourceId, "2026-07-20");
+});
+
 test("keeps raw Context and excludes Input when tool trace compaction fails", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-gate-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
     fauxAssistantMessage(fauxToolCall("lookup", { query: "retry evidence" }, { id: "call-1" }), { stopReason: "toolUse" }),
@@ -1786,7 +2055,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1798,6 +2067,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
   const first = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "create retry evidence")],
   }, noEffectControl()).result;
   const failedIncluded: string[] = [];
@@ -1806,6 +2076,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
   await assert.rejects(execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "retry after failure")],
     executionState: first.executionState,
   }, {
@@ -1824,6 +2095,7 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
   const retry = await execution.start({
     turnId: "turn-3",
     leaseToken: 3,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "retry after failure")],
     executionState: first.executionState,
   }, {
@@ -1839,7 +2111,8 @@ test("keeps raw Context and excludes Input when tool trace compaction fails", as
 
 test("does not expose successful tool trace batches when another batch fails", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-trace-batches-"));
-  const transcriptFile = path.join(root, "transcript", "agent.jsonl");
+  const transcriptDirectory = path.join(root, "transcript");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-19", "agent.jsonl");
   const { faux, model, modelRuntime } = await createTestPi(root);
   const calls = Array.from({ length: 11 }, (_, index) =>
     fauxToolCall("lookup", { query: `query-${index + 1}` }, { id: `call-${index + 1}` }));
@@ -1875,7 +2148,7 @@ test("does not expose successful tool trace batches when another batch fails", a
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
     agentDir: path.join(root, "agent"),
-    transcriptFile,
+    transcriptDirectory,
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
@@ -1887,6 +2160,7 @@ test("does not expose successful tool trace batches when another batch fails", a
   const first = await execution.start({
     turnId: "turn-1",
     leaseToken: 1,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-1", "create batched evidence")],
   }, noEffectControl()).result;
   const included: string[] = [];
@@ -1895,6 +2169,7 @@ test("does not expose successful tool trace batches when another batch fails", a
   await assert.rejects(execution.start({
     turnId: "turn-2",
     leaseToken: 2,
+    recordingDay: "2026-07-19",
     inputs: [executionInput("input-2", "continue after batches")],
     executionState: first.executionState,
   }, {

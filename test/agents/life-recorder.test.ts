@@ -363,7 +363,7 @@ function activity(): FrozenActivity {
       startedAt: "2026-07-19T10:00:00.000Z",
       endedAt: "2026-07-19T10:04:00.000Z",
       status: "completed",
-      transcriptAnchor: { sessionId: "session-1", entryId: "entry-1" },
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "entry-1" },
     }],
   };
 }

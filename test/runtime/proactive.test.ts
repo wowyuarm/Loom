@@ -546,9 +546,9 @@ function executionResult(request: TurnRequest, executionState: JsonValue) {
     outcome: "completed" as const,
     inputAnchors: request.inputs.map(input => ({
       inputId: input.id,
-      transcriptAnchor: { sessionId: "session-test", entryId: `input-${input.id}` },
+      transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-test", entryId: `input-${input.id}` },
     })),
-    transcriptAnchor: { sessionId: "session-test", entryId: `turn-${request.turnId}` },
+    transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-test", entryId: `turn-${request.turnId}` },
     executionState,
     executionRecord: { kind: "test" },
   };

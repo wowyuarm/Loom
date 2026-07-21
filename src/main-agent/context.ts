@@ -11,6 +11,7 @@ export interface ContextWindowState {
   frozenSeed: JsonValue[];
   recentActivityReferences: string[];
   committedTrace: JsonValue[];
+  transcriptSources: TranscriptAnchor[];
   transcriptAnchor?: TranscriptAnchor;
 }
 
@@ -21,6 +22,7 @@ export function parseContextWindowState(value: JsonValue | undefined): ContextWi
   }
   const state = value as Record<string, JsonValue>;
   const anchor = state.transcriptAnchor;
+  const transcriptSources = state.transcriptSources;
   if (state.version !== 1
     || typeof state.id !== "string"
     || !state.id
@@ -28,13 +30,12 @@ export function parseContextWindowState(value: JsonValue | undefined): ContextWi
     || !Array.isArray(state.recentActivityReferences)
     || !state.recentActivityReferences.every(reference => typeof reference === "string" && reference.length > 0)
     || !Array.isArray(state.committedTrace)
-    || (anchor !== undefined && (!anchor
-      || typeof anchor !== "object"
-      || Array.isArray(anchor)
-      || typeof anchor.sessionId !== "string"
-      || !anchor.sessionId
-      || typeof anchor.entryId !== "string"
-      || !anchor.entryId))) {
+    || !Array.isArray(transcriptSources)
+    || !transcriptSources.every(isTranscriptAnchor)
+    || new Set(transcriptSources.map(source => source.sourceId)).size !== transcriptSources.length
+    || (anchor !== undefined && !isTranscriptAnchor(anchor))
+    || (anchor === undefined && transcriptSources.length > 0)
+    || (anchor !== undefined && !isDeepStrictEqual(transcriptSources.at(-1), anchor))) {
     throw new Error("Main Agent execution state contains an invalid Context Window");
   }
   return structuredClone(value) as unknown as ContextWindowState;
@@ -51,6 +52,7 @@ export function assertContextWindowReplacement(
   if (replacement.id !== expected.id
     || !isDeepStrictEqual(replacement.frozenSeed, expected.frozenSeed)
     || !isDeepStrictEqual(replacement.recentActivityReferences, expected.recentActivityReferences)
+    || !isDeepStrictEqual(replacement.transcriptSources, expected.transcriptSources)
     || !isDeepStrictEqual(replacement.transcriptAnchor, expected.transcriptAnchor)) {
     throw new Error(`Context replacement must preserve window ${expected.id} identity and anchors`);
   }
@@ -61,18 +63,31 @@ export function completeContextWindow(
   appendedTrace: JsonValue[],
   transcriptAnchor: TranscriptAnchor,
 ): ContextWindowState {
-  if (prepared.transcriptAnchor
-    && prepared.transcriptAnchor.sessionId !== transcriptAnchor.sessionId) {
-    throw new Error(`Context Window ${prepared.id} cannot cross transcript sessions`);
-  }
+  const transcriptSources = [
+    ...prepared.transcriptSources.filter(source => source.sourceId !== transcriptAnchor.sourceId),
+    transcriptAnchor,
+  ];
   return {
     version: 1,
     id: prepared.id,
     frozenSeed: prepared.frozenSeed,
     recentActivityReferences: prepared.recentActivityReferences,
     committedTrace: [...prepared.committedTrace, ...appendedTrace],
+    transcriptSources,
     transcriptAnchor,
   };
+}
+
+function isTranscriptAnchor(value: JsonValue): value is TranscriptAnchor & JsonValue {
+  return Boolean(value
+    && typeof value === "object"
+    && !Array.isArray(value)
+    && typeof value.sourceId === "string"
+    && value.sourceId
+    && typeof value.sessionId === "string"
+    && value.sessionId
+    && typeof value.entryId === "string"
+    && value.entryId);
 }
 
 export const DEFAULT_CONTEXT_BUDGET = {

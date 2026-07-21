@@ -39,7 +39,7 @@ Agent Individual 的高权限文件工作空间，存放身份、关系、认知
 _Avoid_: runtime store, security sandbox, deployment root
 
 **Primary Agent Transcript**:
-主 Agent 按日追加的完整执行轨迹，保留原始消息、工具调用和结果等证据。它不是整理后的记忆，也不是恢复事实的权威来源。
+主 Agent 按 logical day 追加的一份完整执行轨迹，保留原始消息、工具调用和结果等证据。进行中的 Turn 固定使用准入时所属日的 Transcript；它不是整理后的记忆，也不是恢复事实的权威来源。
 _Avoid_: chat history, memory file, runtime store
 
 **Runtime Store**:
@@ -67,7 +67,7 @@ Integration 对一个 outbound Effect 的实际投递尝试及其结果。Effect
 _Avoid_: message send, effect, tool result
 
 **Transcript Anchor**:
-Runtime Store 对 Primary Agent Transcript 中已存在执行证据的可验证引用。它证明记录位置，不把 Transcript 变成恢复事实源。
+Runtime Store 对 Primary Agent Transcript 中已存在执行证据的可验证引用，由 transcript source、session 和 entry 共同定位。它证明记录位置，不把 Transcript 变成恢复事实源。
 _Avoid_: transcript content, summary, runtime state
 
 **Instance Configuration**:
@@ -117,7 +117,7 @@ Frozen Activity 内标识事件归属的稳定引用；当前只区分 Agent Ind
 _Avoid_: display name, inferred speaker, relationship label
 
 **Daily Narrative**:
-Agent Workspace 中面向近期接续的一日叙事。它保留当天仍有用的经过与悬而未决之处，不承担长期模式判断。
+Agent Workspace 中面向近期接续的一日叙事。它保留当天仍有用的经过与悬而未决之处，不承担长期模式判断。Main Agent 的新 Context Window 固定当前与前一 logical day 的完整正文，Daily Candidate 不进入该材料。
 _Avoid_: long-term memory, transcript, episode collection
 
 **Daily Candidate**:

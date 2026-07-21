@@ -29,6 +29,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       fencing_token INTEGER NOT NULL,
       lease_expires_at TEXT NOT NULL,
       started_at TEXT NOT NULL,
+      recording_day TEXT NOT NULL,
       ended_at TEXT,
       transcript_anchor_json TEXT,
       execution_record_json TEXT,
@@ -157,6 +158,6 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       UNIQUE (activity_id, attempt_number)
     ) STRICT;
 
-    PRAGMA user_version = 5;
+    PRAGMA user_version = 6;
   `);
 }
