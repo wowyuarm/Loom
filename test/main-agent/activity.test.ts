@@ -40,8 +40,32 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
     ["individual", "effect"],
     ["system", "delivery"],
   ]);
-  assert.deepEqual(result.activity.transcriptAnchors, [
-    { sessionId: "session-1", entryId: "assistant-final" },
+  assert.deepEqual(result.activity.events.map(event => event.turnId), [
+    "turn-1",
+    "turn-1",
+    "turn-1",
+    "turn-1",
+    "turn-1",
+    "turn-1",
+    "turn-2",
+    "turn-2",
+    "turn-1",
+    "turn-1",
+  ]);
+  assert.deepEqual(result.activity.turns, [
+    {
+      turnId: "turn-1",
+      startedAt: "2026-07-19T10:00:00.500Z",
+      endedAt: "2026-07-19T10:00:05.000Z",
+      status: "completed",
+      transcriptAnchor: { sessionId: "session-1", entryId: "assistant-final" },
+    },
+    {
+      turnId: "turn-2",
+      startedAt: "2026-07-19T10:00:04.200Z",
+      endedAt: "2026-07-19T10:00:05.500Z",
+      status: "failed",
+    },
   ]);
 
   const successor = result.successorExecutionState as unknown as ContextWindowState;
@@ -113,6 +137,7 @@ test("preserves only verified tool pairs from a failed Turn", async () => {
     endedAt: "2026-07-19T10:00:05.000Z",
     error: "provider stopped after tool activity",
   }];
+  value.inputs = value.inputs.filter(input => input.id === "input-1");
   value.executionState = value.startingExecutionState!;
   value.toolActivities = [{
     turnId: "turn-failed",
@@ -232,12 +257,18 @@ function request(): ActivityFreezeRequest {
       closedAt: "2026-07-19T09:55:00.000Z",
       events: [{
         eventId: "input:older",
+        turnId: "turn-older",
         at: "2026-07-19T09:50:00.000Z",
         actorRef: "human",
         kind: "input",
         content: { text: "older pending activity" },
       }],
-      transcriptAnchors: [],
+      turns: [{
+        turnId: "turn-older",
+        startedAt: "2026-07-19T09:50:00.000Z",
+        endedAt: "2026-07-19T09:55:00.000Z",
+        status: "completed",
+      }],
     }],
     startingExecutionState: starting,
     executionState: current,
@@ -307,30 +338,39 @@ function historicalActivity(index: number): ActivityFreezeRequest["recentActivit
     closedAt: `2026-07-19T09:${minute}:30.000Z`,
     events: [{
       eventId: `input:history-${index}`,
+      turnId: `turn-history-${index}`,
       at: `2026-07-19T09:${minute}:00.000Z`,
       actorRef: "human",
       kind: "input",
       content: { text: `historical activity ${index}` },
     }],
-    transcriptAnchors: [],
+    turns: [{
+      turnId: `turn-history-${index}`,
+      startedAt: `2026-07-19T09:${minute}:00.000Z`,
+      endedAt: `2026-07-19T09:${minute}:30.000Z`,
+      status: "completed",
+    }],
   };
 }
 
 function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number] {
   const events: ActivityFreezeRequest["recentActivities"][number]["events"] = [{
     eventId: "input:dense",
+    turnId: "turn-dense",
     at: "2026-07-19T09:40:00.000Z",
     actorRef: "human",
     kind: "input",
     content: { text: `human input remains complete ${"h".repeat(260)} human-tail` },
   }, {
     eventId: "transcript:output-dense",
+    turnId: "turn-dense",
     at: "2026-07-19T09:40:01.000Z",
     actorRef: "individual",
     kind: "output",
     content: { type: "text", text: `output-head ${"o".repeat(260)} output-tail` },
   }, {
     eventId: "turn:stopped-dense",
+    turnId: "turn-dense",
     at: "2026-07-19T09:40:02.000Z",
     actorRef: "system",
     kind: "system",
@@ -339,6 +379,7 @@ function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number
   for (let index = 0; index < 12; index += 1) {
     events.push({
       eventId: `transcript:call-${index}`,
+      turnId: "turn-dense",
       at: `2026-07-19T09:41:${String(index * 2).padStart(2, "0")}.000Z`,
       actorRef: "individual",
       kind: "tool_call",
@@ -350,6 +391,7 @@ function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number
       },
     }, {
       eventId: `transcript:result-${index}`,
+      turnId: "turn-dense",
       at: `2026-07-19T09:41:${String(index * 2 + 1).padStart(2, "0")}.000Z`,
       actorRef: "system",
       kind: "tool_result",
@@ -363,6 +405,7 @@ function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number
   }
   events.push({
     eventId: "transcript:orphan-call",
+    turnId: "turn-dense",
     at: "2026-07-19T09:42:00.000Z",
     actorRef: "individual",
     kind: "tool_call",
@@ -380,7 +423,13 @@ function denseBridgeActivity(): ActivityFreezeRequest["recentActivities"][number
     openedAt: "2026-07-19T09:40:00.000Z",
     closedAt: "2026-07-19T09:45:00.000Z",
     events,
-    transcriptAnchors: [{ sessionId: "session-dense", entryId: "dense-end" }],
+    turns: [{
+      turnId: "turn-dense",
+      startedAt: "2026-07-19T09:40:00.000Z",
+      endedAt: "2026-07-19T09:45:00.000Z",
+      status: "completed",
+      transcriptAnchor: { sessionId: "session-dense", entryId: "dense-end" },
+    }],
   };
 }
 

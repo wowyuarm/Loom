@@ -127,3 +127,37 @@ _Avoid_: current request, daily narrative, conversation summary
 **Current Attention**:
 Agent Individual 在最近几天里无需主动回想、醒来时自然带着的中短期觉知。它包含仍在追的方向及其当前位置，也包含会影响表达、靠近、沉默或转向的关系底色与自身节奏；它不是即时任务前景、事件摘要、行为指令或长期记忆。
 _Avoid_: active attention, task list, daily narrative, opportunity, long-term memory
+
+## Private Work
+
+**Thread**:
+Agent Individual 主动抽出、能在离散调用之间继续生长的一条中长期私人工作线。它可以连接兴趣、关系、研究、创作或实验，但不是任务、项目状态或普通笔记集合。
+_Avoid_: task, project, topic folder, note collection
+
+**Thread Entry**:
+一条 Thread 的当前可进入全貌，连接它是什么、走到哪里、关键转折、开放处与来源入口。它不是完整历史、下一步计划或维护日志。
+_Avoid_: summary, task status, changelog
+
+**Thread Note**:
+Thread 中一份值得以后独立重读、引用或比较的推进记录。它保留一次实质探索、实验或判断转折，但不是每次活动的强制日志。
+_Avoid_: daily entry, activity log, thread summary
+
+**Thread Index**:
+Agent Workspace 中跨 Thread 的当前导航地图，呈现可进入的线、生命周期、最近落点和重要联系。它不是 Current Attention、长期记忆或维护运行历史。
+_Avoid_: attention, memory, maintenance log
+
+**Thread Maintainer**:
+Loom 内负责保持 Thread 结构连续性的 Cognitive Organ。它维护入口、独立记录、导航、关联和可恢复生命周期，但不拥有或改写 Agent Individual 的思想与方向。
+_Avoid_: project manager, content author, thread indexer
+
+**Thread Evidence Reference**:
+一条 Thread 与某份 Frozen Activity 中具体 Turn 的稳定关联，表示该 Turn 改动或明确查看过这条线。它保存可按需展开的来源位置，不复制活动轨迹，也不证明器官对材料的解释成立。
+_Avoid_: copied trace, thread summary, interpretation, workspace link
+
+**Dormant Thread**:
+当前没有继续推进但仍保留返回可能的 Thread。时间可以提示休眠，但不能单独证明一条线已经失去活性。
+_Avoid_: expired thread, archived thread
+
+**Archived Thread**:
+已经结束、被替代或合并，不再占据当前导航前景但仍完整保留来源的 Thread。Archive 是可恢复保存，不是删除。
+_Avoid_: deleted thread, dormant thread

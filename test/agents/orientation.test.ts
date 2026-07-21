@@ -88,12 +88,18 @@ function frozenActivity(): FrozenActivity {
     closedAt: "2026-07-20T05:10:00.000Z",
     events: [{
       eventId: "event-tool-result",
+      turnId: "turn-recent",
       at: "2026-07-20T05:08:00.000Z",
       actorRef: "system",
       kind: "tool_result",
       content: { text: "private result body" },
     }],
-    transcriptAnchors: [],
+    turns: [{
+      turnId: "turn-recent",
+      startedAt: "2026-07-20T05:00:00.000Z",
+      endedAt: "2026-07-20T05:10:00.000Z",
+      status: "completed",
+    }],
   };
 }
 

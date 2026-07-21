@@ -270,12 +270,19 @@ function activityLifecycle(observed: Parameters<ActivityLifecycle["freeze"]>[0][
           closedAt: request.segment.closedAt,
           events: request.inputs.map(input => ({
             eventId: `input:${input.id}`,
+            turnId: request.turns.find(turn => turn.inputIds.includes(input.id))!.id,
             at: input.occurredAt,
             actorRef: input.kind === "interaction" ? "human" : "system",
             kind: "input",
             content: input.payload,
           })),
-          transcriptAnchors: request.turns.flatMap(turn => turn.transcriptAnchor ? [turn.transcriptAnchor] : []),
+          turns: request.turns.map(turn => ({
+            turnId: turn.id,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            status: turn.status,
+            ...(turn.transcriptAnchor ? { transcriptAnchor: turn.transcriptAnchor } : {}),
+          })),
         },
         successorExecutionState: {
           version: 1,

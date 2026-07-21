@@ -50,6 +50,7 @@ export async function readCommittedActivityEvents(request: {
   startAnchor?: TranscriptAnchor;
   endAnchor: TranscriptAnchor;
   inputs: ActivityFreezeRequest["inputs"];
+  turns: ActivityFreezeRequest["turns"];
 }): Promise<FrozenActivityEvent[]> {
   if (request.startAnchor && request.startAnchor.sessionId !== request.endAnchor.sessionId) {
     throw new Error("Activity transcript range cannot cross sessions");
@@ -67,9 +68,11 @@ export async function readCommittedActivityEvents(request: {
     throw new Error(`Activity start ${request.startAnchor.entryId} is not an ancestor of its closing anchor`);
   }
   const inputs = new Map(request.inputs.map(input => [input.id, input]));
+  const turnByInput = new Map(request.turns.flatMap(turn => turn.inputIds.map(inputId => [inputId, turn.id] as const)));
   const observedInputs = new Set<string>();
   const events: FrozenActivityEvent[] = [];
   const entries = branch.slice(startIndex + 1);
+  let currentTurnId: string | undefined;
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
@@ -80,9 +83,12 @@ export async function readCommittedActivityEvents(request: {
       }
       const inputId = (data as Record<string, unknown>).inputId;
       const input = typeof inputId === "string" ? inputs.get(inputId) : undefined;
+      const turnId = typeof inputId === "string" ? turnByInput.get(inputId) : undefined;
       const userEntry = entries[index + 1];
       if (!input
+        || !turnId
         || observedInputs.has(input.id)
+        || (data as Record<string, unknown>).turnId !== turnId
         || (data as Record<string, unknown>).kind !== input.kind
         || (data as Record<string, unknown>).occurredAt !== input.occurredAt
         || !isDeepStrictEqual((data as Record<string, unknown>).payload, input.payload)
@@ -91,9 +97,11 @@ export async function readCommittedActivityEvents(request: {
         || !isMessageRole(userEntry, "user")) {
         throw new Error(`Transcript input annotation ${entry.id} does not match Runtime evidence`);
       }
+      currentTurnId = turnId;
       observedInputs.add(input.id);
       events.push({
         eventId: `input:${input.id}`,
+        turnId,
         at: input.occurredAt,
         actorRef: input.kind === "interaction" ? "human" : "system",
         kind: "input",
@@ -108,6 +116,7 @@ export async function readCommittedActivityEvents(request: {
       throw new Error(`Transcript user entry ${entry.id} has no matching Runtime Input annotation`);
     }
     if (message.role === "assistant") {
+      if (!currentTurnId) throw new Error(`Transcript assistant entry ${entry.id} has no owning Turn`);
       if (!Array.isArray(message.content)) continue;
       for (let blockIndex = 0; blockIndex < message.content.length; blockIndex += 1) {
         const block = message.content[blockIndex];
@@ -120,6 +129,7 @@ export async function readCommittedActivityEvents(request: {
             : "output";
         events.push({
           eventId: `transcript:${entry.id}:${blockIndex}`,
+          turnId: currentTurnId,
           at: transcriptEntryTime(entry),
           actorRef: "individual",
           kind,
@@ -129,8 +139,10 @@ export async function readCommittedActivityEvents(request: {
       continue;
     }
     if (message.role === "toolResult") {
+      if (!currentTurnId) throw new Error(`Transcript tool result ${entry.id} has no owning Turn`);
       events.push({
         eventId: `transcript:${entry.id}`,
+        turnId: currentTurnId,
         at: transcriptEntryTime(entry),
         actorRef: "system",
         kind: "tool_result",
@@ -146,8 +158,11 @@ export async function readCommittedActivityEvents(request: {
 
   for (const input of request.inputs) {
     if (observedInputs.has(input.id)) continue;
+    const turnId = turnByInput.get(input.id);
+    if (!turnId) throw new Error(`Runtime Input ${input.id} has no owning Turn`);
     events.push({
       eventId: `input:${input.id}`,
+      turnId,
       at: input.occurredAt,
       actorRef: input.kind === "interaction" ? "human" : "system",
       kind: "input",

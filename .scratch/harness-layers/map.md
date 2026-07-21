@@ -60,6 +60,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [15 — Calibrate Orientation Framing](issues/15-calibrate-orientation-framing.md)。Orientation 明确把 Workspace 与 Activity 视为 Individual 的生活材料，负责交代前因和入口而不完成意义判断；关系性关切是一等 Opportunity 来源，grounded `none` 与模型可见的 `<proactive_opportunity>` 均保留。
 - Completed: [16 — Bind Main Agent Workspace Actions](issues/16-bind-main-agent-workspace-actions.md)。真实 Main Agent 以 Agent Workspace 为 `cwd`，固定获得 Pi `read` / `bash` / `edit` / `write` / `grep` / `find` / `ls`；这些动作沿用 ordinary-tool Activity 路径，Workspace 仍不宣称为宿主机级安全 sandbox。
 - Completed: [17 — Maintain Current Attention](issues/17-maintain-current-attention.md)。Current Attention 已定义为跨天自然带着的 Workspace 觉知；Main Agent 完整保留该 Turn-live 材料，受限 Maintainer 可依据 Workspace 与近期 Activity 原子更新或明确不改。
+- Completed: [18 — Maintain Thread Continuity and Structure](issues/18-maintain-thread-continuity.md)。Thread Maintainer 在完整读取当前变更 Turn 后维护 `threads/` 的入口、独立 notes、全局导航、关联和可恢复生命周期；稳定 Thread Evidence Reference 保留跨调用来源，结构写入在失败时整轮回滚。
 
 ## Context Follow-ups
 

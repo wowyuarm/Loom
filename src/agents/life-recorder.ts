@@ -417,7 +417,7 @@ function buildRunPrompt(activity: FrozenActivity, runId: string, dailyPath: stri
     `- Activity ID: ${activity.segmentId}`,
     `- Time range: ${activity.openedAt} to ${activity.closedAt}`,
     `- Event count: ${activity.events.length}`,
-    `- Transcript anchors: ${JSON.stringify(activity.transcriptAnchors)}`,
+    `- Turns: ${JSON.stringify(activity.turns)}`,
     "- Read the complete immutable evidence with read_activity. Continue from nextOffset until it is null.",
     "",
     "## Workspace index",

@@ -61,14 +61,20 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
           ...(starting?.transcriptAnchor ? { startAnchor: starting.transcriptAnchor } : {}),
           endAnchor: current.transcriptAnchor,
           inputs: request.inputs,
+          turns: request.turns,
         })
-      : request.inputs.map(input => ({
-          eventId: `input:${input.id}`,
-          at: input.occurredAt,
-          actorRef: input.kind === "interaction" ? "human" as const : "system" as const,
-          kind: "input" as const,
-          content: structuredClone(input.payload),
-        }));
+      : request.inputs.map(input => {
+          const turn = request.turns.find(candidate => candidate.inputIds.includes(input.id));
+          if (!turn) throw new Error(`Runtime Input ${input.id} has no owning Turn`);
+          return {
+            eventId: `input:${input.id}`,
+            turnId: turn.id,
+            at: input.occurredAt,
+            actorRef: input.kind === "interaction" ? "human" as const : "system" as const,
+            kind: "input" as const,
+            content: structuredClone(input.payload),
+          };
+        });
     const events = orderEvents([
       ...transcriptEvents,
       ...request.turns
@@ -76,7 +82,7 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
         .flatMap(turn => failedToolActivityEvents(request, turn.id)),
       ...request.turns.filter(turn => turn.status !== "completed").map(stoppedTurnEvent),
       ...request.effects.map(effectEvent),
-      ...request.deliveries.map(deliveryEvent),
+      ...request.deliveries.map(delivery => deliveryEvent(delivery, request.effects)),
     ]);
     assertUniqueEvents(events);
     const activity = {
@@ -86,7 +92,13 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
       openedAt: request.segment.openedAt,
       closedAt: request.segment.closedAt,
       events,
-      transcriptAnchors: committedTurns.map(turn => serializeJson(turn.transcriptAnchor!)),
+      turns: request.turns.map(turn => ({
+        turnId: turn.id,
+        startedAt: turn.startedAt,
+        endedAt: turn.endedAt,
+        status: turn.status,
+        ...(turn.transcriptAnchor ? { transcriptAnchor: turn.transcriptAnchor } : {}),
+      })),
     };
     const windowFrozen = await this.options.loadWindowFrozen?.(request) ?? [];
     const bridgeActivities = [...request.recentActivities, activity]
@@ -120,6 +132,7 @@ function failedToolActivityEvents(
     .filter(activity => activity.turnId === turnId)
     .flatMap(activity => [{
       eventId: `tool-call:${turnId}:${activity.toolCallId}`,
+      turnId,
       at: activity.completedAt,
       actorRef: "individual" as const,
       kind: "tool_call" as const,
@@ -130,6 +143,7 @@ function failedToolActivityEvents(
       }),
     }, {
       eventId: `tool-result:${turnId}:${activity.toolCallId}`,
+      turnId,
       at: activity.completedAt,
       actorRef: "system" as const,
       kind: "tool_result" as const,
@@ -144,6 +158,7 @@ function failedToolActivityEvents(
 function stoppedTurnEvent(turn: ActivityFreezeRequest["turns"][number]): FrozenActivityEvent {
   return {
     eventId: `turn:${turn.id}`,
+    turnId: turn.id,
     at: turn.endedAt,
     actorRef: "system",
     kind: "system",
@@ -166,6 +181,7 @@ export function createMainAgentActivityLifecycle(
 function effectEvent(effect: ActivityFreezeRequest["effects"][number]): FrozenActivityEvent {
   return {
     eventId: `effect:${effect.id}`,
+    turnId: effect.turnId,
     at: effect.createdAt,
     actorRef: "individual",
     kind: "effect",
@@ -181,9 +197,15 @@ function effectEvent(effect: ActivityFreezeRequest["effects"][number]): FrozenAc
   };
 }
 
-function deliveryEvent(delivery: ActivityFreezeRequest["deliveries"][number]): FrozenActivityEvent {
+function deliveryEvent(
+  delivery: ActivityFreezeRequest["deliveries"][number],
+  effects: ActivityFreezeRequest["effects"],
+): FrozenActivityEvent {
+  const effect = effects.find(candidate => candidate.id === delivery.effectId);
+  if (!effect) throw new Error(`Delivery ${delivery.id} has no owning Effect`);
   return {
     eventId: `delivery:${delivery.id}`,
+    turnId: effect.turnId,
     at: delivery.endedAt ?? delivery.startedAt,
     actorRef: "system",
     kind: "delivery",
@@ -218,12 +240,12 @@ function bridgeMessage(activities: Array<{
   openedAt: string;
   closedAt: string;
   events: FrozenActivityEvent[];
-  transcriptAnchors?: JsonValue[];
+  turns?: Array<{ transcriptAnchor?: TranscriptAnchor }>;
 }>): { message: JsonValue; references: string[] } {
   const references: string[] = [];
   let toolPairTokens = 0;
   const lines = activities.flatMap(candidate => {
-    const sessionId = activitySessionId(candidate.transcriptAnchors ?? []);
+    const sessionId = activitySessionId(candidate.turns ?? []);
     const projected = projectActivity(candidate.events, sessionId, toolPairTokens);
     toolPairTokens += projected.toolPairTokens;
     references.push(...projected.references);
@@ -289,12 +311,8 @@ function projectActivity(
   return { lines, references, toolPairTokens: addedToolPairTokens };
 }
 
-function activitySessionId(anchors: JsonValue[]): string | undefined {
-  const anchor = anchors.at(-1);
-  return anchor && typeof anchor === "object" && !Array.isArray(anchor)
-    && typeof anchor.sessionId === "string"
-    ? anchor.sessionId
-    : undefined;
+function activitySessionId(turns: Array<{ transcriptAnchor?: TranscriptAnchor }>): string | undefined {
+  return turns.findLast(turn => turn.transcriptAnchor)?.transcriptAnchor?.sessionId;
 }
 
 function toolResultReference(event: FrozenActivityEvent, sessionId: string): string | undefined {

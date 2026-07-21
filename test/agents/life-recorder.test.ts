@@ -185,6 +185,7 @@ test("refuses a receipt when the recorder did not read every frozen event", asyn
   const frozen = activity();
   frozen.events.push({
     eventId: "event-output-2",
+    turnId: "turn-1",
     at: "2026-07-19T10:01:00.000Z",
     actorRef: "individual",
     kind: "output",
@@ -351,12 +352,19 @@ function activity(): FrozenActivity {
     closedAt: "2026-07-19T10:04:00.000Z",
     events: [{
       eventId: "event-input-1",
+      turnId: "turn-1",
       at: "2026-07-19T10:00:00.000Z",
       actorRef: "human",
       kind: "input" as const,
       content: { text: "asked Rowan to keep the exact attribution" },
     }],
-    transcriptAnchors: [{ sessionId: "session-1", entryId: "entry-1" }],
+    turns: [{
+      turnId: "turn-1",
+      startedAt: "2026-07-19T10:00:00.000Z",
+      endedAt: "2026-07-19T10:04:00.000Z",
+      status: "completed",
+      transcriptAnchor: { sessionId: "session-1", entryId: "entry-1" },
+    }],
   };
 }
 

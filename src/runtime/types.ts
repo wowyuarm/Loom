@@ -16,10 +16,19 @@ export type TranscriptAnchor = {
 
 export interface FrozenActivityEvent {
   eventId: string;
+  turnId: string;
   at: string;
   actorRef: "individual" | "human" | "system";
   kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
   content: JsonValue;
+}
+
+export interface FrozenActivityTurn {
+  turnId: string;
+  startedAt: string;
+  endedAt: string;
+  status: "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
+  transcriptAnchor?: TranscriptAnchor;
 }
 
 export interface FrozenActivity {
@@ -29,7 +38,7 @@ export interface FrozenActivity {
   openedAt: string;
   closedAt: string;
   events: FrozenActivityEvent[];
-  transcriptAnchors: JsonValue[];
+  turns: FrozenActivityTurn[];
 }
 
 export interface LifeRecorderReceipt {

@@ -189,12 +189,18 @@ function frozenActivity(): FrozenActivity {
     closedAt: "2026-07-20T07:10:00.000Z",
     events: [{
       eventId: "event-human-1",
+      turnId: "turn-recent",
       at: "2026-07-20T07:04:00.000Z",
       actorRef: "human",
       kind: "input",
       content: { text: "a disagreement felt safe" },
     }],
-    transcriptAnchors: [],
+    turns: [{
+      turnId: "turn-recent",
+      startedAt: "2026-07-20T07:00:00.000Z",
+      endedAt: "2026-07-20T07:10:00.000Z",
+      status: "completed",
+    }],
   };
 }
 
