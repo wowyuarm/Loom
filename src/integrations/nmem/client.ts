@@ -33,6 +33,22 @@ export interface NmemMemoryEvidence {
   metadata?: Record<string, unknown>;
 }
 
+export interface NmemThreadMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface NmemThreadCreate {
+  thread_id: string;
+  title: string;
+  participants: string[];
+  source: string;
+  messages: NmemThreadMessage[];
+  metadata: Record<string, unknown>;
+}
+
 const MAX_EVIDENCE_CONTENT_CHARS = 4_000;
 
 export class NmemRequestError extends Error {
@@ -41,6 +57,7 @@ export class NmemRequestError extends Error {
   constructor(
     message: string,
     readonly kind: "temporary" | "authentication" | "incompatible",
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -142,6 +159,33 @@ export class NmemClient {
     return evidence;
   }
 
+  async createThread(thread: NmemThreadCreate): Promise<void> {
+    try {
+      const response = await this.#request("/threads", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...thread,
+          ...(this.#spaceId ? { space_id: this.#spaceId } : {}),
+        }),
+      });
+      const value = await readJson(response);
+      if (!threadIdentity(value, thread.thread_id)) {
+        throw new NmemRequestError("nmem returned an incompatible Thread create response", "incompatible");
+      }
+    } catch (error) {
+      if (!(error instanceof NmemRequestError) || error.status !== 422) throw error;
+      const query = this.#spaceId ? `?space_id=${encodeURIComponent(this.#spaceId)}` : "";
+      const response = await this.#request(`/threads/${encodeURIComponent(thread.thread_id)}${query}`, {
+        method: "GET",
+      });
+      const value = await readJson(response);
+      if (!threadIdentity(value, thread.thread_id)) {
+        throw new NmemRequestError("nmem reported an existing Thread but could not verify its identity", "incompatible");
+      }
+    }
+  }
+
   async #request(resource: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.#timeoutMs);
@@ -164,16 +208,22 @@ export class NmemClient {
       }
       if (response.ok) return response;
       if (response.status === 401 || response.status === 403) {
-        throw new NmemRequestError(`nmem authentication failed with HTTP ${response.status}`, "authentication");
+        throw new NmemRequestError(`nmem authentication failed with HTTP ${response.status}`, "authentication", response.status);
       }
       if (response.status >= 500 || response.status === 408 || response.status === 429) {
-        throw new NmemRequestError(`nmem is temporarily unavailable: HTTP ${response.status}`, "temporary");
+        throw new NmemRequestError(`nmem is temporarily unavailable: HTTP ${response.status}`, "temporary", response.status);
       }
-      throw new NmemRequestError(`nmem rejected the request with HTTP ${response.status}`, "incompatible");
+      throw new NmemRequestError(`nmem rejected the request with HTTP ${response.status}`, "incompatible", response.status);
     } finally {
       clearTimeout(timeout);
     }
   }
+}
+
+function threadIdentity(value: unknown, expectedThreadId: string): boolean {
+  if (!isObject(value)) return false;
+  const thread = isObject(value.thread) ? value.thread : value;
+  return thread.thread_id === expectedThreadId || thread.id === expectedThreadId;
 }
 
 async function readJson(response: Response): Promise<unknown> {

@@ -82,6 +82,10 @@ _Avoid_: individual capability, relationship material, executor abstraction
 Runtime Store 中证明一份本地证据已经由某个 Integration 完成外部投影的持久事实。它用于幂等恢复，不改变本地证据的成立或语义。
 _Avoid_: workspace metadata, life recorder receipt, external truth
 
+**nmem Conversation Thread**:
+一份 Frozen Activity 向 nmem 投影形成的外部会话来源。它保留真实人类输入、确认送达的回复，以及有实际动作或结果的简洁私人活动，但不包含模型 thinking 或原始工具结果；它服务于外部记忆演化，不是 Agent Workspace 中的私人工作线。
+_Avoid_: Thread, transcript archive, episode, raw activity trace
+
 **Cognitive Organ**:
 由 Loom 内置并版本化维护的专职能力。它的职责、方法、工具面、触发条件和保护规则由 Harness 定义。
 _Avoid_: optional plugin, workspace-defined agent, self-evolving organ

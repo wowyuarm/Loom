@@ -476,6 +476,13 @@ class SqliteRuntime implements Runtime {
     };
   }
 
+  frozenActivity(activityId: string): FrozenActivity | undefined {
+    const row = this.#database.prepare(`
+      SELECT frozen_activity_json FROM activities WHERE id = ?
+    `).get(activityId) as unknown as { frozen_activity_json: string } | undefined;
+    return row ? JSON.parse(row.frozen_activity_json) as FrozenActivity : undefined;
+  }
+
   close(): void {
     this.#stopHeartbeat();
     this.#database.close();

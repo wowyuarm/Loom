@@ -330,6 +330,7 @@ export interface Runtime {
   formOpportunity(): Promise<FormOpportunityResult>;
   advance(): Promise<AdvanceResult>;
   closeActivity(): Promise<CloseActivityResult>;
+  frozenActivity(activityId: string): FrozenActivity | undefined;
   status(): RuntimeStatus;
   close(): void;
 }

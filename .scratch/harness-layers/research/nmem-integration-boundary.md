@@ -1,6 +1,6 @@
 # nmem Integration Boundary Research
 
-Status: incorporated into Ticket 19
+Status: incorporated into Tickets 19-20
 Date: 2026-07-21
 
 ## Question
@@ -90,9 +90,9 @@ Do not make Life Recorder call nmem. The Integration reconciler may only discove
 ### Evidence Ingress
 
 - **Episode:** yes, as a typed nmem Memory with stable ID and Workspace provenance.
-- **Frozen Activity:** no direct raw import. It contains evidence that is too broad and may include thinking or large tool traces.
+- **Frozen Activity:** yes through a deterministic nmem Conversation Thread projection, never as a raw upload. Each closed Segment keeps human input, delivered replies and compact private activity while excluding thinking, raw tool results and unconfirmed outbound content.
 - **Primary Agent Transcript:** no direct raw import for the same reason and because it is an execution log rather than a memory contract.
-- **Conversation Thread projection:** likely yes as a separate follow-up. Build it from a closed Active Segment, keeping actual human messages and confirmed outbound messages with stable event provenance. Meaningful private autonomous work continues to enter through Episodes. Do not reuse Xi's daily transcript parser.
+- **Conversation Thread projection:** yes. One closed Active Segment becomes one stable nmem Thread, independent of Life Recorder completion. Compact private activity complements Episodes so ordinary autonomous life is not absent from nmem. Do not reuse Xi's daily transcript parser.
 - **Daily / Current Attention / Long-term Memory / Threads:** do not bulk sync in the first slice. Their later use should be justified by a concrete nmem capability rather than treating every Workspace file as ingestion material.
 
 ### Evidence Egress
@@ -112,17 +112,17 @@ Do not make Life Recorder call nmem. The Integration reconciler may only discove
 
 ## Interface Review
 
-The first implementation should present two nmem-specific narrow Interfaces rather than exposing a generic provider or wire client:
+The implemented nmem Module presents three nmem-specific narrow Interfaces rather than exposing a generic provider or wire client:
 
 - a recall Interface used to build the `nmem-recall` tool;
 - an Episode reconciliation Interface that consumes committed Episode references and owns idempotent export, receipts, backoff and diagnostics.
+- a Conversation Thread reconciliation Interface that consumes immutable Frozen Activity and owns deterministic projection, idempotent creation, receipts, backoff and diagnostics.
 
-HTTP, auth, capability checks, response normalization and receipt schema remain internal to the nmem Module. Tests and callers cross the same two Interfaces; they do not call the REST client or inspect nmem tables directly. Working Memory and conversation Thread capture should add Interfaces only when those slices are implemented.
+HTTP, auth, capability checks, response normalization and receipt schema remain internal to the nmem Module. Tests and callers cross these Interfaces; they do not call the REST client or inspect nmem tables directly. Working Memory should add its own evidence Interface only when implemented.
 
 ## Decisions Still Worth Discussing
 
-1. Should the follow-up conversation Thread projection contain only human/confirmed outbound dialogue, or also a compact representation of private autonomous activity that did not warrant an Episode?
-2. Should cached nmem Working Memory be a clearly marked derived file inside Agent Workspace, or remain Integration state exposed to organs through a dedicated tool?
-3. Should Loom ever manually trigger nmem maintenance, or rely on nmem's reactive and periodic processing and only observe freshness? Current evidence favors observation, with manual triggering deferred until a real unmet need appears.
+1. Should cached nmem Working Memory be a clearly marked derived file inside Agent Workspace, or remain Integration state exposed to organs through a dedicated tool?
+2. Should Loom ever manually trigger nmem maintenance, or rely on nmem's reactive and periodic processing and only observe freshness? Current evidence favors observation, with manual triggering deferred until a real unmet need appears.
 
-The first vertical slice was completed by [Ticket 19](../issues/19-integrate-nmem-episodes-and-recall.md). The questions above remain follow-up decisions and were not pulled into that implementation.
+The first vertical slice was completed by [Ticket 19](../issues/19-integrate-nmem-episodes-and-recall.md). Conversation Thread projection, including compact private activity, was completed by [Ticket 20](../issues/20-project-conversation-activities-to-nmem-threads.md). The questions above remain follow-up decisions.
