@@ -1,3 +1,5 @@
+import type { TimePolicy } from "../configuration/index.js";
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type InputKind = "interaction" | "opportunity";
 
@@ -293,6 +295,7 @@ export interface RuntimeStatus {
 
 export interface RuntimeOptions {
   root: string;
+  timePolicy?: TimePolicy;
   execution?: AgentExecution;
   outboundDelivery?: OutboundDelivery;
   activityLifecycle?: ActivityLifecycle;

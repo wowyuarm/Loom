@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
+import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js";
 import { initializeRuntimeSchema } from "./schema.js";
 import type {
   AcceptedInput,
@@ -113,6 +114,7 @@ class SqliteRuntime implements Runtime {
   readonly #activityLifecycle: ActivityLifecycle | undefined;
   readonly #activityRecorder: ActivityRecorder | undefined;
   readonly #orientation: Orientation | undefined;
+  readonly #timePolicy: TimePolicy;
   readonly #now: () => Date;
   readonly #nextId: () => string;
   readonly #ownerId: string;
@@ -131,6 +133,7 @@ class SqliteRuntime implements Runtime {
     this.#activityLifecycle = options.activityLifecycle;
     this.#activityRecorder = options.activityRecorder;
     this.#orientation = options.orientation;
+    this.#timePolicy = options.timePolicy ?? createHostTimePolicy();
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
     this.#ownerId = options.ownerId ?? randomUUID();
@@ -543,7 +546,7 @@ class SqliteRuntime implements Runtime {
       return {
         request: {
           observedAt: observedAt.toISOString(),
-          localTime: localDateTimeLabel(observedAt),
+          localTime: this.#timePolicy.formatLocalTime(observedAt),
           ...(latestHuman ? { lastHumanInputAt: latestHuman.occurred_at } : {}),
           recentActivities: activities
             .reverse()
@@ -687,7 +690,7 @@ class SqliteRuntime implements Runtime {
         id: segment.id,
         openedAt: segment.opened_at,
         closedAt: segment.closed_at,
-        recordingDay: localDateKey(new Date(segment.closed_at)),
+        recordingDay: this.#timePolicy.recordingDay(new Date(segment.closed_at)),
       },
       recentActivities: recentActivities
         .reverse()
@@ -1822,19 +1825,4 @@ class SqliteRuntime implements Runtime {
 
 export function openRuntime(options: RuntimeOptions): Runtime {
   return new SqliteRuntime(options);
-}
-
-function localDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function localDateTimeLabel(date: Date): string {
-  const offsetMinutes = -date.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absolute = Math.abs(offsetMinutes);
-  const offset = `${sign}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
-  return `${localDateKey(date)} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")} ${offset}`;
 }

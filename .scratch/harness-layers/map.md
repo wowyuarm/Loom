@@ -64,6 +64,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [19 — Integrate nmem Episodes and Recall](issues/19-integrate-nmem-episodes-and-recall.md)。nmem 第一纵切只从 durable Life Recorder Receipt 幂等投影 Workspace Episode，并向 Main Agent 提供显式、bounded、failure-soft 的 `nmem_recall`；Integration Receipt、退避与 diagnostics 留在 Runtime Store 的 nmem 状态中，Runtime 与 Life Recorder 不依赖外部服务。
 - Completed: [20 — Project Conversation Activities to nmem Threads](issues/20-project-conversation-activities-to-nmem-threads.md)。每份 Frozen Activity 独立、幂等投影为 nmem Conversation Thread，保留真实 human input、delivered reply 和简洁 private activity；thinking、raw tool result 与未送达正文保持在外部投影之外，且不等待 Life Recorder。
 - Completed: [21 — Read nmem Working Memory Evidence](issues/21-read-nmem-working-memory-evidence.md)。nmem Working Memory 通过 REST 成为 Integration-owned derived evidence；最近成功内容按连接隔离缓存在 Runtime Store，读取失败时明确返回 stale 或 unavailable，不进入 Agent Workspace，也不阻断 Runtime。
+- Completed: [22 — Apply Instance Time Policy to Runtime](issues/22-apply-instance-time-policy.md)。可选 `instance.yaml` 的时间分支现在形成 DST-safe Time Policy；缺省使用机器 IANA 时区与 03:00 logical-day boundary，Runtime 的 Orientation local time 与 Activity recording day 使用同一政策。
 
 ## Context Follow-ups
 
@@ -78,6 +79,20 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 | Configuration and Model Revision Input | 等 Instance Configuration 层提供预算与每 Turn revision。 |
 
 具体边界与进入条件由 [ticket 03](issues/03-materialize-context-windows-per-turn.md#deferred-context-work) 维护；关闭一项后再为下一项建立实际 ticket，不提前创建空文件。
+
+## Remaining First-Phase Closure
+
+nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
+
+1. Daily Narrative 尚未成为 Main Agent 的正式 window-frozen Context source；它必须和 logical day、跨日 Context 与每日 Transcript 一起闭合。
+2. Stable Facts 已有读取合同，权威维护者是未来的 Memory Reflector；Life Recorder 只读当前事实并留下 `[fact]` evidence lead。维护和受保护演化尚未实现。
+3. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
+4. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
+5. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
+
+当前依赖顺序：Instance Configuration + Time Policy -> logical day / Daily Context / daily Transcript -> Memory Reflector -> durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+
+Ticket 22 已完成。下一项进入 logical day / Daily Context / daily Transcript 的同一跨日闭环；在明确其共同 Interface 前不先拆成三个互不相连的票。
 
 ## Source References
 

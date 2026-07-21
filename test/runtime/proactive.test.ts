@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createTimePolicy } from "../../src/configuration/index.js";
 import type {
   ActivityFreezeRequest,
   AgentExecution,
@@ -12,6 +13,73 @@ import type {
   TurnRequest,
 } from "../../src/runtime/index.js";
 import { openRuntime } from "../../src/runtime/index.js";
+
+test("uses one Instance Time Policy for Opportunity context and Activity recording day", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-time-policy-"));
+  const orientationRequests: OrientationRequest[] = [];
+  const freezeRequests: ActivityFreezeRequest[] = [];
+  const execution: AgentExecution = {
+    start(request, control) {
+      control.prepareExecutionState(request.executionState ?? { branch: "prepared" });
+      control.includeInput(request.inputs[0]!.id);
+      control.recordToolActivity({
+        toolCallId: "inspect-time",
+        toolName: "read",
+        callArguments: { path: "attention.md" },
+        result: { content: [{ type: "text", text: "current evidence" }] },
+      });
+      return {
+        result: Promise.resolve(executionResult(request, { branch: "complete" })),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const runtime = openRuntime({
+    root,
+    execution,
+    now: () => new Date("2026-10-25T01:30:00.000Z"),
+    timePolicy: createTimePolicy({
+      timeZone: "Europe/Berlin",
+      logicalDayStart: "03:00",
+    }),
+    orientation: {
+      async form(request) {
+        orientationRequests.push(request);
+        return {
+          outcome: "opportunity",
+          runId: "orientation-time-policy",
+          narrative: "A grounded private opening.",
+          whyNow: "The evidence remains active.",
+          evidence: ["attention.md"],
+        };
+      },
+    },
+    activityLifecycle: {
+      async freeze(request) {
+        freezeRequests.push(request);
+        return {
+          activity: {
+            version: 1,
+            segmentId: request.segment.id,
+            recordingDay: request.segment.recordingDay,
+            openedAt: request.segment.openedAt,
+            closedAt: request.segment.closedAt,
+            events: [],
+            turns: [],
+          },
+          successorExecutionState: { branch: "successor" },
+        };
+      },
+    },
+  });
+  t.after(() => runtime.close());
+
+  assert.equal((await runtime.formOpportunity()).disposition, "accepted");
+  assert.equal(orientationRequests[0]?.localTime, "2026-10-25 02:30 +01:00");
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.equal(freezeRequests[0]?.segment.recordingDay, "2026-10-24");
+});
 
 test("forms one grounded Opportunity while the Runtime is idle", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-"));
