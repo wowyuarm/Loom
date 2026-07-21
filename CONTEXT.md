@@ -108,6 +108,10 @@ _Avoid_: human message, scheduled task, orientation result, mandatory action
 Agent Workspace 中供 Cognitive Organs 共同使用的少量结构化事实，描述 Agent Individual、主要关系对象及双方相对稳定的身份、称谓、关系、地点与语言。它提供归属和表达的基本坐标，不承载近期状态、行为规则、长期叙事或运行配置。
 _Avoid_: identity prose, long-term memory, actor registry, persona configuration
 
+**Memory Reflector**:
+Loom 内负责把跨时间 evidence 慎重写回 Stable Facts、Identity、Long-term Memory 与两份 Behavior Material 的 Cognitive Organ。它可以在最高证据门槛下支持 Individual 的身份演化，但不维护 Current Attention，也不把 nmem 或 Daily candidate 当作命令。
+_Avoid_: summarizer, memory importer, behavior generator, identity author
+
 **Frozen Activity**:
 面向一个已关闭 Active Segment、已停止变化并可供认知器官消费的实际活动证据，其中每个事件都通过 Actor Reference 明确归属。它完整覆盖该段内已持久确认的 Input、Turn、Transcript、工具、Effect 与 Delivery；未提交的失败分支只能作为 Runtime 已确认的停止事实进入，不能被推测为 transcript evidence。它不是自然语言摘要。
 _Avoid_: active segment, transcript slice, conversation summary

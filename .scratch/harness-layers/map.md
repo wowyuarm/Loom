@@ -66,6 +66,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [21 — Read nmem Working Memory Evidence](issues/21-read-nmem-working-memory-evidence.md)。nmem Working Memory 通过 REST 成为 Integration-owned derived evidence；最近成功内容按连接隔离缓存在 Runtime Store，读取失败时明确返回 stale 或 unavailable，不进入 Agent Workspace，也不阻断 Runtime。
 - Completed: [22 — Apply Instance Time Policy to Runtime](issues/22-apply-instance-time-policy.md)。可选 `instance.yaml` 的时间分支现在形成 DST-safe Time Policy；缺省使用机器 IANA 时区与 03:00 logical-day boundary，Runtime 的 Orientation local time 与 Activity recording day 使用同一政策。
 - Completed: [23 — Close Logical-Day Context and Transcript Continuity](issues/23-close-logical-day-context-and-transcript.md)。Runtime 在 Turn 准入时固定 transcript day；Primary Transcript 按日写入 `agent.jsonl`，source-aware Anchor 支持跨日 Context、Activity 与工具证据；两日 Daily 正文作为完整的 window-frozen material 进入 Main Agent Context。
+- Completed: [24 — Maintain Core Memory and Behavior](issues/24-maintain-core-memory-and-behavior.md)。Memory Reflector 已通过索引式 evidence、受限工具、五类核心材料整份替换、持久备份和整轮回滚闭合；prompt 已完成 Xi/Loom 横向审视，并保护 candidate 语义、材料门槛、完整基线读取与写作品味。
 
 ## Context Follow-ups
 
@@ -85,14 +86,23 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Stable Facts 已有读取合同，权威维护者是未来的 Memory Reflector；Life Recorder 只读当前事实并留下 `[fact]` evidence lead。维护和受保护演化尚未实现。
-2. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
-3. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
-4. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
+1. Time Policy 已进入 Runtime，但 durable scheduler 尚未实现；idle close / split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 仍由外部手动触发或完全缺失。
+2. Instance Configuration 的 model / route 分支、Model Runtime Revision、Instance Root assembly 与具体 Integration 装配尚未实现；当前各深 Module 主要通过测试和调用方分别组装。
+3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
-当前依赖顺序：Memory Reflector -> durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+当前依赖顺序：durable scheduler / assembly -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。下一步先回读 source Memory Reflector 的完整职责、Stable Facts 所有权和 nmem evidence 使用方式，再讨论其模型可见 prompt 与工具合同；不在本票夹带实现。
+Current work item: none。Cognitive Organs 第一阶段已由 Ticket 24 闭合；进入下一张 ticket 前先回读 scheduler 与 assembly 的 source evidence，确认真实生命周期顺序和恢复语义。
+
+### Memory Reflector Completion Checkpoint
+
+- Xi 的有效职责不是每日摘要，而是把跨时间 evidence 慎重写回 Identity、Long-term Memory 与两份 Behavior Material，并在最高证据门槛下允许 Identity 演化；Current Attention 与 Harness System Guidance 均不归它维护。
+- Xi 的实际运行先完整读取既有核心材料，再读 Daily、Episodes、Threads，并用原始 session / outbox 核验关键原话和已送达内容；`recall` 是按需证据，不是每轮必用。Loom 不应让器官直接解析 Primary Transcript 或 Runtime Store，因此需要由 Activity lifecycle 提供可索引、按需展开的等价第一手证据。
+- Xi 当前把 nmem nightly marker 和新鲜 Working Memory 当作触发前置。Loom 已确认 nmem 是可降级 Integration evidence，不能成为本地认知连续性的 gate；未来 scheduler 可以优先等待新证据，但 nmem 不可用时仍要允许 Reflector 基于 Workspace 与 Frozen Activity 运行。
+- 需要保留运行前备份、受保护目标、写后验证与整轮回滚，但不能照搬 Xi 的具体标题、四域结构、文件名扫描或缩水比例。Loom 的保护应围绕 Workspace Material role 和最小结构合同，模型写作质量留给 prompt 与真实模型评估。
+- Ticket 24 已确认模型可见语义：Stable Facts 与 Identity 分离，五类可写材料各自有不同证据门槛，Activity / nmem evidence 按需进入，器官在不暴露 Harness 机制的前提下保持材料原语言和 Individual 自身声线。
+- 最终 prompt 横向审视没有把项目哲学机械复制给每个器官：事实记录与压缩器保持中性，Orientation / Attention / Thread 通过职责内方法保护主体空间，Memory Reflector 因直接演化核心材料而显式承担哲学边界与写作品味。
+- Pi `read` 的 2000 行 / 50KB 截断已纳入核心基线完整读取保护；模型必须按连续 offset 读完后才能形成更新或 `NO_CHANGE`。
 
 ## Source References
 
