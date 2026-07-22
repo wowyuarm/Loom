@@ -34,6 +34,10 @@ _Avoid_: Agent Harness, daemon, scheduler
 Runtime 内依据持久事实与时间政策推进已有生命周期的一种能力。它只调度 Loom 已定义的工作，不是可注册任意任务的 cron 或 workflow engine。
 _Avoid_: daemon, job queue, workflow engine, Runtime
 
+**Process Driver**:
+持续驱动一个已装配 Runtime Instance 的宿主入口。它按 Instance 给出的时间等待、在新 Input 或外部状态变化时唤醒，并在停止时等待当前运行自然结束；它不决定工作顺序或生命周期政策。
+_Avoid_: Scheduler, daemon framework, job runner, OS service
+
 **Main Agent**:
 Loom 内部负责主 Agent 的 Pi 执行、Context 组装、Primary Agent Transcript 和 tool trace 的模块。它不负责 Runtime 生命周期，也不定义认知器官如何运行。
 _Avoid_: Agent Individual, Agent Harness, runtime, cognitive organ

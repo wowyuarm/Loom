@@ -61,9 +61,12 @@ const MAIN_AGENT_ACTION_TOOLS = [
   "nmem_recall",
 ] as const;
 
-export type LoomInstanceRunResult =
+const DEFAULT_MODEL_RUNTIME_REFRESH_MS = 30 * 1_000;
+
+export type LoomInstanceRunResult = (
   | { disposition: "deferred"; reason: "model_runtime_blocked" }
-  | SchedulerRunResult;
+  | SchedulerRunResult
+) & { nextRunAt?: string };
 
 export interface LoomInstanceStatus {
   runtime: RuntimeStatus;
@@ -114,11 +117,17 @@ class AssembledLoomInstance implements LoomInstance {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Loom Instance requires a valid observedAt");
     const result = await this.scheduler.runOnce(observedAt);
     if (result.disposition === "deferred" && result.reason === "agent_work_not_admitted") {
-      await this.#reconcileNmem();
-      return { disposition: "deferred", reason: "model_runtime_blocked" };
+      const nmemNextRunAt = await this.#reconcileNmem();
+      return mergeNextRunAt(
+        mergeNextRunAt(
+          { disposition: "deferred", reason: "model_runtime_blocked" },
+          new Date(observedAt.getTime() + DEFAULT_MODEL_RUNTIME_REFRESH_MS).toISOString(),
+        ),
+        nmemNextRunAt,
+      );
     }
-    await this.#reconcileNmem();
-    return result;
+    const nmemNextRunAt = await this.#reconcileNmem();
+    return mergeNextRunAt(result, nmemNextRunAt);
   }
 
   async formOpportunity(): Promise<LoomInstanceOpportunityResult> {
@@ -150,11 +159,33 @@ class AssembledLoomInstance implements LoomInstance {
     this.nmem?.episodes.close();
   }
 
-  async #reconcileNmem(): Promise<void> {
-    if (!this.nmem) return;
+  async #reconcileNmem(): Promise<string | undefined> {
+    if (!this.nmem) return undefined;
     await this.nmem.threads.reconcile();
     await this.nmem.episodes.reconcile();
+    return earliestProjectionAttempt([
+      this.nmem.threads.status(),
+      this.nmem.episodes.status(),
+    ]);
   }
+}
+
+function earliestProjectionAttempt(statuses: NmemProjectionStatus[]): string | undefined {
+  const attempts = statuses.flatMap(status => status.items)
+    .flatMap(item => item.nextAttemptAt ? [item.nextAttemptAt] : []);
+  return attempts.reduce<string | undefined>((earliest, candidate) =>
+    !earliest || Date.parse(candidate) < Date.parse(earliest) ? candidate : earliest, undefined);
+}
+
+function mergeNextRunAt(
+  result: LoomInstanceRunResult,
+  candidate: string | undefined,
+): LoomInstanceRunResult {
+  if (!candidate) return result;
+  const current = "nextRunAt" in result ? result.nextRunAt : undefined;
+  const nextRunAt = current && Date.parse(current) <= Date.parse(candidate) ? current : candidate;
+  if (result.disposition === "idle") return { disposition: "waiting", nextRunAt };
+  return { ...result, nextRunAt };
 }
 
 export async function openLoomInstance(options: OpenLoomInstanceOptions): Promise<LoomInstance> {

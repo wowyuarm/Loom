@@ -48,6 +48,7 @@ export type SchedulerRunResult =
         | "agent_work_not_admitted"
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
+      nextRunAt?: string;
     }
   | {
       disposition: "deferred";
@@ -129,7 +130,7 @@ class RuntimeScheduler implements Scheduler {
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
       const advanced = await this.#runtime.advance({ agentWork });
-      const terminal = deferredResult(advanced);
+      const terminal = deferredResult(advanced, observedAt);
       if (terminal) return terminal;
       if (advanced.disposition === "busy") return { disposition: "busy" };
       if (advanced.disposition !== "idle") continue;
@@ -212,7 +213,11 @@ class RuntimeScheduler implements Scheduler {
       return { disposition: "waiting", nextRunAt: result.nextRunAt };
     }
     if (result.disposition === "failed") {
-      return { disposition: "deferred", reason: "attention_maintenance_failed" };
+      return {
+        disposition: "deferred",
+        reason: "attention_maintenance_failed",
+        nextRunAt: result.nextRunAt,
+      };
     }
     if (result.disposition === "agent_work_deferred") {
       return { disposition: "deferred", reason: "agent_work_not_admitted" };
@@ -237,7 +242,11 @@ class RuntimeScheduler implements Scheduler {
       return { disposition: "waiting", nextRunAt: result.nextRunAt };
     }
     if (result.disposition === "failed") {
-      return { disposition: "deferred", reason: "memory_reflection_failed" };
+      return {
+        disposition: "deferred",
+        reason: "memory_reflection_failed",
+        nextRunAt: result.nextRunAt,
+      };
     }
     if (result.disposition === "agent_work_deferred") {
       return { disposition: "deferred", reason: "agent_work_not_admitted" };
@@ -309,11 +318,21 @@ function assertPositiveDuration(value: number, label: string): void {
   }
 }
 
-function deferredResult(result: AdvanceResult): SchedulerRunResult | undefined {
+function deferredResult(result: AdvanceResult, observedAt: Date): SchedulerRunResult | undefined {
   switch (result.disposition) {
     case "activity_recording_failed":
     case "thread_maintenance_failed":
+      return {
+        disposition: "deferred",
+        reason: result.disposition,
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      };
     case "delivery_not_sent":
+      return {
+        disposition: "deferred",
+        reason: result.disposition,
+        nextRunAt: observedAt.toISOString(),
+      };
     case "delivery_requires_reconciliation":
       return { disposition: "deferred", reason: result.disposition };
     case "agent_work_deferred":

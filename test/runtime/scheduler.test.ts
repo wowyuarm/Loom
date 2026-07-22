@@ -79,6 +79,18 @@ const completingExecution: AgentExecution = {
   },
 };
 
+const effectExecution: AgentExecution = {
+  start(request, control) {
+    const running = completingExecution.start(request, control);
+    control.prepareEffect({
+      kind: "message",
+      payload: { text: "hello" },
+      routeRef: "default",
+    });
+    return running;
+  },
+};
+
 const activityLifecycle: ActivityLifecycle = {
   freeze: async request => ({
     activity: {
@@ -124,6 +136,49 @@ function failingRecorder(attempted: string[]): ActivityRecorder {
     },
   };
 }
+
+test("continues after a confirmed not-sent Delivery without polling it", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-not-sent-"));
+  const now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    now: () => now,
+  });
+  try {
+    await runtime.acceptInput({ source: "test", sourceId: "not-sent", kind: "interaction", payload: {} });
+
+    assert.deepEqual(await createScheduler({ runtime }).runOnce(now), {
+      disposition: "deferred",
+      reason: "delivery_not_sent",
+      nextRunAt: "2026-07-21T08:00:00.000Z",
+    });
+  } finally {
+    runtime.close();
+  }
+});
+
+test("waits for explicit reconciliation after an unknown Delivery", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-unknown-"));
+  const now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "unknown", error: "connection lost" }) },
+    now: () => now,
+  });
+  try {
+    await runtime.acceptInput({ source: "test", sourceId: "unknown", kind: "interaction", payload: {} });
+
+    assert.deepEqual(await createScheduler({ runtime }).runOnce(now), {
+      disposition: "deferred",
+      reason: "delivery_requires_reconciliation",
+    });
+  } finally {
+    runtime.close();
+  }
+});
 
 test("guards Activity closure with the latest committed Segment activity", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-runtime-"));
@@ -342,6 +397,7 @@ test("retries the same frozen Attention evidence window after failure", async ()
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "attention_maintenance_failed",
+    nextRunAt: "2026-07-21T08:01:30.000Z",
   });
 
   await failing.acceptInput({ source: "test", sourceId: "second", kind: "interaction", payload: {} });
@@ -470,6 +526,7 @@ test("keeps a failed Memory reflection day pending across restart", async () => 
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "memory_reflection_failed",
+    nextRunAt: "2026-07-22T03:00:30.000Z",
   });
   first.close();
 
@@ -645,6 +702,7 @@ test("retries pending Activity recording through Scheduler after restart", async
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "activity_recording_failed",
+    nextRunAt: "2026-07-21T14:45:00.000Z",
   });
   const activityId = firstRuntime.status().activities[0]?.id;
   assert.ok(activityId);
@@ -815,6 +873,7 @@ test("keeps failed Thread maintenance pending across restart", async () => {
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "thread_maintenance_failed",
+    nextRunAt: "2026-07-21T17:45:00.000Z",
   });
   const activityId = firstRuntime.status().activities[0]?.id;
   assert.ok(activityId);

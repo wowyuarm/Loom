@@ -28,6 +28,7 @@ test("keeps accepted Input pending while blocked and resumes it after model conf
   assert.deepEqual(await instance.runOnce(now), {
     disposition: "deferred",
     reason: "model_runtime_blocked",
+    nextRunAt: "2026-07-22T10:00:30.000Z",
   });
   assert.equal(instance.status().models?.state, "blocked");
   assert.equal(instance.status().runtime.inputs[0]?.status, "pending");
@@ -278,6 +279,7 @@ test("freezes idle Activity but defers Life Recorder work while models are block
   assert.deepEqual(await recovered.runOnce(now), {
     disposition: "deferred",
     reason: "model_runtime_blocked",
+    nextRunAt: "2026-07-22T10:30:30.000Z",
   });
   assert.equal(provider.requests(), 1);
   assert.equal(recovered.status().runtime.activeSegment, undefined);
@@ -531,7 +533,7 @@ test("keeps nmem projection failure-soft and resumes it after restart backoff", 
   now = new Date("2026-07-22T12:30:00.000Z");
   assert.deepEqual(await first.runOnce(now), {
     disposition: "waiting",
-    nextRunAt: "2026-07-22T13:00:00.000Z",
+    nextRunAt: "2026-07-22T12:30:30.000Z",
   });
   assert.equal(nmem.threadRequests(), 1);
   assert.equal(first.status().nmem?.threads.summary.pending, 1);
@@ -827,6 +829,7 @@ test("keeps a due Pulse unclaimed while model configuration is blocked", async t
   assert.deepEqual(await instance.runOnce(now), {
     disposition: "deferred",
     reason: "model_runtime_blocked",
+    nextRunAt: "2026-07-22T10:30:30.000Z",
   });
   assert.equal(instance.status().runtime.proactivePulse?.lastPulseAt, undefined);
   assert.equal(instance.status().runtime.proactivePulse?.nextPulseAfter, "2026-07-22T10:30:00.000Z");

@@ -76,6 +76,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [31 — Schedule Current Attention Maintenance](issues/31-schedule-attention-maintenance.md)。Current Attention 以独立、可配置的短周期运行；Runtime 持久固定每次 Activity evidence window，成功推进 cursor，失败按原窗口跨重启恢复，不依赖 logical-day close 或通用 job runner。
 - Completed: [32 — Schedule Memory Reflection by Logical Day](issues/32-schedule-memory-reflection.md)。Memory Reflection 以独立持久 lane 按 logical day 一次消费本地 Frozen Activity；目标日完整性、跨日 Turn 切片、失败重试、blocked admission、Working Memory 接线与可选 Workspace 材料缺失语义已闭合，不把 nmem nightly 当作 gate。
 - Completed: [33 — Soft-split Long-lived Activity](issues/33-soft-split-long-activity.md)。Active Segment 同时受 30 分钟 idle 与 2 小时 maximum age 约束；Runtime 在同一 close claim 中复核 `lastActivityAt` / `openedAt`，并复用现有 freeze、successor Context、Recorder 与恢复路径，不新增 split job 或 prompt。
+- Completed: [34 — Drive a Runtime Instance](issues/34-drive-a-runtime-instance.md)。Instance 汇总 Scheduler 与 nmem 的最早 wake time；Process Driver 串行推进、由新 Input 立即唤醒、保留失败观测，并在 graceful stop 时等待当前运行完成，未引入 daemon/CLI/job framework。
 
 ## Context Follow-ups
 
@@ -95,13 +96,13 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Instance Assembly、Orientation Pulse、change-driven Thread maintenance、nmem projection reconcile、Attention cadence、Memory Reflection cadence 与 soft split 已闭合；process driver 和真实 outbound 后的 after-chat continuation 尚未接线。
+1. Instance Assembly、Orientation Pulse、change-driven Thread maintenance、nmem projection reconcile、Attention cadence、Memory Reflection cadence、soft split 与 process driver 已闭合；真实 outbound 后的 after-chat continuation 尚未接线。
 2. channel endpoint / credential Adapter、其余 Integration 装配与节律配置仍需随真实消费者进入，不在 Assembly 中预建通用 loader。
 3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
-当前依赖顺序：process driver 与 after-chat continuation 取舍 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+当前依赖顺序：after-chat continuation 语义确认与实现 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 33 已补齐持续 Activity 的 soft split；下一步先判断 process driver 的宿主 Interface 与 after-chat 的模型可见语义，不提前建立通用 daemon framework。
+Current work item: none。Ticket 34 已补齐持续驱动与 wake / shutdown 宿主合同；下一步先对照来源并与用户确认 after-chat 的模型可见 Context、触发与取消语义，再建立实际 ticket。
 
 ### Memory Reflector Completion Checkpoint
 
