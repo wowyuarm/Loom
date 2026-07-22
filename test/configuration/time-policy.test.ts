@@ -49,6 +49,40 @@ test("uses the machine time zone and Harness logical-day default when config is 
   );
 });
 
+test("loads model roles with whole-policy inheritance from the default", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-model-configuration-"));
+  const file = path.join(root, "instance.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "models:",
+    "  default:",
+    "    - provider: provider-a",
+    "      model: model-a",
+    "      thinkingLevel: medium",
+    "  orientation:",
+    "    - provider: provider-b",
+    "      model: model-b",
+    "      thinkingLevel: high",
+    "",
+  ].join("\n"), "utf8");
+
+  const configuration = await loadInstanceConfiguration({
+    file,
+    machineTimeZone: "UTC",
+  });
+
+  assert.deepEqual(configuration.modelPolicy?.roles["main-interaction"], [{
+    provider: "provider-a",
+    model: "model-a",
+    thinkingLevel: "medium",
+  }]);
+  assert.deepEqual(configuration.modelPolicy?.roles.orientation, [{
+    provider: "provider-b",
+    model: "model-b",
+    thinkingLevel: "high",
+  }]);
+});
+
 test("rejects invalid Instance time configuration before Runtime starts", async () => {
   const cases = [
     {
@@ -65,6 +99,39 @@ test("rejects invalid Instance time configuration before Runtime starts", async 
       name: "invalid logical day",
       source: "version: 1\ntime:\n  logicalDayStart: \"3am\"\n",
       error: /24-hour HH:MM format/,
+    },
+    {
+      name: "unknown model role",
+      source: [
+        "version: 1",
+        "models:",
+        "  default:",
+        "    - provider: provider-a",
+        "      model: model-a",
+        "  narrator:",
+        "    - provider: provider-b",
+        "      model: model-b",
+        "",
+      ].join("\n"),
+      error: /unknown fields: narrator/,
+    },
+    {
+      name: "empty default model candidates",
+      source: "version: 1\nmodels:\n  default: []\n",
+      error: /models\.default must be a non-empty array/,
+    },
+    {
+      name: "invalid thinking level",
+      source: [
+        "version: 1",
+        "models:",
+        "  default:",
+        "    - provider: provider-a",
+        "      model: model-a",
+        "      thinkingLevel: enormous",
+        "",
+      ].join("\n"),
+      error: /thinkingLevel is invalid/,
     },
   ];
 

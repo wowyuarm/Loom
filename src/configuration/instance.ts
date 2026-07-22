@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { parse } from "yaml";
 
 import { createTimePolicy, type TimePolicy } from "./time-policy.js";
@@ -7,6 +8,30 @@ import { createTimePolicy, type TimePolicy } from "./time-policy.js";
 export interface InstanceConfiguration {
   version: 1;
   timePolicy: TimePolicy;
+  modelPolicy?: ModelPolicy;
+}
+
+export const MODEL_ROLES = [
+  "main-interaction",
+  "main-background",
+  "tool-trace-compactor",
+  "orientation",
+  "life-recorder",
+  "attention-maintainer",
+  "thread-maintainer",
+  "memory-reflector",
+] as const;
+
+export type ModelRole = typeof MODEL_ROLES[number];
+
+export interface ModelCandidate {
+  provider: string;
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+}
+
+export interface ModelPolicy {
+  roles: Readonly<Record<ModelRole, readonly ModelCandidate[]>>;
 }
 
 export interface LoadInstanceConfigurationOptions {
@@ -30,7 +55,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -43,13 +68,69 @@ export async function loadInstanceConfiguration(
     throw new Error("Instance Configuration time.logicalDayStart must be a string");
   }
 
+  const modelPolicy = document.models === undefined
+    ? undefined
+    : parseModelPolicy(document.models);
   return {
     version: 1,
     timePolicy: createTimePolicy({
       timeZone: time.timeZone ?? machineTimeZone,
       ...(time.logicalDayStart !== undefined ? { logicalDayStart: time.logicalDayStart } : {}),
     }),
+    ...(modelPolicy ? { modelPolicy } : {}),
   };
+}
+
+function parseModelPolicy(value: unknown): ModelPolicy {
+  if (!isObject(value)) throw new Error("Instance Configuration models must be an object");
+  assertOnlyKeys(value, ["default", ...MODEL_ROLES], "Instance Configuration models");
+  const fallback = parseModelCandidates(value.default, "models.default");
+  const roles = {} as Record<ModelRole, readonly ModelCandidate[]>;
+  for (const role of MODEL_ROLES) {
+    const candidates = value[role] === undefined
+      ? fallback.map(candidate => ({ ...candidate }))
+      : parseModelCandidates(value[role], `models.${role}`);
+    roles[role] = Object.freeze(candidates.map(candidate => Object.freeze(candidate)));
+  }
+  return Object.freeze({ roles: Object.freeze(roles) });
+}
+
+function parseModelCandidates(value: unknown, label: string): ModelCandidate[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`Instance Configuration ${label} must be a non-empty array`);
+  }
+  return value.map((candidate, index) => {
+    const candidateLabel = `${label}[${index}]`;
+    if (!isObject(candidate)) {
+      throw new Error(`Instance Configuration ${candidateLabel} must be an object`);
+    }
+    assertOnlyKeys(
+      candidate,
+      ["provider", "model", "thinkingLevel"],
+      `Instance Configuration ${candidateLabel}`,
+    );
+    if (typeof candidate.provider !== "string" || !candidate.provider.trim()) {
+      throw new Error(`Instance Configuration ${candidateLabel}.provider must be a non-empty string`);
+    }
+    if (typeof candidate.model !== "string" || !candidate.model.trim()) {
+      throw new Error(`Instance Configuration ${candidateLabel}.model must be a non-empty string`);
+    }
+    if (candidate.thinkingLevel !== undefined && !isThinkingLevel(candidate.thinkingLevel)) {
+      throw new Error(`Instance Configuration ${candidateLabel}.thinkingLevel is invalid`);
+    }
+    return {
+      provider: candidate.provider.trim(),
+      model: candidate.model.trim(),
+      ...(candidate.thinkingLevel !== undefined
+        ? { thinkingLevel: candidate.thinkingLevel }
+        : {}),
+    };
+  });
+}
+
+function isThinkingLevel(value: unknown): value is ThinkingLevel {
+  return typeof value === "string"
+    && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
 function defaultConfiguration(machineTimeZone: string): InstanceConfiguration {
