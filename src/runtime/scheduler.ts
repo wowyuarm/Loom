@@ -2,6 +2,7 @@ import type { AdvanceResult, Runtime } from "./types.js";
 
 export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
 export const DEFAULT_PULSE_RETRY_MS = 5 * 60 * 1_000;
+export const DEFAULT_MAINTENANCE_RETRY_MS = 15 * 60 * 1_000;
 
 export interface SchedulerPulsePolicy {
   timeZone: string;
@@ -20,6 +21,11 @@ export interface SchedulerOptions {
   activityIdleMs?: number;
   admitAgentWork?: () => boolean | Promise<boolean>;
   proactivePulse?: SchedulerPulsePolicy;
+  attentionMaintenance?: {
+    intervalMs: number;
+    initialDelayMs?: number;
+    retryDelayMs?: number;
+  };
 }
 
 export type SchedulerRunResult =
@@ -31,6 +37,7 @@ export type SchedulerRunResult =
       reason:
         | "activity_recording_failed"
         | "thread_maintenance_failed"
+        | "attention_maintenance_failed"
         | "agent_work_not_admitted"
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
@@ -51,6 +58,7 @@ class RuntimeScheduler implements Scheduler {
   readonly #activityIdleMs: number;
   readonly #admitAgentWork: () => boolean | Promise<boolean>;
   readonly #proactivePulse: SchedulerPulsePolicy | undefined;
+  readonly #attentionMaintenance: SchedulerOptions["attentionMaintenance"];
 
   constructor(options: SchedulerOptions) {
     const activityIdleMs = options.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
@@ -61,7 +69,11 @@ class RuntimeScheduler implements Scheduler {
     this.#activityIdleMs = activityIdleMs;
     this.#admitAgentWork = options.admitAgentWork ?? (() => true);
     this.#proactivePulse = options.proactivePulse;
+    this.#attentionMaintenance = options.attentionMaintenance;
     if (this.#proactivePulse) validatePulsePolicy(this.#proactivePulse);
+    if (this.#attentionMaintenance) {
+      assertPositiveDuration(this.#attentionMaintenance.intervalMs, "attentionMaintenance.intervalMs");
+    }
   }
 
   async runOnce(observedAt: Date): Promise<SchedulerRunResult> {
@@ -76,6 +88,15 @@ class RuntimeScheduler implements Scheduler {
         agentWork: "defer",
       });
     }
+    if (this.#attentionMaintenance) {
+      await this.#runtime.runAttentionMaintenance({
+        observedAt,
+        initialDelayMs: this.#attentionMaintenance.initialDelayMs ?? this.#attentionMaintenance.intervalMs,
+        cadenceMs: this.#attentionMaintenance.intervalMs,
+        retryDelayMs: this.#attentionMaintenance.retryDelayMs ?? DEFAULT_MAINTENANCE_RETRY_MS,
+        agentWork: "defer",
+      });
+    }
 
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
@@ -87,7 +108,9 @@ class RuntimeScheduler implements Scheduler {
 
       const active = this.#runtime.status().activeSegment;
       if (!active) {
-        if (!this.#proactivePulse) return { disposition: "idle" };
+        const maintenance = await this.#runAttentionMaintenance(observedAt, agentWork);
+        if (maintenance && maintenance.disposition !== "waiting") return maintenance;
+        if (!this.#proactivePulse) return maintenance ?? { disposition: "idle" };
         const pulse = await this.#runtime.runOpportunityPulse({
           observedAt,
           initialDelayMs: this.#proactivePulse.initialDelayMs ?? this.#proactivePulse.intervalMs,
@@ -97,7 +120,10 @@ class RuntimeScheduler implements Scheduler {
         });
         if (pulse.disposition === "accepted" || pulse.disposition === "stale") continue;
         if (pulse.disposition === "waiting" || pulse.disposition === "none") {
-          return { disposition: "waiting", nextRunAt: pulse.nextRunAt };
+          return {
+            disposition: "waiting",
+            nextRunAt: earlierTime(pulse.nextRunAt, maintenance?.nextRunAt),
+          };
         }
         if (pulse.disposition === "agent_work_deferred") {
           return { disposition: "deferred", reason: "agent_work_not_admitted" };
@@ -133,6 +159,37 @@ class RuntimeScheduler implements Scheduler {
       if (closed.disposition === "no_activity") return { disposition: "idle" };
     }
   }
+
+  async #runAttentionMaintenance(
+    observedAt: Date,
+    agentWork: "allow" | "defer",
+  ): Promise<SchedulerRunResult | undefined> {
+    if (!this.#attentionMaintenance) return undefined;
+    const result = await this.#runtime.runAttentionMaintenance({
+      observedAt,
+      initialDelayMs: this.#attentionMaintenance.initialDelayMs ?? this.#attentionMaintenance.intervalMs,
+      cadenceMs: this.#attentionMaintenance.intervalMs,
+      retryDelayMs: this.#attentionMaintenance.retryDelayMs ?? DEFAULT_MAINTENANCE_RETRY_MS,
+      agentWork,
+    });
+    if (result.disposition === "completed") {
+      return { disposition: "waiting", nextRunAt: result.nextRunAt };
+    }
+    if (result.disposition === "failed") {
+      return { disposition: "deferred", reason: "attention_maintenance_failed" };
+    }
+    if (result.disposition === "agent_work_deferred") {
+      return { disposition: "deferred", reason: "agent_work_not_admitted" };
+    }
+    if (result.disposition === "busy") return { disposition: "busy" };
+    if (result.disposition === "waiting") return result;
+    return undefined;
+  }
+}
+
+function earlierTime(primary: string, secondary: string | undefined): string {
+  if (!secondary) return primary;
+  return Date.parse(secondary) < Date.parse(primary) ? secondary : primary;
 }
 
 function validatePulsePolicy(policy: SchedulerPulsePolicy): void {

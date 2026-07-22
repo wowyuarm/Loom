@@ -5,6 +5,7 @@ import { access } from "node:fs/promises";
 import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 import { createPiLifeRecorder } from "../agents/life-recorder.js";
+import { createPiAttentionMaintainer } from "../agents/attention-maintainer.js";
 import { createPiOrientation, type OrientationActionSpace } from "../agents/orientation.js";
 import {
   createPiThreadMaintainer,
@@ -13,6 +14,9 @@ import {
 import type { ModelRuntimeRevision, ModelRuntimeRevisions } from "../configuration/index.js";
 import type {
   ActivityRecorder,
+  AttentionMaintenance,
+  AttentionMaintenanceRequest,
+  AttentionMaintenanceResult,
   FrozenActivity,
   LifeRecorderReceipt,
   Orientation,
@@ -95,6 +99,22 @@ class RevisionBoundThreadMaintenance implements ThreadMaintenance {
   }
 }
 
+class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
+  constructor(private readonly options: RevisionBoundOrganOptions) {}
+
+  async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
+    const selection = firstCandidate(this.options.revisions.current(), "attention-maintainer");
+    const maintainer = await createPiAttentionMaintainer({
+      agentWorkspace: this.options.agentWorkspace,
+      agentDir: this.options.layout.piAgentDirectory,
+      transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "attention-maintainer"),
+      modelRuntime: selection.modelRuntime,
+      model: selection.model,
+    });
+    return maintainer.maintain(request);
+  }
+}
+
 function firstCandidate(
   revision: ModelRuntimeRevision,
   role: Parameters<ModelRuntimeRevision["selection"]>[0],
@@ -119,6 +139,12 @@ export function createRevisionBoundThreadMaintenance(
   },
 ): ThreadMaintenance {
   return new RevisionBoundThreadMaintenance(options);
+}
+
+export function createRevisionBoundAttentionMaintenance(
+  options: RevisionBoundOrganOptions,
+): AttentionMaintenance {
+  return new RevisionBoundAttentionMaintenance(options);
 }
 
 export async function loadWorkspaceSkillIndex(

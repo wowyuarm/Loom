@@ -3,6 +3,7 @@ export {
   DEFAULT_SCHEDULE,
   MODEL_ROLES,
   type InstanceConfiguration,
+  type AttentionMaintenanceConfiguration,
   type LoadInstanceConfigurationOptions,
   type ModelCandidate,
   type ModelPolicy,

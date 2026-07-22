@@ -127,6 +127,23 @@ test("loads the proactive Pulse schedule with Harness defaults and explicit over
     intervalMinutes: 30,
     quietHours: { start: "01:00", end: "07:00", intervalMinutes: 90 },
   });
+  assert.deepEqual(defaults.schedule.attentionMaintenance, { intervalMinutes: 360 });
+});
+
+test("loads the Attention maintenance cadence independently from the proactive Pulse", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-schedule-"));
+  const file = path.join(root, "loom.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "schedule:",
+    "  attentionMaintenance:",
+    "    intervalMinutes: 240",
+    "",
+  ].join("\n"));
+
+  const configuration = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
+  assert.deepEqual(configuration.schedule.attentionMaintenance, { intervalMinutes: 240 });
+  assert.equal(configuration.schedule.proactivePulse.intervalMinutes, 30);
 });
 
 test("rejects invalid Instance time configuration before Runtime starts", async () => {

@@ -584,6 +584,9 @@ test("uses the quiet-hours cadence from the Instance time policy", async t => {
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Quiet.", evidence: ["attention read"] }) },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { tool: { name: "read", arguments: { path: "memory.md" } } },
+    { text: "NO_CHANGE" },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Morning.", evidence: ["attention read"] }) },
   );
   t.after(() => provider.close());
@@ -604,7 +607,7 @@ test("uses the quiet-hours cadence from the Instance time policy", async t => {
     disposition: "waiting",
     nextRunAt: "2026-07-22T07:45:00.000Z",
   });
-  assert.equal(provider.requests(), 4);
+  assert.equal(provider.requests(), 7);
 });
 
 test("applies an explicit proactive Pulse cadence when opening the Instance", async t => {

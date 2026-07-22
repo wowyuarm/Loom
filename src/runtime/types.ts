@@ -151,6 +151,22 @@ export interface ThreadMaintenance {
   maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult>;
 }
 
+export interface AttentionMaintenanceRequest {
+  observedAt: string;
+  localTime: string;
+  recentActivities: FrozenActivity[];
+}
+
+export interface AttentionMaintenanceResult {
+  outcome: "updated" | "no_change";
+  runId: string;
+  path: string;
+}
+
+export interface AttentionMaintenance {
+  maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
+}
+
 export interface OrientationRequest {
   observedAt: string;
   localTime: string;
@@ -323,6 +339,15 @@ export interface RuntimeThreadMaintenanceStatus {
   lastError?: string;
 }
 
+export interface RuntimeAttentionMaintenanceStatus {
+  lastCompletedAt?: string;
+  nextRunAfter: string;
+  attempts: number;
+  pendingActivityIds: string[];
+  lastResult?: AttentionMaintenanceResult;
+  lastError?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
@@ -335,6 +360,7 @@ export interface RuntimeStatus {
   };
   activities: RuntimeActivityStatus[];
   threadMaintenance: RuntimeThreadMaintenanceStatus[];
+  attentionMaintenance?: RuntimeAttentionMaintenanceStatus;
   proactivePulse?: RuntimePulseStatus;
 }
 
@@ -346,6 +372,7 @@ export interface RuntimeOptions {
   activityLifecycle?: ActivityLifecycle;
   activityRecorder?: ActivityRecorder;
   threadMaintenance?: ThreadMaintenance;
+  attentionMaintenance?: AttentionMaintenance;
   orientation?: Orientation;
   now?: () => Date;
   nextId?: () => string;
@@ -394,6 +421,21 @@ export interface RunOpportunityPulseOptions {
   agentWork?: "allow" | "defer";
 }
 
+export interface RunAttentionMaintenanceOptions {
+  observedAt: Date;
+  initialDelayMs: number;
+  cadenceMs: number;
+  retryDelayMs: number;
+  agentWork?: "allow" | "defer";
+}
+
+export type RunAttentionMaintenanceResult =
+  | { disposition: "waiting"; nextRunAt: string }
+  | { disposition: "completed"; result: AttentionMaintenanceResult; nextRunAt: string }
+  | { disposition: "busy" }
+  | { disposition: "agent_work_deferred"; nextRunAt: string }
+  | { disposition: "failed"; nextRunAt: string; error: string };
+
 export type RunOpportunityPulseResult =
   | { disposition: "waiting"; nextRunAt: string }
   | { disposition: "accepted"; inputId: string; runId: string; nextRunAt: string }
@@ -407,6 +449,7 @@ export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
+  runAttentionMaintenance(options: RunAttentionMaintenanceOptions): Promise<RunAttentionMaintenanceResult>;
   advance(options?: AdvanceOptions): Promise<AdvanceResult>;
   closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;

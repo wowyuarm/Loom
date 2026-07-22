@@ -41,6 +41,7 @@ import { resolveInstanceLayout, type InstanceLayout } from "./layout.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import {
   createRevisionBoundLifeRecorder,
+  createRevisionBoundAttentionMaintenance,
   createRevisionBoundOrientation,
   createRevisionBoundThreadMaintenance,
   loadWorkspaceSkillIndex,
@@ -211,6 +212,11 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       layout,
       agentWorkspace,
     }),
+    attentionMaintenance: createRevisionBoundAttentionMaintenance({
+      revisions,
+      layout,
+      agentWorkspace,
+    }),
     threadMaintenance,
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),
     ...(options.now ? { now: options.now } : {}),
@@ -241,6 +247,9 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
         end: configuration.schedule.proactivePulse.quietHours.end,
         intervalMs: configuration.schedule.proactivePulse.quietHours.intervalMinutes * 60 * 1_000,
       },
+    },
+    attentionMaintenance: {
+      intervalMs: configuration.schedule.attentionMaintenance.intervalMinutes * 60 * 1_000,
     },
   }), nmem);
 }

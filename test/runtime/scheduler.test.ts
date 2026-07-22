@@ -10,8 +10,25 @@ import {
   type ActivityLifecycle,
   type ActivityRecorder,
   type AgentExecution,
+  type AttentionMaintenance,
   type ThreadMaintenance,
 } from "../../src/runtime/index.js";
+
+function attentionMaintainer(
+  requests: Array<{ observedAt: string; activityIds: string[] }>,
+  failure?: Error,
+): AttentionMaintenance {
+  return {
+    async maintain(request) {
+      requests.push({
+        observedAt: request.observedAt,
+        activityIds: request.recentActivities.map(activity => activity.segmentId),
+      });
+      if (failure) throw failure;
+      return { outcome: "no_change", runId: `attention-${requests.length}`, path: "attention.md" };
+    },
+  };
+}
 
 const completingExecution: AgentExecution = {
   start(request, control) {
@@ -163,6 +180,105 @@ test("advances Runtime work and closes Activity only after the idle interval", a
   assert.ok(activityId);
   assert.deepEqual(recorded, [activityId]);
   assert.equal(runtime.status().activities[0]?.status, "recorded");
+});
+
+test("schedules Attention maintenance with a durable successful Activity cursor", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-attention-"));
+  let now = new Date("2026-07-21T11:00:00.000Z");
+  const requests: Array<{ observedAt: string; activityIds: string[] }> = [];
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    attentionMaintenance: attentionMaintainer(requests),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 30 * 60 * 1_000,
+    attentionMaintenance: { intervalMs: 60 * 60 * 1_000 },
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "attention-evidence",
+    kind: "interaction",
+    payload: { text: "carry this" },
+  });
+  await scheduler.runOnce(now);
+  now = new Date("2026-07-21T11:30:00.000Z");
+  await scheduler.runOnce(now);
+  const activityId = runtime.status().activities[0]!.id;
+
+  now = new Date("2026-07-21T12:00:00.000Z");
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-21T13:00:00.000Z",
+  });
+  assert.deepEqual(requests, [{
+    observedAt: "2026-07-21T12:00:00.000Z",
+    activityIds: [activityId],
+  }]);
+  assert.deepEqual(runtime.status().attentionMaintenance?.pendingActivityIds, []);
+});
+
+test("retries the same frozen Attention evidence window after failure", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-attention-retry-"));
+  const requests: Array<{ observedAt: string; activityIds: string[] }> = [];
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const failing = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    attentionMaintenance: attentionMaintainer(requests, new Error("attention unavailable")),
+    now: () => now,
+  });
+  const firstScheduler = createScheduler({
+    runtime: failing,
+    activityIdleMs: 1,
+    attentionMaintenance: { intervalMs: 60_000, retryDelayMs: 30_000 },
+  });
+  await failing.acceptInput({ source: "test", sourceId: "first", kind: "interaction", payload: {} });
+  await firstScheduler.runOnce(now);
+  now = new Date("2026-07-21T08:00:00.001Z");
+  await firstScheduler.runOnce(now);
+  const firstActivity = failing.status().activities[0]!.id;
+  now = new Date("2026-07-21T08:01:00.000Z");
+  assert.deepEqual(await firstScheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "attention_maintenance_failed",
+  });
+
+  await failing.acceptInput({ source: "test", sourceId: "second", kind: "interaction", payload: {} });
+  await firstScheduler.runOnce(now);
+  now = new Date("2026-07-21T08:01:00.001Z");
+  await firstScheduler.runOnce(now);
+  const secondActivity = failing.status().activities[1]!.id;
+  failing.close();
+
+  now = new Date("2026-07-21T08:01:30.000Z");
+  const recovered = openRuntime({
+    root,
+    attentionMaintenance: attentionMaintainer(requests),
+    now: () => now,
+  });
+  try {
+    const retryScheduler = createScheduler({
+      runtime: recovered,
+      attentionMaintenance: { intervalMs: 60_000, retryDelayMs: 30_000 },
+    });
+    await retryScheduler.runOnce(now);
+    assert.deepEqual(requests.map(request => request.activityIds), [
+      [firstActivity],
+      [firstActivity],
+    ]);
+    assert.deepEqual(recovered.status().attentionMaintenance?.pendingActivityIds, [secondActivity]);
+  } finally {
+    recovered.close();
+  }
 });
 
 test("keeps recovered tool activity inside the idle interval", async () => {

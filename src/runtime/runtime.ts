@@ -12,6 +12,8 @@ import type {
   ActivityFreezeRequest,
   ActivityLifecycle,
   ActivityRecorder,
+  AttentionMaintenance,
+  AttentionMaintenanceResult,
   AgentExecution,
   CloseActivityOptions,
   CloseActivityResult,
@@ -42,6 +44,8 @@ import type {
   RuntimeTurnStatus,
   RunOpportunityPulseOptions,
   RunOpportunityPulseResult,
+  RunAttentionMaintenanceOptions,
+  RunAttentionMaintenanceResult,
   TranscriptAnchor,
   VerifiedToolActivity,
 } from "./types.js";
@@ -124,6 +128,16 @@ interface ThreadMaintenanceRow {
   last_error: string | null;
 }
 
+interface AttentionMaintenanceRow {
+  last_completed_at: string | null;
+  next_run_after: string;
+  cursor_sequence: number;
+  window_end_sequence: number | null;
+  attempt_count: number;
+  last_result_json: string | null;
+  last_error: string | null;
+}
+
 interface ActiveExecution {
   turnId: string;
   fencingToken: number;
@@ -140,6 +154,7 @@ class SqliteRuntime implements Runtime {
   readonly #activityRecorder: ActivityRecorder | undefined;
   readonly #orientation: Orientation | undefined;
   readonly #threadMaintenance: ThreadMaintenance | undefined;
+  readonly #attentionMaintenance: AttentionMaintenance | undefined;
   readonly #timePolicy: TimePolicy;
   readonly #now: () => Date;
   readonly #nextId: () => string;
@@ -150,6 +165,7 @@ class SqliteRuntime implements Runtime {
   #closingActivityId: string | undefined;
   #activeActivityAttemptId: string | undefined;
   #activeThreadMaintenanceId: string | undefined;
+  #attentionMaintenanceRunning = false;
   #opportunityRunning = false;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
@@ -162,6 +178,7 @@ class SqliteRuntime implements Runtime {
     this.#activityRecorder = options.activityRecorder;
     this.#orientation = options.orientation;
     this.#threadMaintenance = options.threadMaintenance;
+    this.#attentionMaintenance = options.attentionMaintenance;
     this.#timePolicy = options.timePolicy ?? createHostTimePolicy();
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
@@ -449,6 +466,57 @@ class SqliteRuntime implements Runtime {
     return this.#advanceThreadMaintenance();
   }
 
+  async runAttentionMaintenance(
+    options: RunAttentionMaintenanceOptions,
+  ): Promise<RunAttentionMaintenanceResult> {
+    assertMaintenanceOptions(options);
+    const schedule = this.#ensureAttentionSchedule(options.observedAt, options.initialDelayMs);
+    if (options.observedAt < new Date(schedule.next_run_after)) {
+      return { disposition: "waiting", nextRunAt: schedule.next_run_after };
+    }
+    if (options.agentWork === "defer") {
+      return { disposition: "agent_work_deferred", nextRunAt: schedule.next_run_after };
+    }
+    if (!this.#attentionMaintenance || this.#attentionMaintenanceRunning || !this.#isMaintenanceIdle()) {
+      return { disposition: "busy" };
+    }
+
+    const windowEnd = schedule.window_end_sequence ?? this.#latestActivitySequence();
+    const activities = this.#activitiesInSequenceRange(schedule.cursor_sequence, windowEnd);
+    this.#attentionMaintenanceRunning = true;
+    this.#database.prepare(`
+      UPDATE attention_maintenance
+      SET window_end_sequence = ?, attempt_count = attempt_count + 1
+      WHERE singleton = 1
+    `).run(windowEnd);
+    try {
+      const result = await this.#attentionMaintenance.maintain({
+        observedAt: options.observedAt.toISOString(),
+        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+        recentActivities: activities,
+      });
+      const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
+      this.#database.prepare(`
+        UPDATE attention_maintenance
+        SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
+            window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
+        WHERE singleton = 1
+      `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(result));
+      return { disposition: "completed", result, nextRunAt };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+      this.#database.prepare(`
+        UPDATE attention_maintenance
+        SET next_run_after = ?, last_error = ?
+        WHERE singleton = 1
+      `).run(nextRunAt, message.slice(0, 2_000));
+      return { disposition: "failed", nextRunAt, error: message };
+    } finally {
+      this.#attentionMaintenanceRunning = false;
+    }
+  }
+
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
     if (this.#active || this.#activeDeliveryId || this.#closingActivityId
       || this.#activeActivityAttemptId || this.#activeThreadMaintenanceId) {
@@ -534,6 +602,7 @@ class SqliteRuntime implements Runtime {
       FROM thread_maintenance
       ORDER BY created_at, activity_id
     `).all() as unknown as ThreadMaintenanceRow[];
+    const attentionMaintenance = this.#readAttentionSchedule();
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -600,6 +669,23 @@ class SqliteRuntime implements Runtime {
           : {}),
         ...(row.last_error ? { lastError: row.last_error } : {}),
       })),
+      ...(attentionMaintenance ? {
+        attentionMaintenance: {
+          ...(attentionMaintenance.last_completed_at
+            ? { lastCompletedAt: attentionMaintenance.last_completed_at }
+            : {}),
+          nextRunAfter: attentionMaintenance.next_run_after,
+          attempts: attentionMaintenance.attempt_count,
+          pendingActivityIds: this.#activitiesInSequenceRange(
+            attentionMaintenance.cursor_sequence,
+            attentionMaintenance.window_end_sequence ?? this.#latestActivitySequence(),
+          ).map(activity => activity.segmentId),
+          ...(attentionMaintenance.last_result_json
+            ? { lastResult: JSON.parse(attentionMaintenance.last_result_json) as AttentionMaintenanceResult }
+            : {}),
+          ...(attentionMaintenance.last_error ? { lastError: attentionMaintenance.last_error } : {}),
+        },
+      } : {}),
       ...(pulse ? {
         proactivePulse: {
           ...(pulse.last_pulse_at ? { lastPulseAt: pulse.last_pulse_at } : {}),
@@ -635,6 +721,57 @@ class SqliteRuntime implements Runtime {
       SELECT last_pulse_at, next_pulse_after, consecutive_failures, last_error
       FROM proactive_pulse WHERE singleton = 1
     `).get() as unknown as PulseRow | undefined;
+  }
+
+  #readAttentionSchedule(): AttentionMaintenanceRow | undefined {
+    return this.#database.prepare(`
+      SELECT last_completed_at, next_run_after, cursor_sequence, window_end_sequence,
+             attempt_count, last_result_json, last_error
+      FROM attention_maintenance WHERE singleton = 1
+    `).get() as unknown as AttentionMaintenanceRow | undefined;
+  }
+
+  #ensureAttentionSchedule(observedAt: Date, initialDelayMs: number): AttentionMaintenanceRow {
+    const existing = this.#readAttentionSchedule();
+    if (existing) return existing;
+    const nextRunAfter = new Date(observedAt.getTime() + initialDelayMs).toISOString();
+    this.#database.prepare(`
+      INSERT INTO attention_maintenance (
+        singleton, last_completed_at, next_run_after, cursor_sequence, window_end_sequence,
+        attempt_count, last_result_json, last_error
+      ) VALUES (1, NULL, ?, 0, NULL, 0, NULL, NULL)
+    `).run(nextRunAfter);
+    return this.#readAttentionSchedule()!;
+  }
+
+  #latestActivitySequence(): number {
+    const row = this.#database.prepare(`
+      SELECT COALESCE(MAX(sequence), 0) AS sequence FROM activities
+    `).get() as unknown as { sequence: number };
+    return row.sequence;
+  }
+
+  #activitiesInSequenceRange(afterSequence: number, throughSequence: number): FrozenActivity[] {
+    const rows = this.#database.prepare(`
+      SELECT frozen_activity_json FROM activities
+      WHERE sequence > ? AND sequence <= ?
+      ORDER BY sequence
+    `).all(afterSequence, throughSequence) as unknown as Array<{ frozen_activity_json: string }>;
+    return rows.map(row => JSON.parse(row.frozen_activity_json) as FrozenActivity);
+  }
+
+  #isMaintenanceIdle(): boolean {
+    return !this.#active
+      && !this.#activeDeliveryId
+      && !this.#closingActivityId
+      && !this.#activeActivityAttemptId
+      && !this.#activeThreadMaintenanceId
+      && !this.#hasRunningTurn()
+      && !this.#readActiveSegment()
+      && !this.#hasPendingInput()
+      && !this.#hasPendingDeliveryWork()
+      && !this.#hasPendingActivityRecording()
+      && !this.#hasPendingThreadMaintenance();
   }
 
   #ensurePulseSchedule(observedAt: Date, initialDelayMs: number): PulseRow {
@@ -2307,6 +2444,21 @@ class SqliteRuntime implements Runtime {
 function assertPositiveDuration(value: number, label: string): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new Error(`Opportunity Pulse ${label} must be a positive finite number`);
+  }
+}
+
+function assertMaintenanceOptions(options: RunAttentionMaintenanceOptions): void {
+  if (!Number.isFinite(options.observedAt.getTime())) {
+    throw new Error("Attention maintenance requires a valid observedAt");
+  }
+  for (const [label, value] of [
+    ["initialDelayMs", options.initialDelayMs],
+    ["cadenceMs", options.cadenceMs],
+    ["retryDelayMs", options.retryDelayMs],
+  ] as const) {
+    if (!Number.isFinite(value) || value <= 0) {
+      throw new Error(`Attention maintenance ${label} must be a positive finite number`);
+    }
   }
 }
 

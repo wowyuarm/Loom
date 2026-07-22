@@ -15,6 +15,11 @@ export interface InstanceConfiguration {
 
 export interface ScheduleConfiguration {
   proactivePulse: ProactivePulseConfiguration;
+  attentionMaintenance: AttentionMaintenanceConfiguration;
+}
+
+export interface AttentionMaintenanceConfiguration {
+  intervalMinutes: number;
 }
 
 export interface ProactivePulseConfiguration {
@@ -35,6 +40,7 @@ export const DEFAULT_SCHEDULE: ScheduleConfiguration = Object.freeze({
       intervalMinutes: 90,
     }),
   }),
+  attentionMaintenance: Object.freeze({ intervalMinutes: 360 }),
 });
 
 export const MODEL_ROLES = [
@@ -124,15 +130,15 @@ function parseInteraction(value: unknown): string | undefined {
 function parseSchedule(value: unknown): ScheduleConfiguration {
   if (value === undefined) return DEFAULT_SCHEDULE;
   if (!isObject(value)) throw new Error("Instance Configuration schedule must be an object");
-  assertOnlyKeys(value, ["proactivePulse"], "Instance Configuration schedule");
+  assertOnlyKeys(value, ["proactivePulse", "attentionMaintenance"], "Instance Configuration schedule");
   const pulse = value.proactivePulse;
-  if (pulse === undefined) return DEFAULT_SCHEDULE;
-  if (!isObject(pulse)) {
+  if (pulse !== undefined && !isObject(pulse)) {
     throw new Error("Instance Configuration schedule.proactivePulse must be an object");
   }
-  assertOnlyKeys(pulse, ["intervalMinutes", "quietHours"], "Instance Configuration schedule.proactivePulse");
-  const intervalMinutes = parsePositiveMinutes(pulse.intervalMinutes, "schedule.proactivePulse.intervalMinutes", 30);
-  const quietHours = pulse.quietHours === undefined ? DEFAULT_SCHEDULE.proactivePulse.quietHours : pulse.quietHours;
+  const pulseObject = pulse ?? {};
+  assertOnlyKeys(pulseObject, ["intervalMinutes", "quietHours"], "Instance Configuration schedule.proactivePulse");
+  const intervalMinutes = parsePositiveMinutes(pulseObject.intervalMinutes, "schedule.proactivePulse.intervalMinutes", 30);
+  const quietHours = pulseObject.quietHours === undefined ? DEFAULT_SCHEDULE.proactivePulse.quietHours : pulseObject.quietHours;
   if (!isObject(quietHours)) {
     throw new Error("Instance Configuration schedule.proactivePulse.quietHours must be an object");
   }
@@ -151,11 +157,23 @@ function parseSchedule(value: unknown): ScheduleConfiguration {
     "schedule.proactivePulse.quietHours.intervalMinutes",
     90,
   );
+  const attention = value.attentionMaintenance;
+  if (attention !== undefined && !isObject(attention)) {
+    throw new Error("Instance Configuration schedule.attentionMaintenance must be an object");
+  }
+  const attentionObject = attention ?? {};
+  assertOnlyKeys(attentionObject, ["intervalMinutes"], "Instance Configuration schedule.attentionMaintenance");
+  const attentionIntervalMinutes = parsePositiveMinutes(
+    attentionObject.intervalMinutes,
+    "schedule.attentionMaintenance.intervalMinutes",
+    DEFAULT_SCHEDULE.attentionMaintenance.intervalMinutes,
+  );
   return Object.freeze({
     proactivePulse: Object.freeze({
       intervalMinutes,
       quietHours: Object.freeze({ start, end, intervalMinutes: quietIntervalMinutes }),
     }),
+    attentionMaintenance: Object.freeze({ intervalMinutes: attentionIntervalMinutes }),
   });
 }
 
