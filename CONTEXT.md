@@ -74,6 +74,10 @@ _Avoid_: tool call, delivery, log event
 Integration 对一个 outbound Effect 的实际投递尝试及其结果。Effect 被 Runtime 接受不表示 Delivery 已成功。
 _Avoid_: message send, effect, tool result
 
+**After-chat Continuation**:
+一次 confirmed outbound Delivery 后，当前 Active Segment 可在短暂间隔后获得的有限接续机会。它不是人类来信或任务，也不要求 Individual 必须再次发言。
+_Avoid_: follow-up task, reminder, scheduled message
+
 **Transcript Anchor**:
 Runtime Store 对 Primary Agent Transcript 中已存在执行证据的可验证引用，由 transcript source、session 和 entry 共同定位。它证明记录位置，不把 Transcript 变成恢复事实源。
 _Avoid_: transcript content, summary, runtime state

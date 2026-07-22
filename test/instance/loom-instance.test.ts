@@ -241,6 +241,63 @@ test("delivers persisted Effects while cold-start model configuration is blocked
   assert.equal(second.status().runtime.deliveries[0]?.status, "delivered");
 });
 
+test("continues five minutes after confirmed Delivery through the assembled Instance", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "message", arguments: { action: "send", text: "A visible reply" } } },
+    body => {
+      const context = JSON.stringify(body);
+      assert.match(context, /<after_chat_continuation>/);
+      assert.match(context, /confirmed delivered 5 minutes ago/);
+      assert.match(context, /Do not manufacture a follow-up/);
+      return { tool: { name: "message", arguments: { action: "no_reply" } } };
+    },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl, "primary-route");
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const delivered: DeliveryAttemptRequest[] = [];
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    outboundDelivery: {
+      deliver: async request => {
+        delivered.push(request);
+        return { status: "delivered", remoteId: `remote-${delivered.length}` };
+      },
+    },
+  });
+  t.after(() => instance.close());
+
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "after-chat-input",
+    kind: "interaction",
+    payload: { text: "say something" },
+  });
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T10:05:00.000Z",
+  });
+  const segment = instance.status().runtime.activeSegment;
+  assert.ok(segment);
+  assert.equal(delivered.length, 1);
+  assert.equal(instance.status().runtime.afterChatContinuation?.status, "pending");
+
+  now = new Date("2026-07-22T10:05:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T10:30:00.000Z",
+  });
+  assert.equal(provider.requests(), 2);
+  assert.equal(delivered.length, 1);
+  assert.equal(instance.status().runtime.activeSegment?.id, segment.id);
+  assert.equal(instance.status().runtime.activeSegment?.lastActivityAt, "2026-07-22T10:00:00.000Z");
+  assert.equal(instance.status().runtime.afterChatContinuation?.status, "completed");
+});
+
 test("freezes idle Activity but defers Life Recorder work while models are blocked", async t => {
   const root = await createInstanceRoot();
   await writeIndividualMaterials(root);
@@ -964,7 +1021,7 @@ async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Pr
             role: "assistant",
             tool_calls: [{
               index: 0,
-              id: "call-1",
+              id: `call-${requestCount + 1}`,
               type: "function",
               function: {
                 name: providerResponse.tool.name,

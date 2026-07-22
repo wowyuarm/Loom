@@ -129,11 +129,19 @@ class RuntimeScheduler implements Scheduler {
 
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
-      const advanced = await this.#runtime.advance({ agentWork });
+      const advanced = await this.#runtime.advance({ agentWork, observedAt });
       const terminal = deferredResult(advanced, observedAt);
       if (terminal) return terminal;
       if (advanced.disposition === "busy") return { disposition: "busy" };
       if (advanced.disposition !== "idle") continue;
+
+      const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
+      if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") continue;
+      if (afterChat.disposition === "agent_work_deferred") {
+        return { disposition: "deferred", reason: "agent_work_not_admitted" };
+      }
+      if (afterChat.disposition === "busy") return { disposition: "busy" };
+      if (afterChat.disposition === "waiting") return afterChat;
 
       const active = this.#runtime.status().activeSegment;
       if (!active) {

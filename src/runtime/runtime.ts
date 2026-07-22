@@ -34,6 +34,7 @@ import type {
   JsonValue,
   RunningExecution,
   Runtime,
+  RuntimeAfterChatContinuationStatus,
   RuntimeDeliveryStatus,
   RuntimeEffectStatus,
   RuntimeInput,
@@ -46,6 +47,8 @@ import type {
   RuntimeTurnStatus,
   RunOpportunityPulseOptions,
   RunOpportunityPulseResult,
+  RunAfterChatContinuationOptions,
+  RunAfterChatContinuationResult,
   RunAttentionMaintenanceOptions,
   RunAttentionMaintenanceResult,
   RunMemoryReflectionOptions,
@@ -151,6 +154,25 @@ interface MemoryReflectionRow {
   last_error: string | null;
 }
 
+interface AfterChatContinuationRow {
+  id: string;
+  status: RuntimeAfterChatContinuationStatus["status"];
+  source_delivery_id: string;
+  source_effect_id: string;
+  source_turn_id: string;
+  source_segment_id: string;
+  source_behavior: RuntimeAfterChatContinuationStatus["sourceBehavior"];
+  delivered_at: string;
+  due_at: string;
+  expires_at: string;
+  input_id: string | null;
+  ended_at: string | null;
+  reason: string | null;
+}
+
+const AFTER_CHAT_DELAY_MS = 5 * 60 * 1_000;
+const AFTER_CHAT_EXPIRY_MS = 20 * 60 * 1_000;
+
 interface ActiveExecution {
   turnId: string;
   fencingToken: number;
@@ -210,6 +232,9 @@ class SqliteRuntime implements Runtime {
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
     if (!input.source || !input.sourceId) throw new Error("Runtime input requires source and sourceId");
+    if ((input as { kind: string }).kind === "continuation") {
+      throw new Error("After-chat continuation is admitted only by Runtime lifecycle");
+    }
     const id = this.#nextId();
     const accepted = this.#transaction(() => {
       const existing = this.#findInput(input.source, input.sourceId);
@@ -229,6 +254,7 @@ class SqliteRuntime implements Runtime {
         now.toISOString(),
       );
       if (result.changes === 1) {
+        if (input.kind === "interaction") this.#cancelPendingAfterChat(now, "new_human_input");
         this.#recordTransition("input", id, null, "pending", "accepted", now, null);
         return { disposition: "accepted", inputId: id } as const;
       }
@@ -253,6 +279,77 @@ class SqliteRuntime implements Runtime {
 
   async formOpportunity(): Promise<FormOpportunityResult> {
     return this.#formOpportunityAt(this.#now());
+  }
+
+  async runAfterChatContinuation(
+    options: RunAfterChatContinuationOptions,
+  ): Promise<RunAfterChatContinuationResult> {
+    if (!Number.isFinite(options.observedAt.getTime())) {
+      throw new Error("After-chat continuation requires a valid observedAt");
+    }
+    return this.#transaction(() => {
+      const continuation = this.#readAfterChatContinuation();
+      if (continuation?.status !== "pending") return { disposition: "none" } as const;
+      if (options.observedAt.getTime() >= Date.parse(continuation.expires_at)) {
+        this.#finishPendingAfterChat(continuation, "expired", options.observedAt, "expired");
+        return { disposition: "expired" } as const;
+      }
+      if (options.observedAt.getTime() < Date.parse(continuation.due_at)) {
+        return { disposition: "waiting", nextRunAt: continuation.due_at } as const;
+      }
+      if (options.agentWork === "defer") {
+        return { disposition: "agent_work_deferred", nextRunAt: continuation.expires_at } as const;
+      }
+      if (this.#active || this.#hasRunningTurn()) return { disposition: "busy" } as const;
+      const segment = this.#readActiveSegment();
+      if (!segment || segment.status !== "active" || segment.id !== continuation.source_segment_id) {
+        this.#finishPendingAfterChat(
+          continuation,
+          "expired",
+          options.observedAt,
+          "source_activity_unavailable",
+        );
+        return { disposition: "expired" } as const;
+      }
+
+      const inputId = this.#nextId();
+      const acceptedAt = this.#now();
+      this.#database.prepare(`
+        INSERT INTO inputs (
+          id, source, source_id, kind, payload_json, occurred_at, accepted_at, status
+        ) VALUES (?, 'after-chat', ?, 'continuation', ?, ?, ?, 'pending')
+      `).run(
+        inputId,
+        continuation.id,
+        JSON.stringify({
+          version: 1,
+          observedAt: options.observedAt.toISOString(),
+          deliveredAt: continuation.delivered_at,
+          sourceTurnId: continuation.source_turn_id,
+          sourceEffectId: continuation.source_effect_id,
+          sourceBehavior: continuation.source_behavior,
+        }),
+        options.observedAt.toISOString(),
+        acceptedAt.toISOString(),
+      );
+      const changed = this.#database.prepare(`
+        UPDATE after_chat_continuation
+        SET status = 'admitted', input_id = ?
+        WHERE singleton = 1 AND id = ? AND status = 'pending'
+      `).run(inputId, continuation.id);
+      if (changed.changes !== 1) throw new Error(`After-chat continuation ${continuation.id} lost admission`);
+      this.#recordTransition("input", inputId, null, "pending", "after_chat_admitted", acceptedAt, null);
+      this.#recordTransition(
+        "after_chat_continuation",
+        continuation.id,
+        "pending",
+        "admitted",
+        "due",
+        acceptedAt,
+        null,
+      );
+      return { disposition: "admitted", inputId } as const;
+    });
   }
 
   async runOpportunityPulse(
@@ -360,6 +457,7 @@ class SqliteRuntime implements Runtime {
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
     this.#reconcileExpiredThreadMaintenance();
+    this.#expireAfterChatContinuation(options.observedAt ?? this.#now());
     if (this.#hasRunningTurn()) return { disposition: "busy" };
 
     if (this.#outboundDelivery) {
@@ -671,6 +769,7 @@ class SqliteRuntime implements Runtime {
     `).all() as unknown as ThreadMaintenanceRow[];
     const attentionMaintenance = this.#readAttentionSchedule();
     const memoryReflection = this.#readMemoryReflectionSchedule();
+    const afterChatContinuation = this.#readAfterChatContinuation();
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -778,6 +877,23 @@ class SqliteRuntime implements Runtime {
           ...(pulse.last_error ? { lastError: pulse.last_error } : {}),
         },
       } : {}),
+      ...(afterChatContinuation ? {
+        afterChatContinuation: {
+          id: afterChatContinuation.id,
+          status: afterChatContinuation.status,
+          sourceDeliveryId: afterChatContinuation.source_delivery_id,
+          sourceEffectId: afterChatContinuation.source_effect_id,
+          sourceTurnId: afterChatContinuation.source_turn_id,
+          sourceSegmentId: afterChatContinuation.source_segment_id,
+          sourceBehavior: afterChatContinuation.source_behavior,
+          deliveredAt: afterChatContinuation.delivered_at,
+          dueAt: afterChatContinuation.due_at,
+          expiresAt: afterChatContinuation.expires_at,
+          ...(afterChatContinuation.input_id ? { inputId: afterChatContinuation.input_id } : {}),
+          ...(afterChatContinuation.ended_at ? { endedAt: afterChatContinuation.ended_at } : {}),
+          ...(afterChatContinuation.reason ? { reason: afterChatContinuation.reason } : {}),
+        },
+      } : {}),
     };
   }
 
@@ -805,6 +921,152 @@ class SqliteRuntime implements Runtime {
       SELECT last_pulse_at, next_pulse_after, consecutive_failures, last_error
       FROM proactive_pulse WHERE singleton = 1
     `).get() as unknown as PulseRow | undefined;
+  }
+
+  #readAfterChatContinuation(): AfterChatContinuationRow | undefined {
+    return this.#database.prepare(`
+      SELECT id, status, source_delivery_id, source_effect_id, source_turn_id,
+             source_segment_id, source_behavior, delivered_at, due_at, expires_at,
+             input_id, ended_at, reason
+      FROM after_chat_continuation WHERE singleton = 1
+    `).get() as unknown as AfterChatContinuationRow | undefined;
+  }
+
+  #cancelPendingAfterChat(cancelledAt: Date, reason: string): void {
+    const continuation = this.#readAfterChatContinuation();
+    if (continuation?.status !== "pending" && continuation?.status !== "admitted") return;
+    let admittedInputId: string | undefined;
+    let hasTurnEvidence = false;
+    if (continuation.status === "admitted") {
+      const running = continuation.input_id && this.#database.prepare(`
+        SELECT 1 FROM inputs WHERE id = ? AND status = 'active'
+      `).get(continuation.input_id);
+      if (running) return;
+      admittedInputId = continuation.input_id ?? undefined;
+      hasTurnEvidence = Boolean(admittedInputId && this.#database.prepare(`
+        SELECT 1 FROM turn_inputs WHERE input_id = ? LIMIT 1
+      `).get(admittedInputId));
+    }
+    const changed = this.#database.prepare(`
+      UPDATE after_chat_continuation
+      SET status = 'cancelled', input_id = ?, ended_at = ?, reason = ?
+      WHERE singleton = 1 AND id = ? AND status = ?
+    `).run(
+      hasTurnEvidence ? admittedInputId! : null,
+      cancelledAt.toISOString(),
+      reason,
+      continuation.id,
+      continuation.status,
+    );
+    if (changed.changes !== 1) return;
+    if (admittedInputId) {
+      if (hasTurnEvidence) {
+        const blocked = this.#database.prepare(`
+          UPDATE inputs SET status = 'blocked'
+          WHERE id = ? AND status = 'pending'
+        `).run(admittedInputId);
+        if (blocked.changes !== 1) {
+          throw new Error(`After-chat continuation ${continuation.id} lost admitted Input at cancellation`);
+        }
+        this.#recordTransition(
+          "input",
+          admittedInputId,
+          "pending",
+          "blocked",
+          reason,
+          cancelledAt,
+          null,
+        );
+      } else {
+        const removed = this.#database.prepare(`
+          DELETE FROM inputs WHERE id = ? AND status = 'pending'
+        `).run(admittedInputId);
+        if (removed.changes !== 1) {
+          throw new Error(`After-chat continuation ${continuation.id} lost unclaimed Input at cancellation`);
+        }
+      }
+    }
+    this.#recordTransition(
+      "after_chat_continuation",
+      continuation.id,
+      continuation.status,
+      "cancelled",
+      reason,
+      cancelledAt,
+      null,
+    );
+  }
+
+  #finishPendingAfterChat(
+    continuation: AfterChatContinuationRow,
+    status: "expired" | "cancelled",
+    endedAt: Date,
+    reason: string,
+  ): void {
+    const changed = this.#database.prepare(`
+      UPDATE after_chat_continuation
+      SET status = ?, ended_at = ?, reason = ?
+      WHERE singleton = 1 AND id = ? AND status = 'pending'
+    `).run(status, endedAt.toISOString(), reason, continuation.id);
+    if (changed.changes !== 1) return;
+    this.#recordTransition(
+      "after_chat_continuation",
+      continuation.id,
+      "pending",
+      status,
+      reason,
+      endedAt,
+      null,
+    );
+  }
+
+  #expireAfterChatContinuation(observedAt: Date): void {
+    this.#transaction(() => {
+      const continuation = this.#readAfterChatContinuation();
+      if (!continuation
+        || (continuation.status !== "pending" && continuation.status !== "admitted")
+        || observedAt.getTime() < Date.parse(continuation.expires_at)) return;
+      if (continuation.status === "admitted" && continuation.input_id) {
+        const pendingInput = this.#database.prepare(`
+          SELECT 1 FROM inputs WHERE id = ? AND status = 'pending'
+        `).get(continuation.input_id);
+        if (!pendingInput) return;
+        const changed = this.#database.prepare(`
+          UPDATE after_chat_continuation
+          SET status = 'expired', ended_at = ?, reason = 'expired'
+          WHERE singleton = 1 AND id = ? AND status = 'admitted'
+        `).run(observedAt.toISOString(), continuation.id);
+        if (changed.changes !== 1) return;
+        const blocked = this.#database.prepare(`
+          UPDATE inputs SET status = 'blocked' WHERE id = ? AND status = 'pending'
+        `).run(continuation.input_id);
+        if (blocked.changes !== 1) {
+          throw new Error(`After-chat continuation ${continuation.id} lost admitted Input at expiry`);
+        }
+        this.#recordTransition(
+          "input",
+          continuation.input_id,
+          "pending",
+          "blocked",
+          "expired",
+          observedAt,
+          null,
+        );
+        this.#recordTransition(
+          "after_chat_continuation",
+          continuation.id,
+          "admitted",
+          "expired",
+          "expired",
+          observedAt,
+          null,
+        );
+        return;
+      }
+      if (continuation.status === "pending") {
+        this.#finishPendingAfterChat(continuation, "expired", observedAt, "expired");
+      }
+    });
   }
 
   #readAttentionSchedule(): AttentionMaintenanceRow | undefined {
@@ -1091,7 +1353,8 @@ class SqliteRuntime implements Runtime {
     | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
     | undefined {
     return this.#transaction(() => {
-      if (this.#hasRunningTurn() || this.#hasPendingInput() || this.#hasPendingDeliveryWork()) return undefined;
+      if (this.#hasRunningTurn() || this.#hasPendingInput() || this.#hasPendingDeliveryWork()
+        || this.#readAfterChatContinuation()?.status === "pending") return undefined;
       const segment = this.#readActiveSegment();
       if (!segment || segment.id !== segmentId || segment.status !== "active") return undefined;
       const idleDue = closePolicy.inactiveBefore !== undefined
@@ -1421,6 +1684,7 @@ class SqliteRuntime implements Runtime {
         `).run(now.toISOString(), turn.id, turn.fencing_token);
         this.#recordTransition("turn", turn.id, "running", "interrupted", "lease_expired", now, turn.fencing_token);
         this.#settleInputsAfterStoppedTurn(turn.id, "interrupted", now, turn.fencing_token);
+        this.#settleAfterChatContinuationFromStoppedTurn(turn.id, now, turn.fencing_token);
       }
     });
   }
@@ -2007,7 +2271,8 @@ class SqliteRuntime implements Runtime {
         this.#ownerId,
       );
       if (changed.changes !== 1) throw new Error(`Turn ${turnId} no longer accepts writes from lease ${fencingToken}`);
-      this.#touchSegmentForTurn(turnId, now);
+      const quietContinuation = this.#turnBeginsWithContinuation(turnId);
+      if (!quietContinuation) this.#touchSegmentForTurn(turnId, now);
       const preparedState = this.#readExecutionState().executionState;
       if (preparedState === undefined) {
         throw new Error(`Turn ${turnId} did not prepare execution state before completion`);
@@ -2037,6 +2302,7 @@ class SqliteRuntime implements Runtime {
       for (const input of activeInputs) {
         this.#recordTransition("input", input.id, "active", "consumed", "turn_completed", now, fencingToken);
       }
+      if (quietContinuation) this.#completeAfterChatContinuation(turnId, now, fencingToken);
     });
   }
 
@@ -2206,9 +2472,10 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).run(now.toISOString(), error instanceof Error ? error.message : String(error), turnId, fencingToken, this.#ownerId);
       if (changed.changes !== 1) return;
-      this.#touchSegmentForTurn(turnId, now);
+      if (!this.#turnBeginsWithContinuation(turnId)) this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("turn", turnId, "running", "failed", "execution_failed", now, fencingToken);
       this.#settleInputsAfterStoppedTurn(turnId, "failed", now, fencingToken);
+      this.#settleAfterChatContinuationFromStoppedTurn(turnId, now, fencingToken);
     });
   }
 
@@ -2316,12 +2583,15 @@ class SqliteRuntime implements Runtime {
         throw new Error(`Input ${inputId} was not prepared for Turn ${turnId}`);
       }
 
+      const inputKind = this.#database.prepare(`
+        SELECT kind FROM inputs WHERE id = ? AND status = 'pending'
+      `).get(inputId) as unknown as { kind: InputKind } | undefined;
       const input = this.#database.prepare(`
         UPDATE inputs SET status = 'active', active_turn_id = ?
         WHERE id = ? AND status = 'pending'
       `).run(turnId, inputId);
       if (input.changes !== 1) throw new Error(`Input ${inputId} could not join Turn ${turnId}`);
-      this.#touchSegmentForTurn(turnId, now);
+      if (inputKind?.kind !== "continuation") this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("input", inputId, "pending", "active", "execution_included", now, fencingToken);
     });
   }
@@ -2428,7 +2698,82 @@ class SqliteRuntime implements Runtime {
       if (effectState !== "pending") {
         this.#recordTransition("effect", attempt.effect_id, "pending", effectState, `delivery_${observation.status}`, now, fencingToken);
       }
+      if (observation.status === "delivered") {
+        this.#scheduleAfterChatContinuation(attempt.effect_id, attemptId, now);
+      }
     });
+  }
+
+  #scheduleAfterChatContinuation(effectId: string, deliveryId: string, deliveredAt: Date): void {
+    const source = this.#database.prepare(`
+      SELECT turns.id AS turn_id, turns.segment_id, inputs.kind AS input_kind
+      FROM effects
+      JOIN turns ON turns.id = effects.turn_id
+      JOIN turn_inputs ON turn_inputs.turn_id = turns.id AND turn_inputs.position = 1
+      JOIN inputs ON inputs.id = turn_inputs.input_id
+      WHERE effects.id = ? AND turn_inputs.inclusion_status = 'included'
+    `).get(effectId) as unknown as {
+      turn_id: string;
+      segment_id: string;
+      input_kind: InputKind;
+    } | undefined;
+    if (!source || source.input_kind === "continuation") return;
+
+    const previous = this.#readAfterChatContinuation();
+    if (previous?.status === "pending") {
+      this.#recordTransition(
+        "after_chat_continuation",
+        previous.id,
+        "pending",
+        "cancelled",
+        "superseded_by_delivery",
+        deliveredAt,
+        null,
+      );
+    }
+    const id = this.#nextId();
+    const dueAt = new Date(deliveredAt.getTime() + AFTER_CHAT_DELAY_MS).toISOString();
+    const expiresAt = new Date(deliveredAt.getTime() + AFTER_CHAT_EXPIRY_MS).toISOString();
+    this.#database.prepare(`
+      INSERT INTO after_chat_continuation (
+        singleton, id, status, source_delivery_id, source_effect_id, source_turn_id,
+        source_segment_id, source_behavior, delivered_at, due_at, expires_at,
+        input_id, ended_at, reason
+      ) VALUES (1, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+      ON CONFLICT(singleton) DO UPDATE SET
+        id = excluded.id,
+        status = excluded.status,
+        source_delivery_id = excluded.source_delivery_id,
+        source_effect_id = excluded.source_effect_id,
+        source_turn_id = excluded.source_turn_id,
+        source_segment_id = excluded.source_segment_id,
+        source_behavior = excluded.source_behavior,
+        delivered_at = excluded.delivered_at,
+        due_at = excluded.due_at,
+        expires_at = excluded.expires_at,
+        input_id = NULL,
+        ended_at = NULL,
+        reason = NULL
+    `).run(
+      id,
+      deliveryId,
+      effectId,
+      source.turn_id,
+      source.segment_id,
+      source.input_kind === "opportunity" ? "background" : "interaction",
+      deliveredAt.toISOString(),
+      dueAt,
+      expiresAt,
+    );
+    this.#recordTransition(
+      "after_chat_continuation",
+      id,
+      null,
+      "pending",
+      "delivery_confirmed",
+      deliveredAt,
+      null,
+    );
   }
 
   async #steerInput(
@@ -2529,6 +2874,79 @@ class SqliteRuntime implements Runtime {
       WHERE singleton = 1 AND status = 'active'
         AND id = (SELECT segment_id FROM turns WHERE id = ?)
     `).run(now.toISOString(), turnId);
+  }
+
+  #turnBeginsWithContinuation(turnId: string): boolean {
+    return Boolean(this.#database.prepare(`
+      SELECT 1
+      FROM turn_inputs
+      JOIN inputs ON inputs.id = turn_inputs.input_id
+      WHERE turn_inputs.turn_id = ? AND turn_inputs.position = 1
+        AND turn_inputs.inclusion_status = 'included'
+        AND inputs.kind = 'continuation'
+    `).get(turnId));
+  }
+
+  #completeAfterChatContinuation(turnId: string, completedAt: Date, fencingToken: number): void {
+    const continuation = this.#database.prepare(`
+      SELECT after_chat_continuation.id
+      FROM after_chat_continuation
+      JOIN turn_inputs ON turn_inputs.input_id = after_chat_continuation.input_id
+      WHERE after_chat_continuation.singleton = 1
+        AND after_chat_continuation.status = 'admitted'
+        AND turn_inputs.turn_id = ?
+        AND turn_inputs.inclusion_status = 'included'
+    `).get(turnId) as unknown as { id: string } | undefined;
+    if (!continuation) return;
+    const changed = this.#database.prepare(`
+      UPDATE after_chat_continuation
+      SET status = 'completed', ended_at = ?, reason = NULL
+      WHERE singleton = 1 AND id = ? AND status = 'admitted'
+    `).run(completedAt.toISOString(), continuation.id);
+    if (changed.changes !== 1) return;
+    this.#recordTransition(
+      "after_chat_continuation",
+      continuation.id,
+      "admitted",
+      "completed",
+      "turn_completed",
+      completedAt,
+      fencingToken,
+    );
+  }
+
+  #settleAfterChatContinuationFromStoppedTurn(
+    turnId: string,
+    stoppedAt: Date,
+    fencingToken: number,
+  ): void {
+    const continuation = this.#database.prepare(`
+      SELECT after_chat_continuation.id, after_chat_continuation.input_id
+      FROM after_chat_continuation
+      JOIN turn_inputs ON turn_inputs.input_id = after_chat_continuation.input_id
+      JOIN inputs ON inputs.id = turn_inputs.input_id
+      WHERE after_chat_continuation.singleton = 1
+        AND after_chat_continuation.status = 'admitted'
+        AND turn_inputs.turn_id = ?
+        AND turn_inputs.inclusion_status = 'included'
+        AND inputs.status = 'consumed'
+    `).get(turnId) as unknown as { id: string; input_id: string } | undefined;
+    if (!continuation) return;
+    const changed = this.#database.prepare(`
+      UPDATE after_chat_continuation
+      SET status = 'completed', ended_at = ?, reason = 'turn_stopped_after_activity'
+      WHERE singleton = 1 AND id = ? AND status = 'admitted'
+    `).run(stoppedAt.toISOString(), continuation.id);
+    if (changed.changes !== 1) return;
+    this.#recordTransition(
+      "after_chat_continuation",
+      continuation.id,
+      "admitted",
+      "completed",
+      "turn_stopped_after_activity",
+      stoppedAt,
+      fencingToken,
+    );
   }
 
   #touchSegmentForEffect(effectId: string, now: Date): void {

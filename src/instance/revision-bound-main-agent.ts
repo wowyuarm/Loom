@@ -2,7 +2,11 @@ import path from "node:path";
 
 import type { ModelRuntimeRevision, ModelRuntimeRevisions } from "../configuration/index.js";
 import { createPiToolTraceCompactor } from "../agents/tool-trace-compactor.js";
-import { createPiAgentExecution, type PiAgentExecution } from "../main-agent/pi-execution.js";
+import {
+  behaviorForInput,
+  createPiAgentExecution,
+  type PiAgentExecution,
+} from "../main-agent/pi-execution.js";
 import { HARNESS_SYSTEM_GUIDANCE } from "../main-agent/system-guidance.js";
 import type {
   AgentExecution,
@@ -44,7 +48,11 @@ class RevisionBoundMainAgent implements AgentExecution {
     request: TurnRequest,
     control: TurnControl,
   ): Promise<{ execution: PiAgentExecution; running: RunningExecution }> {
-    const role = request.inputs[0]?.kind === "opportunity" ? "main-background" : "main-interaction";
+    const initialInput = request.inputs[0];
+    if (!initialInput) throw new Error("Main Agent Turn requires an initial Input");
+    const role = behaviorForInput(initialInput) === "opportunity"
+      ? "main-background"
+      : "main-interaction";
     const main = firstCandidate(revision, role);
     const compactorModel = firstCandidate(revision, "tool-trace-compactor");
     const compactor = await createPiToolTraceCompactor({

@@ -1,12 +1,13 @@
 import type { TimePolicy } from "../configuration/index.js";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
-export type InputKind = "interaction" | "opportunity";
+export type InputKind = "interaction" | "opportunity" | "continuation";
+export type RuntimeInputKind = Exclude<InputKind, "continuation">;
 
 export interface RuntimeInput {
   source: string;
   sourceId: string;
-  kind: InputKind;
+  kind: RuntimeInputKind;
   payload: JsonValue;
   occurredAt?: string;
 }
@@ -375,6 +376,22 @@ export interface RuntimeMemoryReflectionStatus {
   lastError?: string;
 }
 
+export interface RuntimeAfterChatContinuationStatus {
+  id: string;
+  status: "pending" | "admitted" | "cancelled" | "expired" | "completed";
+  sourceDeliveryId: string;
+  sourceEffectId: string;
+  sourceTurnId: string;
+  sourceSegmentId: string;
+  sourceBehavior: "interaction" | "background";
+  deliveredAt: string;
+  dueAt: string;
+  expiresAt: string;
+  inputId?: string;
+  endedAt?: string;
+  reason?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
@@ -390,6 +407,7 @@ export interface RuntimeStatus {
   attentionMaintenance?: RuntimeAttentionMaintenanceStatus;
   memoryReflection?: RuntimeMemoryReflectionStatus;
   proactivePulse?: RuntimePulseStatus;
+  afterChatContinuation?: RuntimeAfterChatContinuationStatus;
 }
 
 export interface RuntimeOptions {
@@ -411,6 +429,7 @@ export interface RuntimeOptions {
 
 export interface AdvanceOptions {
   agentWork?: "allow" | "defer";
+  observedAt?: Date;
 }
 
 export type AdvanceResult =
@@ -450,6 +469,19 @@ export interface RunOpportunityPulseOptions {
   retryDelayMs: number;
   agentWork?: "allow" | "defer";
 }
+
+export interface RunAfterChatContinuationOptions {
+  observedAt: Date;
+  agentWork?: "allow" | "defer";
+}
+
+export type RunAfterChatContinuationResult =
+  | { disposition: "none" }
+  | { disposition: "waiting"; nextRunAt: string }
+  | { disposition: "admitted"; inputId: string }
+  | { disposition: "expired" }
+  | { disposition: "agent_work_deferred"; nextRunAt: string }
+  | { disposition: "busy" };
 
 export interface RunAttentionMaintenanceOptions {
   observedAt: Date;
@@ -493,6 +525,7 @@ export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
+  runAfterChatContinuation(options: RunAfterChatContinuationOptions): Promise<RunAfterChatContinuationResult>;
   runAttentionMaintenance(options: RunAttentionMaintenanceOptions): Promise<RunAttentionMaintenanceResult>;
   runMemoryReflection(options: RunMemoryReflectionOptions): Promise<RunMemoryReflectionResult>;
   advance(options?: AdvanceOptions): Promise<AdvanceResult>;

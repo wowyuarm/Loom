@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 
 export function initializeRuntimeSchema(database: DatabaseSync): void {
+  const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (version.user_version === 11) migrateVersion11(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -11,7 +13,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
       source_id TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('interaction', 'opportunity')),
+      kind TEXT NOT NULL CHECK (kind IN ('interaction', 'opportunity', 'continuation')),
       payload_json TEXT NOT NULL,
       occurred_at TEXT NOT NULL,
       accepted_at TEXT NOT NULL,
@@ -202,6 +204,85 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       last_error TEXT
     ) STRICT;
 
-    PRAGMA user_version = 11;
+    CREATE TABLE IF NOT EXISTS after_chat_continuation (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      id TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'admitted', 'cancelled', 'expired', 'completed')),
+      source_delivery_id TEXT NOT NULL REFERENCES delivery_attempts(id),
+      source_effect_id TEXT NOT NULL REFERENCES effects(id),
+      source_turn_id TEXT NOT NULL REFERENCES turns(id),
+      source_segment_id TEXT NOT NULL,
+      source_behavior TEXT NOT NULL CHECK (source_behavior IN ('interaction', 'background')),
+      delivered_at TEXT NOT NULL,
+      due_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      input_id TEXT REFERENCES inputs(id),
+      ended_at TEXT,
+      reason TEXT
+    ) STRICT;
+
+    PRAGMA user_version = 12;
   `);
+}
+
+function migrateVersion11(database: DatabaseSync): void {
+  database.exec("PRAGMA foreign_keys = OFF");
+  try {
+    database.exec(`
+      BEGIN IMMEDIATE;
+
+      ALTER TABLE turn_inputs RENAME TO turn_inputs_v11;
+      ALTER TABLE inputs RENAME TO inputs_v11;
+
+      CREATE TABLE inputs (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('interaction', 'opportunity', 'continuation')),
+        payload_json TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'consumed', 'blocked')),
+        active_turn_id TEXT,
+        UNIQUE (source, source_id)
+      ) STRICT;
+
+      INSERT INTO inputs (
+        id, source, source_id, kind, payload_json, occurred_at, accepted_at, status, active_turn_id
+      )
+      SELECT id, source, source_id, kind, payload_json, occurred_at, accepted_at, status, active_turn_id
+      FROM inputs_v11;
+
+      CREATE TABLE turn_inputs (
+        turn_id TEXT NOT NULL REFERENCES turns(id),
+        input_id TEXT NOT NULL REFERENCES inputs(id),
+        position INTEGER NOT NULL CHECK (position > 0),
+        inclusion_status TEXT NOT NULL CHECK (inclusion_status IN ('prepared', 'included', 'rejected')),
+        included_at TEXT,
+        inclusion_anchor_json TEXT,
+        PRIMARY KEY (turn_id, input_id),
+        UNIQUE (turn_id, position)
+      ) STRICT;
+
+      INSERT INTO turn_inputs (
+        turn_id, input_id, position, inclusion_status, included_at, inclusion_anchor_json
+      )
+      SELECT turn_id, input_id, position, inclusion_status, included_at, inclusion_anchor_json
+      FROM turn_inputs_v11;
+
+      DROP TABLE turn_inputs_v11;
+      DROP TABLE inputs_v11;
+      PRAGMA user_version = 12;
+      COMMIT;
+    `);
+  } catch (error) {
+    try {
+      database.exec("ROLLBACK");
+    } catch {
+      // The failing statement may already have ended the transaction.
+    }
+    throw error;
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
 }

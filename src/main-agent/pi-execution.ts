@@ -28,6 +28,7 @@ import type {
 import type {
   AgentWorkspace,
   AgentWorkspaceTurnSnapshot,
+  WorkspaceTurnKind,
 } from "../workspace/agent-workspace.js";
 import {
   type InputAnnotationReference,
@@ -263,7 +264,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       const restoredWindow = parseContextWindowState(request.executionState);
       await this.#selectCommittedBranch(restoredWindow, request.recordingDay, sessionManager);
       const [workspaceSnapshot, materials, dailyContext] = await Promise.all([
-        this.agentWorkspace.loadTurnSnapshot(request.inputs[0]!.kind),
+        this.agentWorkspace.loadTurnSnapshot(behaviorForInput(request.inputs[0]!)),
         this.loadContextMaterials(request),
         restoredWindow
           ? Promise.resolve(undefined)
@@ -616,6 +617,7 @@ async function exists(target: string): Promise<boolean> {
 
 function inputText(input: ExecutionInput, withinOpportunityTurn = false): string {
   if (input.kind === "opportunity") return opportunityInputText(input);
+  if (input.kind === "continuation") return afterChatContinuationInputText(input);
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
     const text = input.payload.text;
     if (typeof text === "string") {
@@ -631,6 +633,45 @@ function inputText(input: ExecutionInput, withinOpportunityTurn = false): string
     }
   }
   return JSON.stringify(input.payload);
+}
+
+function afterChatContinuationInputText(input: ExecutionInput): string {
+  if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+    throw new Error("Continuation Input requires a structured payload");
+  }
+  const observedAt = input.payload.observedAt;
+  const deliveredAt = input.payload.deliveredAt;
+  if (typeof observedAt !== "string" || Number.isNaN(Date.parse(observedAt))) {
+    throw new Error("Continuation Input requires observedAt");
+  }
+  if (typeof deliveredAt !== "string" || Number.isNaN(Date.parse(deliveredAt))) {
+    throw new Error("Continuation Input requires deliveredAt");
+  }
+  return [
+    "<after_chat_continuation>",
+    `Observed at: ${observedAt}`,
+    `A message from the current activity was confirmed delivered ${elapsedTime(observedAt, deliveredAt)} ago.`,
+    "No new human Input has been accepted since that delivery.",
+    "</after_chat_continuation>",
+    "",
+    "This is not a human message or a task. The recent exchange may simply still be present.",
+    "",
+    "If something genuinely remains, you may look into it, continue private work, or say it through message. If nothing does, use message.no_reply and let it pass.",
+    "",
+    "Do not manufacture a follow-up merely because this continuation occurred.",
+  ].join("\n");
+}
+
+export function behaviorForInput(
+  input: Pick<ExecutionInput, "kind" | "payload">,
+): WorkspaceTurnKind {
+  if (input.kind === "interaction") return "interaction";
+  if (input.kind === "opportunity") return "opportunity";
+  if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
+    if (input.payload.sourceBehavior === "interaction") return "interaction";
+    if (input.payload.sourceBehavior === "background") return "opportunity";
+  }
+  throw new Error("Continuation Input requires a source Behavior");
 }
 
 function opportunityInputText(input: ExecutionInput): string {

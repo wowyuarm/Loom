@@ -723,6 +723,82 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   await running.result;
 });
 
+test("continues after chat in the current Context with the source background Behavior", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-after-chat-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("committed background reply"),
+    context => {
+      const systemPrompt = context.systemPrompt ?? "";
+      assert.match(systemPrompt, /background behavior/);
+      assert.doesNotMatch(systemPrompt, /interaction behavior/);
+      const messages = JSON.stringify(context.messages);
+      const attention = messages.indexOf("current attention");
+      const bridge = messages.indexOf("recent activity bridge");
+      const committed = messages.indexOf("committed background reply");
+      const continuation = messages.indexOf("<after_chat_continuation>");
+      assert.ok(attention >= 0 && attention < bridge);
+      assert.ok(bridge < committed);
+      assert.ok(committed < continuation);
+      assert.match(messages, /Observed at: 2026-07-19T00:05:00.000Z/);
+      assert.match(messages, /confirmed delivered 5 minutes ago/);
+      assert.match(messages, /No new human Input has been accepted since that delivery/);
+      assert.match(messages, /This is not a human message or a task/);
+      assert.match(messages, /use message.no_reply and let it pass/);
+      assert.match(messages, /Do not manufacture a follow-up/);
+      return fauxAssistantMessage("quiet continuation");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    loadContextMaterials: async () => ({
+      turnLive: [],
+      windowFrozen: [contextMessage("recent activity bridge")],
+    }),
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-background",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [{
+      ...executionInput("input-background", "background"),
+      kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "A recent exchange still has a live edge.",
+        observedAt: "2026-07-19T00:00:00.000Z",
+      },
+    }],
+  }, noEffectControl()).result;
+
+  await execution.start({
+    turnId: "turn-after-chat",
+    leaseToken: 2,
+    recordingDay: "2026-07-19",
+    inputs: [{
+      ...executionInput("input-after-chat", "after chat"),
+      kind: "continuation",
+      payload: {
+        version: 1,
+        observedAt: "2026-07-19T00:05:00.000Z",
+        deliveredAt: "2026-07-19T00:00:00.000Z",
+        sourceTurnId: "turn-background",
+        sourceEffectId: "effect-background",
+        sourceBehavior: "background",
+      },
+    }],
+    executionState: first.executionState,
+  }, noEffectControl()).result;
+});
+
 test("records a successful ordinary tool before the provider can continue", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-activity-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
