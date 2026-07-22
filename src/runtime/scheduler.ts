@@ -1,6 +1,7 @@
 import type { AdvanceResult, Runtime } from "./types.js";
 
 export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
+export const DEFAULT_ACTIVITY_MAX_MS = 2 * 60 * 60 * 1_000;
 export const DEFAULT_PULSE_RETRY_MS = 5 * 60 * 1_000;
 export const DEFAULT_MAINTENANCE_RETRY_MS = 15 * 60 * 1_000;
 
@@ -19,6 +20,7 @@ export interface SchedulerPulsePolicy {
 export interface SchedulerOptions {
   runtime: Runtime;
   activityIdleMs?: number;
+  activityMaxMs?: number;
   admitAgentWork?: () => boolean | Promise<boolean>;
   proactivePulse?: SchedulerPulsePolicy;
   attentionMaintenance?: {
@@ -61,6 +63,7 @@ export interface Scheduler {
 class RuntimeScheduler implements Scheduler {
   readonly #runtime: Runtime;
   readonly #activityIdleMs: number;
+  readonly #activityMaxMs: number;
   readonly #admitAgentWork: () => boolean | Promise<boolean>;
   readonly #proactivePulse: SchedulerPulsePolicy | undefined;
   readonly #attentionMaintenance: SchedulerOptions["attentionMaintenance"];
@@ -68,11 +71,16 @@ class RuntimeScheduler implements Scheduler {
 
   constructor(options: SchedulerOptions) {
     const activityIdleMs = options.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
+    const activityMaxMs = options.activityMaxMs ?? DEFAULT_ACTIVITY_MAX_MS;
     if (!Number.isFinite(activityIdleMs) || activityIdleMs <= 0) {
       throw new Error("Scheduler activityIdleMs must be a positive finite number");
     }
+    if (!Number.isFinite(activityMaxMs) || activityMaxMs <= 0) {
+      throw new Error("Scheduler activityMaxMs must be a positive finite number");
+    }
     this.#runtime = options.runtime;
     this.#activityIdleMs = activityIdleMs;
+    this.#activityMaxMs = activityMaxMs;
     this.#admitAgentWork = options.admitAgentWork ?? (() => true);
     this.#proactivePulse = options.proactivePulse;
     this.#attentionMaintenance = options.attentionMaintenance;
@@ -163,22 +171,25 @@ class RuntimeScheduler implements Scheduler {
         }
         return { disposition: "busy" };
       }
-      const nextRunAt = new Date(
+      const nextRunAt = new Date(Math.min(
         new Date(active.lastActivityAt).getTime() + this.#activityIdleMs,
-      );
+        new Date(active.openedAt).getTime() + this.#activityMaxMs,
+      ));
       if (observedAt < nextRunAt) {
         return { disposition: "waiting", nextRunAt: nextRunAt.toISOString() };
       }
 
       const inactiveBefore = new Date(observedAt.getTime() - this.#activityIdleMs).toISOString();
-      const closed = await this.#runtime.closeActivity({ inactiveBefore });
+      const openedBefore = new Date(observedAt.getTime() - this.#activityMaxMs).toISOString();
+      const closed = await this.#runtime.closeActivity({ inactiveBefore, openedBefore });
       if (closed.disposition === "busy") return { disposition: "busy" };
       if (closed.disposition === "not_due") {
         return {
           disposition: "waiting",
-          nextRunAt: new Date(
+          nextRunAt: new Date(Math.min(
             new Date(closed.lastActivityAt).getTime() + this.#activityIdleMs,
-          ).toISOString(),
+            new Date(closed.openedAt).getTime() + this.#activityMaxMs,
+          )).toISOString(),
         };
       }
       if (closed.disposition === "no_activity") return { disposition: "idle" };

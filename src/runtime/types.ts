@@ -428,12 +428,13 @@ export type AdvanceResult =
 
 export type CloseActivityResult =
   | { disposition: "no_activity" }
-  | { disposition: "not_due"; lastActivityAt: string }
+  | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
   | { disposition: "busy" }
   | { disposition: "activity_frozen"; activityId: string };
 
 export interface CloseActivityOptions {
   inactiveBefore?: string;
+  openedBefore?: string;
 }
 
 export type FormOpportunityResult =

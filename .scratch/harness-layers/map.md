@@ -75,6 +75,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [30 — Reconcile nmem Projections from Runtime Evidence](issues/30-reconcile-nmem-projections.md)。配置 nmem 的 Instance 会在本地生命周期后推进 Conversation Thread 与 Episode projection；幂等、backoff、失败状态和跨重启恢复仍由 Integration 持有，并通过 Instance status 可见。
 - Completed: [31 — Schedule Current Attention Maintenance](issues/31-schedule-attention-maintenance.md)。Current Attention 以独立、可配置的短周期运行；Runtime 持久固定每次 Activity evidence window，成功推进 cursor，失败按原窗口跨重启恢复，不依赖 logical-day close 或通用 job runner。
 - Completed: [32 — Schedule Memory Reflection by Logical Day](issues/32-schedule-memory-reflection.md)。Memory Reflection 以独立持久 lane 按 logical day 一次消费本地 Frozen Activity；目标日完整性、跨日 Turn 切片、失败重试、blocked admission、Working Memory 接线与可选 Workspace 材料缺失语义已闭合，不把 nmem nightly 当作 gate。
+- Completed: [33 — Soft-split Long-lived Activity](issues/33-soft-split-long-activity.md)。Active Segment 同时受 30 分钟 idle 与 2 小时 maximum age 约束；Runtime 在同一 close claim 中复核 `lastActivityAt` / `openedAt`，并复用现有 freeze、successor Context、Recorder 与恢复路径，不新增 split job 或 prompt。
 
 ## Context Follow-ups
 
@@ -94,13 +95,13 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Instance Assembly、Orientation Pulse、change-driven Thread maintenance、nmem projection reconcile、Attention cadence 与 Memory Reflection cadence 已闭合；process driver、soft split 和真实 outbound 后的 after-chat continuation 尚未接线。
+1. Instance Assembly、Orientation Pulse、change-driven Thread maintenance、nmem projection reconcile、Attention cadence、Memory Reflection cadence 与 soft split 已闭合；process driver 和真实 outbound 后的 after-chat continuation 尚未接线。
 2. channel endpoint / credential Adapter、其余 Integration 装配与节律配置仍需随真实消费者进入，不在 Assembly 中预建通用 loader。
 3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
-当前依赖顺序：process driver / soft split 等 Runtime 收尾 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
+当前依赖顺序：process driver 与 after-chat continuation 取舍 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 32 已确认 Memory Reflection 使用按 logical day 一次性消费的本地 evidence window；不要把 nmem nightly 作为 gate，也不要先造独立 day-close marker 或通用 job runner。
+Current work item: none。Ticket 33 已补齐持续 Activity 的 soft split；下一步先判断 process driver 的宿主 Interface 与 after-chat 的模型可见语义，不提前建立通用 daemon framework。
 
 ### Memory Reflector Completion Checkpoint
 

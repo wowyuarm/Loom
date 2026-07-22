@@ -157,7 +157,11 @@ test("guards Activity closure with the latest committed Segment activity", async
 
   assert.deepEqual(
     await runtime.closeActivity({ inactiveBefore: "2026-07-21T10:10:00.000Z" }),
-    { disposition: "not_due", lastActivityAt: "2026-07-21T10:20:00.000Z" },
+    {
+      disposition: "not_due",
+      openedAt: "2026-07-21T10:00:00.000Z",
+      lastActivityAt: "2026-07-21T10:20:00.000Z",
+    },
   );
   assert.ok(runtime.status().activeSegment);
 });
@@ -200,6 +204,74 @@ test("advances Runtime work and closes Activity only after the idle interval", a
   assert.ok(activityId);
   assert.deepEqual(recorded, [activityId]);
   assert.equal(runtime.status().activities[0]?.status, "recorded");
+});
+
+test("soft-splits a continuously active Segment at its maximum age", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-soft-split-"));
+  let now = new Date("2026-07-21T10:00:00.000Z");
+  const recorded: string[] = [];
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder(recorded),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 30 * 60_000,
+    activityMaxMs: 2 * 60 * 60_000,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "first", kind: "interaction", payload: {} });
+  await scheduler.runOnce(now);
+  for (const [sourceId, at] of [
+    ["second", "2026-07-21T10:25:00.000Z"],
+    ["third", "2026-07-21T10:50:00.000Z"],
+    ["fourth", "2026-07-21T11:15:00.000Z"],
+    ["fifth", "2026-07-21T11:40:00.000Z"],
+  ] as const) {
+    now = new Date(at);
+    await runtime.acceptInput({ source: "test", sourceId, kind: "interaction", payload: {} });
+    await scheduler.runOnce(now);
+  }
+
+  now = new Date("2026-07-21T11:40:00.001Z");
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-21T12:00:00.000Z",
+  });
+
+  now = new Date("2026-07-21T12:00:00.000Z");
+  assert.deepEqual(await scheduler.runOnce(now), { disposition: "idle" });
+  assert.equal(runtime.status().activeSegment, undefined);
+  assert.equal(runtime.status().activities.length, 1);
+  assert.deepEqual(recorded, [runtime.status().activities[0]!.id]);
+});
+
+test("does not soft-split a Segment opened after the observed cutoff", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-soft-split-guard-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "new-segment", kind: "interaction", payload: {} });
+  await runtime.advance();
+
+  assert.deepEqual(await runtime.closeActivity({
+    openedBefore: "2026-07-21T11:59:59.999Z",
+  }), {
+    disposition: "not_due",
+    openedAt: "2026-07-21T12:00:00.000Z",
+    lastActivityAt: "2026-07-21T12:00:00.000Z",
+  });
+  assert.ok(runtime.status().activeSegment);
 });
 
 test("schedules Attention maintenance with a durable successful Activity cursor", async t => {

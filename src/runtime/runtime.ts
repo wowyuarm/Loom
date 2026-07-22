@@ -436,7 +436,7 @@ class SqliteRuntime implements Runtime {
           if (claimed.input.kind === "opportunity") {
             const standalone = this.#standaloneProactiveActivity(claimed.turnId);
             if (standalone) {
-              await this.#freezeActivity(standalone);
+              await this.#freezeActivity(standalone, {});
             } else {
               this.#discardSilentOpportunitySegment(claimed.turnId);
             }
@@ -454,7 +454,7 @@ class SqliteRuntime implements Runtime {
             const standalone = this.#standaloneProactiveActivity(claimed.turnId);
             if (standalone) {
               try {
-                await this.#freezeActivity(standalone);
+                await this.#freezeActivity(standalone, {});
               } catch (freezeError) {
                 throw new AggregateError(
                   [error, freezeError],
@@ -593,14 +593,14 @@ class SqliteRuntime implements Runtime {
     if (this.#hasRunningTurn() || this.#hasPendingInput()) return { disposition: "busy" };
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
-    return this.#freezeActivity(segment, options.inactiveBefore);
+    return this.#freezeActivity(segment, options);
   }
 
   async #freezeActivity(
     segment: ActiveSegmentRow,
-    inactiveBefore?: string,
+    closePolicy: CloseActivityOptions,
   ): Promise<CloseActivityResult> {
-    const claimed = this.#claimActivityClose(segment.id, inactiveBefore);
+    const claimed = this.#claimActivityClose(segment.id, closePolicy);
     if (!claimed) return { disposition: "busy" };
     if (claimed.disposition === "not_due") return claimed;
     if (!this.#activityLifecycle) {
@@ -1086,16 +1086,25 @@ class SqliteRuntime implements Runtime {
     return row.sequence;
   }
 
-  #claimActivityClose(segmentId: string, inactiveBefore?: string):
+  #claimActivityClose(segmentId: string, closePolicy: CloseActivityOptions):
     | { request: ActivityFreezeRequest; fencingToken: number; disposition?: never }
-    | { disposition: "not_due"; lastActivityAt: string }
+    | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
     | undefined {
     return this.#transaction(() => {
       if (this.#hasRunningTurn() || this.#hasPendingInput() || this.#hasPendingDeliveryWork()) return undefined;
       const segment = this.#readActiveSegment();
       if (!segment || segment.id !== segmentId || segment.status !== "active") return undefined;
-      if (inactiveBefore !== undefined && segment.last_activity_at > inactiveBefore) {
-        return { disposition: "not_due", lastActivityAt: segment.last_activity_at };
+      const idleDue = closePolicy.inactiveBefore !== undefined
+        && segment.last_activity_at <= closePolicy.inactiveBefore;
+      const ageDue = closePolicy.openedBefore !== undefined
+        && segment.opened_at <= closePolicy.openedBefore;
+      if ((closePolicy.inactiveBefore !== undefined || closePolicy.openedBefore !== undefined)
+        && !idleDue && !ageDue) {
+        return {
+          disposition: "not_due",
+          openedAt: segment.opened_at,
+          lastActivityAt: segment.last_activity_at,
+        };
       }
       const executionState = this.#readExecutionState().executionState;
       if (executionState === undefined) throw new Error(`Active segment ${segmentId} has no committed execution state`);
