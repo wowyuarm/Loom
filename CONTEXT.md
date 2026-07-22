@@ -78,6 +78,10 @@ _Avoid_: transcript content, summary, runtime state
 描述一个 Runtime Instance 如何装配，以及使用哪些时间政策、模型策略与 Integration 引用的配置材料。它不承载 Individual 材料、凭据内容或动态运行事实。
 _Avoid_: persona configuration, workspace material, runtime state
 
+**Interaction Route**:
+Runtime Instance 中连接 outbound Effect 与具体外部投递方式的不透明引用。Main Agent 只知道可用的默认 route，不由此看到 channel、endpoint、凭据或人的身份。
+_Avoid_: channel, recipient, endpoint, delivery
+
 **Model Runtime Revision**:
 一份已经验证、可供一次模型运行固定使用的 Pi runtime 与 Harness model role 选择。新的配置只影响后续 Main Agent Turn 或 Cognitive Organ run；已经开始的运行与 steering 继续使用原 revision。
 _Avoid_: provider abstraction, model health, mutable session model

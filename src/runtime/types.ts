@@ -310,6 +310,10 @@ export interface RuntimeOptions {
   leaseDurationMs?: number;
 }
 
+export interface AdvanceOptions {
+  agentWork?: "allow" | "defer";
+}
+
 export type AdvanceResult =
   | { disposition: "idle" }
   | { disposition: "turn_completed" }
@@ -318,6 +322,7 @@ export type AdvanceResult =
   | { disposition: "delivery_requires_reconciliation" }
   | { disposition: "activity_recorded" }
   | { disposition: "activity_recording_failed" }
+  | { disposition: "agent_work_deferred" }
   | { disposition: "busy" };
 
 export type CloseActivityResult =
@@ -339,7 +344,7 @@ export type FormOpportunityResult =
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   formOpportunity(): Promise<FormOpportunityResult>;
-  advance(): Promise<AdvanceResult>;
+  advance(options?: AdvanceOptions): Promise<AdvanceResult>;
   closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;
   status(): RuntimeStatus;

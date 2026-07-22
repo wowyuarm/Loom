@@ -7,6 +7,7 @@ import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js
 import { initializeRuntimeSchema } from "./schema.js";
 import type {
   AcceptedInput,
+  AdvanceOptions,
   AdvanceResult,
   ActivityFreezeRequest,
   ActivityLifecycle,
@@ -233,7 +234,7 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  async advance(): Promise<AdvanceResult> {
+  async advance(options: AdvanceOptions = {}): Promise<AdvanceResult> {
     if (this.#active || this.#activeDeliveryId || this.#closingActivityId || this.#activeActivityAttemptId) {
       return { disposition: "busy" };
     }
@@ -267,6 +268,9 @@ class SqliteRuntime implements Runtime {
     }
 
     if (this.#execution) {
+      if (options.agentWork === "defer" && this.#hasPendingInput()) {
+        return { disposition: "agent_work_deferred" };
+      }
       const claimed = this.#claimNextInput();
       if (claimed) {
         let turnCompleted = false;
@@ -349,6 +353,9 @@ class SqliteRuntime implements Runtime {
       }
     }
 
+    if (options.agentWork === "defer" && this.#activityRecorder && this.#hasPendingActivityRecording()) {
+      return { disposition: "agent_work_deferred" };
+    }
     return this.#advanceActivityRecording();
   }
 
@@ -510,6 +517,12 @@ class SqliteRuntime implements Runtime {
 
   #hasPendingInput(): boolean {
     return Boolean(this.#database.prepare("SELECT 1 FROM inputs WHERE status = 'pending' LIMIT 1").get());
+  }
+
+  #hasPendingActivityRecording(): boolean {
+    return Boolean(this.#database.prepare(
+      "SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1",
+    ).get());
   }
 
   #hasPendingDeliveryWork(): boolean {

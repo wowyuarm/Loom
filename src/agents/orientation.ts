@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -115,6 +115,7 @@ export interface PiOrientationOptions {
   transcriptDirectory: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
   loadActionSpace: () => Promise<OrientationActionSpace>;
   nextRunId?: () => string;
 }
@@ -203,6 +204,7 @@ class PiOrientation implements Orientation {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
+      ...(this.options.thinkingLevel ? { thinkingLevel: this.options.thinkingLevel } : {}),
       noTools: "builtin",
       customTools: tools,
       resourceLoader,

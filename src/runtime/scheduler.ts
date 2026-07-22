@@ -5,6 +5,7 @@ export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
 export interface SchedulerOptions {
   runtime: Runtime;
   activityIdleMs?: number;
+  admitAgentWork?: () => boolean | Promise<boolean>;
 }
 
 export type SchedulerRunResult =
@@ -15,6 +16,7 @@ export type SchedulerRunResult =
       disposition: "deferred";
       reason:
         | "activity_recording_failed"
+        | "agent_work_not_admitted"
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
     };
@@ -26,6 +28,7 @@ export interface Scheduler {
 class RuntimeScheduler implements Scheduler {
   readonly #runtime: Runtime;
   readonly #activityIdleMs: number;
+  readonly #admitAgentWork: () => boolean | Promise<boolean>;
 
   constructor(options: SchedulerOptions) {
     const activityIdleMs = options.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
@@ -34,13 +37,16 @@ class RuntimeScheduler implements Scheduler {
     }
     this.#runtime = options.runtime;
     this.#activityIdleMs = activityIdleMs;
+    this.#admitAgentWork = options.admitAgentWork ?? (() => true);
   }
 
   async runOnce(observedAt: Date): Promise<SchedulerRunResult> {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Scheduler requires a valid observedAt");
 
     while (true) {
-      const advanced = await this.#runtime.advance();
+      const advanced = await this.#runtime.advance({
+        agentWork: await this.#admitAgentWork() ? "allow" : "defer",
+      });
       const terminal = deferredResult(advanced);
       if (terminal) return terminal;
       if (advanced.disposition === "busy") return { disposition: "busy" };
@@ -77,6 +83,8 @@ function deferredResult(result: AdvanceResult): SchedulerRunResult | undefined {
     case "delivery_not_sent":
     case "delivery_requires_reconciliation":
       return { disposition: "deferred", reason: result.disposition };
+    case "agent_work_deferred":
+      return { disposition: "deferred", reason: "agent_work_not_admitted" };
     default:
       return undefined;
   }

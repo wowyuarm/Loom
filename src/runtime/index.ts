@@ -3,6 +3,7 @@ export { createScheduler, DEFAULT_ACTIVITY_IDLE_MS } from "./scheduler.js";
 export type { Scheduler, SchedulerOptions, SchedulerRunResult } from "./scheduler.js";
 export type {
   AcceptedInput,
+  AdvanceOptions,
   AdvanceResult,
   ActivityFreezeRequest,
   ActivityLifecycle,

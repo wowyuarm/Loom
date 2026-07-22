@@ -9,6 +9,7 @@ export interface InstanceConfiguration {
   version: 1;
   timePolicy: TimePolicy;
   modelPolicy?: ModelPolicy;
+  defaultInteractionRoute?: string;
 }
 
 export const MODEL_ROLES = [
@@ -55,7 +56,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -71,6 +72,7 @@ export async function loadInstanceConfiguration(
   const modelPolicy = document.models === undefined
     ? undefined
     : parseModelPolicy(document.models);
+  const defaultInteractionRoute = parseInteraction(document.interaction);
   return {
     version: 1,
     timePolicy: createTimePolicy({
@@ -78,7 +80,18 @@ export async function loadInstanceConfiguration(
       ...(time.logicalDayStart !== undefined ? { logicalDayStart: time.logicalDayStart } : {}),
     }),
     ...(modelPolicy ? { modelPolicy } : {}),
+    ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
   };
+}
+
+function parseInteraction(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) throw new Error("Instance Configuration interaction must be an object");
+  assertOnlyKeys(value, ["defaultRoute"], "Instance Configuration interaction");
+  if (typeof value.defaultRoute !== "string" || !value.defaultRoute.trim()) {
+    throw new Error("Instance Configuration interaction.defaultRoute must be a non-empty string");
+  }
+  return value.defaultRoute.trim();
 }
 
 function parseModelPolicy(value: unknown): ModelPolicy {

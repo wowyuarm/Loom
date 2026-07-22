@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -120,6 +120,7 @@ export interface PiLifeRecorderOptions {
   transcriptDirectory: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
   nextRunId?: () => string;
   now?: () => Date;
 }
@@ -362,6 +363,7 @@ class PiLifeRecorder implements LifeRecorder {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
+      ...(this.options.thinkingLevel ? { thinkingLevel: this.options.thinkingLevel } : {}),
       noTools: "builtin",
       customTools: tools,
       resourceLoader,

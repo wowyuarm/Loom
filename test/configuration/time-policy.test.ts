@@ -83,6 +83,21 @@ test("loads model roles with whole-policy inheritance from the default", async (
   }]);
 });
 
+test("loads the default Interaction Route as a trimmed opaque reference", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-interaction-configuration-"));
+  const file = path.join(root, "instance.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "interaction:",
+    "  defaultRoute: \"  primary-route  \"",
+    "",
+  ].join("\n"), "utf8");
+
+  const configuration = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
+
+  assert.equal(configuration.defaultInteractionRoute, "primary-route");
+});
+
 test("rejects invalid Instance time configuration before Runtime starts", async () => {
   const cases = [
     {
@@ -132,6 +147,16 @@ test("rejects invalid Instance time configuration before Runtime starts", async 
         "",
       ].join("\n"),
       error: /thinkingLevel is invalid/,
+    },
+    {
+      name: "empty default Interaction Route",
+      source: "version: 1\ninteraction:\n  defaultRoute: \"   \"\n",
+      error: /interaction\.defaultRoute must be a non-empty string/,
+    },
+    {
+      name: "unknown interaction field",
+      source: "version: 1\ninteraction:\n  channel: private\n",
+      error: /unknown fields: channel/,
     },
   ];
 
