@@ -22,7 +22,15 @@ import {
   type SchedulerRunResult,
   type FormOpportunityResult,
 } from "../runtime/index.js";
-import { createNmemRecallTool, type NmemRecallToolOptions } from "../integrations/nmem/index.js";
+import {
+  createNmemEpisodeReconciler,
+  createNmemRecallTool,
+  createNmemThreadReconciler,
+  type NmemEpisodeReconciler,
+  type NmemProjectionStatus,
+  type NmemRecallToolOptions,
+  type NmemThreadReconciler,
+} from "../integrations/nmem/index.js";
 import { createMainAgentActivityLifecycle } from "../main-agent/activity.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import {
@@ -57,6 +65,10 @@ export type LoomInstanceRunResult =
 export interface LoomInstanceStatus {
   runtime: RuntimeStatus;
   models: ModelRuntimeRevisionStatus;
+  nmem?: {
+    threads: NmemProjectionStatus;
+    episodes: NmemProjectionStatus;
+  };
 }
 
 export type LoomInstanceOpportunityResult =
@@ -84,6 +96,10 @@ class AssembledLoomInstance implements LoomInstance {
     private readonly runtime: Runtime,
     private readonly revisions: ReturnType<typeof openModelRuntimeRevisions>,
     private readonly scheduler: Scheduler,
+    private readonly nmem?: {
+      threads: NmemThreadReconciler;
+      episodes: NmemEpisodeReconciler;
+    },
   ) {}
 
   acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -94,8 +110,10 @@ class AssembledLoomInstance implements LoomInstance {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Loom Instance requires a valid observedAt");
     const result = await this.scheduler.runOnce(observedAt);
     if (result.disposition === "deferred" && result.reason === "agent_work_not_admitted") {
+      await this.#reconcileNmem();
       return { disposition: "deferred", reason: "model_runtime_blocked" };
     }
+    await this.#reconcileNmem();
     return result;
   }
 
@@ -109,11 +127,28 @@ class AssembledLoomInstance implements LoomInstance {
   status(): LoomInstanceStatus {
     const models = this.revisions.status();
     if (!models) throw new Error("Loom Instance model status is unavailable after opening");
-    return { runtime: this.runtime.status(), models };
+    return {
+      runtime: this.runtime.status(),
+      models,
+      ...(this.nmem ? {
+        nmem: {
+          threads: this.nmem.threads.status(),
+          episodes: this.nmem.episodes.status(),
+        },
+      } : {}),
+    };
   }
 
   close(): void {
     this.runtime.close();
+    this.nmem?.threads.close();
+    this.nmem?.episodes.close();
+  }
+
+  async #reconcileNmem(): Promise<void> {
+    if (!this.nmem) return;
+    await this.nmem.threads.reconcile();
+    await this.nmem.episodes.reconcile();
   }
 }
 
@@ -180,6 +215,21 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),
     ...(options.now ? { now: options.now } : {}),
   });
+  const nmem = options.nmem?.endpoint ? {
+    threads: createNmemThreadReconciler({
+      runtime,
+      stateRoot: layout.runtimeRoot,
+      ...options.nmem,
+      ...(options.now ? { now: options.now } : {}),
+    }),
+    episodes: createNmemEpisodeReconciler({
+      runtime,
+      agentWorkspace,
+      stateRoot: layout.runtimeRoot,
+      ...options.nmem,
+      ...(options.now ? { now: options.now } : {}),
+    }),
+  } : undefined;
   return new AssembledLoomInstance(runtime, revisions, createScheduler({
     runtime,
     admitAgentWork: async () => (await revisions.refresh()).state !== "blocked",
@@ -192,7 +242,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
         intervalMs: configuration.schedule.proactivePulse.quietHours.intervalMinutes * 60 * 1_000,
       },
     },
-  }));
+  }), nmem);
 }
 
 async function loadAssemblyConfiguration(

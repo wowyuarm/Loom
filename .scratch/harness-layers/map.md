@@ -72,6 +72,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [27 — Assemble a Runtime Instance](issues/27-assemble-runtime-instance.md)。`openLoomInstance` 以小型 Interface 装配首条真实纵切；Instance Root、默认 Behavior、源码 System Guidance、route、Pi revision、Main Agent、Orientation、Activity closure、Life Recorder、Scheduler 和 failure-soft recall 已接线，blocked 时保留 agent work 且继续 delivery / 无模型 closure。
 - Completed: [28 — Schedule the Proactive Pulse](issues/28-schedule-proactive-pulse.md)。Orientation 已接入 Runtime Store 内的持久 Pulse；普通/quiet-hours cadence、配置覆盖、Activity 互斥、`none`、失败重试、blocked 与跨重启恢复均通过公开 Instance seam 闭合，未引入通用 job runner。
 - Completed: [29 — Schedule Thread Maintenance from Frozen Activity](issues/29-schedule-thread-maintenance.md)。已关闭 Activity 的结构化 Thread 写入会形成一次持久维护；Life Recorder 后按 FIFO 运行，`NO_CHANGE`、失败重试、blocked 与跨重启恢复均已通过 Runtime / Instance seam 闭合，未修改器官 prompt 或建立通用 job runner。
+- Completed: [30 — Reconcile nmem Projections from Runtime Evidence](issues/30-reconcile-nmem-projections.md)。配置 nmem 的 Instance 会在本地生命周期后推进 Conversation Thread 与 Episode projection；幂等、backoff、失败状态和跨重启恢复仍由 Integration 持有，并通过 Instance status 可见。
 
 ## Context Follow-ups
 
@@ -91,13 +92,13 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Instance Assembly、Orientation Pulse 与 change-driven Thread maintenance 已闭合；process driver、soft split、Attention / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 尚未接线。
+1. Instance Assembly、Orientation Pulse、change-driven Thread maintenance 与 nmem projection reconcile 已闭合；process driver、soft split、Attention / Memory maintenance 和真实 outbound 后的 after-chat continuation 尚未接线。
 2. channel endpoint / credential Adapter、其余 Integration 装配与节律配置仍需随真实消费者进入，不在 Assembly 中预建通用 loader。
 3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
 当前依赖顺序：其余 cadence 接线 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 29 已闭合 change-driven Thread maintenance；下一步重新审视 Attention / Memory maintenance、logical-day close、nmem projection、after-chat continuation 与 process driver 的真实触发依赖，再选择一条纵向切片。
+Current work item: none。Ticket 30 已闭合当前 nmem projection 接线；下一步重新审视 logical-day close 与 Attention / Memory maintenance 的共同 evidence window、after-chat continuation 和 process driver 的先后依赖，再选择一条纵向切片。
 
 ### Memory Reflector Completion Checkpoint
 

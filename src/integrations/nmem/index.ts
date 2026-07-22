@@ -4,6 +4,7 @@ export {
   type NmemEpisodeReconcilerOptions,
   type NmemEpisodeReconcileResult,
 } from "./episodes.js";
+export { type NmemProjectionStatus } from "./projection-status.js";
 export {
   createNmemRecallTool,
   type NmemRecallDetails,

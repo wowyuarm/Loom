@@ -15,6 +15,7 @@ test("keeps accepted Input pending while blocked and resumes it after model conf
   const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
   t.after(() => instance.close());
   assert.equal(instance.status().models?.state, "blocked");
+  assert.equal(instance.status().nmem, undefined);
 
   const accepted = await instance.acceptInput({
     source: "test-channel",
@@ -381,6 +382,137 @@ test("maintains changed Thread material through the assembled Instance", async t
 
   await instance.runOnce(now);
   assert.equal(provider.requests(), 8);
+});
+
+test("reconciles nmem Thread and Episode projections after local Activity work", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { text: "A private response worth keeping." },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    body => {
+      const eventId = frozenActivityEventId(body);
+      assert.ok(eventId);
+      return { tool: { name: "record_episode", arguments: {
+        ordinal: 0,
+        title: "A useful distinction remained",
+        occurredAt: "2026-07-22T10:00:00.000Z",
+        importance: 0.7,
+        labels: ["calibration"],
+        scene: "The exchange kept one useful distinction available for later.",
+        evidenceEventIds: [eventId],
+      } } };
+    },
+    { text: "Recorded." },
+  );
+  t.after(() => provider.close());
+  const nmem = await startNmemProjectionServer();
+  t.after(() => nmem.close());
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
+    intervalMinutes: 60,
+    quietIntervalMinutes: 90,
+  });
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    nmem: { endpoint: nmem.baseUrl },
+  });
+  t.after(() => instance.close());
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "nmem-projection-input",
+    kind: "interaction",
+    payload: { text: "keep the useful distinction" },
+  });
+  await instance.runOnce(now);
+
+  const frozen = instance.status().runtime.activeSegment;
+  assert.ok(frozen);
+  now = new Date("2026-07-22T10:30:00.000Z");
+  await instance.runOnce(now);
+
+  assert.equal(nmem.threadRequests(), 1);
+  assert.equal(nmem.memoryRequests(), 1);
+  assert.deepEqual(instance.status().nmem?.threads.summary, {
+    current: 1,
+    pending: 0,
+    blocked: 0,
+  });
+  assert.deepEqual(instance.status().nmem?.episodes.summary, {
+    current: 1,
+    pending: 0,
+    blocked: 0,
+  });
+
+  await instance.runOnce(now);
+  assert.equal(nmem.threadRequests(), 1);
+  assert.equal(nmem.memoryRequests(), 1);
+});
+
+test("keeps nmem projection failure-soft and resumes it after restart backoff", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { text: "A local response remains available." },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
+  );
+  t.after(() => provider.close());
+  const nmem = await startNmemProjectionServer({ failThreadRequests: 1 });
+  t.after(() => nmem.close());
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
+    intervalMinutes: 60,
+    quietIntervalMinutes: 90,
+  });
+  let now = new Date("2026-07-22T12:00:00.000Z");
+  const first = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    nmem: { endpoint: nmem.baseUrl },
+  });
+  await first.acceptInput({
+    source: "test-channel",
+    sourceId: "nmem-retry-input",
+    kind: "interaction",
+    payload: { text: "keep local continuity" },
+  });
+  await first.runOnce(now);
+  now = new Date("2026-07-22T12:30:00.000Z");
+  assert.deepEqual(await first.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T13:00:00.000Z",
+  });
+  assert.equal(nmem.threadRequests(), 1);
+  assert.equal(first.status().nmem?.threads.summary.pending, 1);
+  assert.match(first.status().nmem?.threads.items[0]?.lastError ?? "", /temporarily unavailable/i);
+  assert.equal(first.status().runtime.activities[0]?.status, "recorded");
+  first.close();
+
+  now = new Date("2026-07-22T12:30:10.000Z");
+  const recovered = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    nmem: { endpoint: nmem.baseUrl },
+  });
+  t.after(() => recovered.close());
+  await recovered.runOnce(now);
+  assert.equal(nmem.threadRequests(), 1);
+  assert.equal(recovered.status().nmem?.threads.summary.pending, 1);
+
+  now = new Date("2026-07-22T12:30:31.000Z");
+  await recovered.runOnce(now);
+  assert.equal(nmem.threadRequests(), 2);
+  assert.deepEqual(recovered.status().nmem?.threads.summary, {
+    current: 1,
+    pending: 0,
+    blocked: 0,
+  });
+  assert.equal(recovered.status().nmem?.threads.items[0]?.attempts, 2);
+  assert.equal(recovered.status().nmem?.threads.items[0]?.lastError, undefined);
 });
 
 test("forms a proactive opening through a revision-bound Orientation", async t => {
@@ -802,8 +934,105 @@ async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Pr
     baseUrl: `http://127.0.0.1:${address.port}/v1`,
     requests: () => requestCount,
     bodies: () => structuredClone(requestBodies),
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
+async function startNmemProjectionServer(options: {
+  failThreadRequests?: number;
+} = {}): Promise<{
+  baseUrl: string;
+  threadRequests(): number;
+  memoryRequests(): number;
+  close(): void;
+}> {
+  let threads = 0;
+  let memories = 0;
+  let remainingThreadFailures = options.failThreadRequests ?? 0;
+  const server = createServer(async (request, response) => {
+    if (request.url === "/capabilities") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        version: "0.10.31",
+        features: { threads: true, memories: true, search: true },
+      }));
+      return;
+    }
+    const body = await readRequestJson(request);
+    if (request.url === "/threads" && request.method === "POST") {
+      threads += 1;
+      if (remainingThreadFailures > 0) {
+        remainingThreadFailures -= 1;
+        response.writeHead(503, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "temporarily unavailable" }));
+        return;
+      }
+      const threadId = String((body as { thread_id?: unknown }).thread_id ?? "");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ thread: { thread_id: threadId } }));
+      return;
+    }
+    if (request.url === "/memories" && request.method === "POST") {
+      memories += 1;
+      const memoryId = String((body as { id?: unknown }).id ?? "");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ memory: { id: memoryId } }));
+      return;
+    }
+    response.writeHead(404, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  await listen(server);
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    threadRequests: () => threads,
+    memoryRequests: () => memories,
     close: () => server.close(),
   };
+}
+
+async function readRequestJson(request: import("node:http").IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return chunks.length > 0 ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {};
+}
+
+function frozenActivityEventId(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === "object" && "type" in parsed
+        && parsed.type === "loom.frozen-activity.page" && "events" in parsed
+        && Array.isArray(parsed.events)) {
+        const event = parsed.events[0];
+        return event && typeof event === "object" && "eventId" in event
+          ? String(event.eventId)
+          : undefined;
+      }
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const eventId = frozenActivityEventId(item);
+      if (eventId) return eventId;
+    }
+    return undefined;
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) {
+      const eventId = frozenActivityEventId(item);
+      if (eventId) return eventId;
+    }
+  }
+  return undefined;
 }
 
 async function listen(server: Server): Promise<void> {

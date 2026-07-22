@@ -8,6 +8,7 @@ import { parse } from "yaml";
 import type { Runtime } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
 import { NmemClient, NmemRequestError, type NmemMemoryUpsert } from "./client.js";
+import { projectionStatus, type NmemProjectionStatus } from "./projection-status.js";
 
 export interface NmemEpisodeReconcileResult {
   imported: number;
@@ -18,6 +19,7 @@ export interface NmemEpisodeReconcileResult {
 
 export interface NmemEpisodeReconciler {
   reconcile(): Promise<NmemEpisodeReconcileResult>;
+  status(): NmemProjectionStatus;
   close(): void;
 }
 
@@ -40,6 +42,7 @@ interface EpisodeExportRow {
   attempt_count: number;
   next_attempt_at: string | null;
   connection_hash: string;
+  last_error: string | null;
 }
 
 interface PreparedEpisode {
@@ -159,6 +162,25 @@ class SqliteNmemEpisodeReconciler implements NmemEpisodeReconciler {
 
   close(): void {
     this.#database.close();
+  }
+
+  status(): NmemProjectionStatus {
+    const rows = this.#database.prepare(`
+      SELECT episode_id, status, attempt_count, next_attempt_at, last_error
+      FROM episode_exports
+      WHERE connection_hash = ?
+      ORDER BY episode_id
+    `).all(this.#connectionHash) as unknown as Array<Pick<
+      EpisodeExportRow,
+      "episode_id" | "status" | "attempt_count" | "next_attempt_at" | "last_error"
+    >>;
+    return projectionStatus(rows.map(row => ({
+      id: row.episode_id,
+      status: row.status,
+      attempts: row.attempt_count,
+      nextAttemptAt: row.next_attempt_at,
+      lastError: row.last_error,
+    })));
   }
 
   #read(episodeId: string): EpisodeExportRow | undefined {

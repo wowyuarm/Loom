@@ -10,6 +10,7 @@ import {
   type NmemThreadCreate,
   type NmemThreadMessage,
 } from "./client.js";
+import { projectionStatus, type NmemProjectionStatus } from "./projection-status.js";
 
 const MAX_PRIVATE_ITEM_CHARACTERS = 500;
 const MAX_PRIVATE_ACTIVITY_CHARACTERS = 4_000;
@@ -24,6 +25,7 @@ export interface NmemThreadReconcileResult {
 
 export interface NmemThreadReconciler {
   reconcile(): Promise<NmemThreadReconcileResult>;
+  status(): NmemProjectionStatus;
   close(): void;
 }
 
@@ -45,6 +47,7 @@ interface ThreadExportRow {
   attempt_count: number;
   next_attempt_at: string | null;
   connection_hash: string;
+  last_error: string | null;
 }
 
 interface PreparedActivity {
@@ -155,6 +158,25 @@ class SqliteNmemThreadReconciler implements NmemThreadReconciler {
 
   close(): void {
     this.#database.close();
+  }
+
+  status(): NmemProjectionStatus {
+    const rows = this.#database.prepare(`
+      SELECT segment_id, status, attempt_count, next_attempt_at, last_error
+      FROM thread_exports
+      WHERE connection_hash = ?
+      ORDER BY segment_id
+    `).all(this.#connectionHash) as unknown as Array<Pick<
+      ThreadExportRow,
+      "segment_id" | "status" | "attempt_count" | "next_attempt_at" | "last_error"
+    >>;
+    return projectionStatus(rows.map(row => ({
+      id: row.segment_id,
+      status: row.status,
+      attempts: row.attempt_count,
+      nextAttemptAt: row.next_attempt_at,
+      lastError: row.last_error,
+    })));
   }
 
   #read(segmentId: string): ThreadExportRow | undefined {
