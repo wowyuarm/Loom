@@ -98,6 +98,37 @@ test("loads the default Interaction Route as a trimmed opaque reference", async 
   assert.equal(configuration.defaultInteractionRoute, "primary-route");
 });
 
+test("loads the proactive Pulse schedule with Harness defaults and explicit overrides", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-schedule-configuration-"));
+  const file = path.join(root, "instance.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "schedule:",
+    "  proactivePulse:",
+    "    intervalMinutes: 45",
+    "    quietHours:",
+    "      start: \"23:30\"",
+    "      end: \"06:15\"",
+    "      intervalMinutes: 120",
+    "",
+  ].join("\n"), "utf8");
+
+  const configured = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
+  const defaults = await loadInstanceConfiguration({
+    file: path.join(root, "missing.yaml"),
+    machineTimeZone: "UTC",
+  });
+
+  assert.deepEqual(configured.schedule.proactivePulse, {
+    intervalMinutes: 45,
+    quietHours: { start: "23:30", end: "06:15", intervalMinutes: 120 },
+  });
+  assert.deepEqual(defaults.schedule.proactivePulse, {
+    intervalMinutes: 30,
+    quietHours: { start: "01:00", end: "07:00", intervalMinutes: 90 },
+  });
+});
+
 test("rejects invalid Instance time configuration before Runtime starts", async () => {
   const cases = [
     {
@@ -157,6 +188,29 @@ test("rejects invalid Instance time configuration before Runtime starts", async 
       name: "unknown interaction field",
       source: "version: 1\ninteraction:\n  channel: private\n",
       error: /unknown fields: channel/,
+    },
+    {
+      name: "invalid Pulse cadence",
+      source: "version: 1\nschedule:\n  proactivePulse:\n    intervalMinutes: 0\n",
+      error: /intervalMinutes must be a positive integer/,
+    },
+    {
+      name: "invalid quiet hours",
+      source: "version: 1\nschedule:\n  proactivePulse:\n    quietHours:\n      start: bedtime\n",
+      error: /quietHours\.start must use 24-hour HH:MM format/,
+    },
+    {
+      name: "ambiguous full-day quiet hours",
+      source: [
+        "version: 1",
+        "schedule:",
+        "  proactivePulse:",
+        "    quietHours:",
+        "      start: \"06:00\"",
+        "      end: \"06:00\"",
+        "",
+      ].join("\n"),
+      error: /quiet hours must not cover an ambiguous full day/,
     },
   ];
 

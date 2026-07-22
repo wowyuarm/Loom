@@ -8,9 +8,34 @@ import { createTimePolicy, type TimePolicy } from "./time-policy.js";
 export interface InstanceConfiguration {
   version: 1;
   timePolicy: TimePolicy;
+  schedule: ScheduleConfiguration;
   modelPolicy?: ModelPolicy;
   defaultInteractionRoute?: string;
 }
+
+export interface ScheduleConfiguration {
+  proactivePulse: ProactivePulseConfiguration;
+}
+
+export interface ProactivePulseConfiguration {
+  intervalMinutes: number;
+  quietHours: {
+    start: string;
+    end: string;
+    intervalMinutes: number;
+  };
+}
+
+export const DEFAULT_SCHEDULE: ScheduleConfiguration = Object.freeze({
+  proactivePulse: Object.freeze({
+    intervalMinutes: 30,
+    quietHours: Object.freeze({
+      start: "01:00",
+      end: "07:00",
+      intervalMinutes: 90,
+    }),
+  }),
+});
 
 export const MODEL_ROLES = [
   "main-interaction",
@@ -56,7 +81,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models", "interaction"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction", "schedule"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -73,12 +98,14 @@ export async function loadInstanceConfiguration(
     ? undefined
     : parseModelPolicy(document.models);
   const defaultInteractionRoute = parseInteraction(document.interaction);
+  const schedule = parseSchedule(document.schedule);
   return {
     version: 1,
     timePolicy: createTimePolicy({
       timeZone: time.timeZone ?? machineTimeZone,
       ...(time.logicalDayStart !== undefined ? { logicalDayStart: time.logicalDayStart } : {}),
     }),
+    schedule,
     ...(modelPolicy ? { modelPolicy } : {}),
     ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
   };
@@ -92,6 +119,59 @@ function parseInteraction(value: unknown): string | undefined {
     throw new Error("Instance Configuration interaction.defaultRoute must be a non-empty string");
   }
   return value.defaultRoute.trim();
+}
+
+function parseSchedule(value: unknown): ScheduleConfiguration {
+  if (value === undefined) return DEFAULT_SCHEDULE;
+  if (!isObject(value)) throw new Error("Instance Configuration schedule must be an object");
+  assertOnlyKeys(value, ["proactivePulse"], "Instance Configuration schedule");
+  const pulse = value.proactivePulse;
+  if (pulse === undefined) return DEFAULT_SCHEDULE;
+  if (!isObject(pulse)) {
+    throw new Error("Instance Configuration schedule.proactivePulse must be an object");
+  }
+  assertOnlyKeys(pulse, ["intervalMinutes", "quietHours"], "Instance Configuration schedule.proactivePulse");
+  const intervalMinutes = parsePositiveMinutes(pulse.intervalMinutes, "schedule.proactivePulse.intervalMinutes", 30);
+  const quietHours = pulse.quietHours === undefined ? DEFAULT_SCHEDULE.proactivePulse.quietHours : pulse.quietHours;
+  if (!isObject(quietHours)) {
+    throw new Error("Instance Configuration schedule.proactivePulse.quietHours must be an object");
+  }
+  assertOnlyKeys(
+    quietHours,
+    ["start", "end", "intervalMinutes"],
+    "Instance Configuration schedule.proactivePulse.quietHours",
+  );
+  const start = parseClock(quietHours.start ?? "01:00", "schedule.proactivePulse.quietHours.start");
+  const end = parseClock(quietHours.end ?? "07:00", "schedule.proactivePulse.quietHours.end");
+  if (start === end) {
+    throw new Error("Instance Configuration schedule.proactivePulse quiet hours must not cover an ambiguous full day");
+  }
+  const quietIntervalMinutes = parsePositiveMinutes(
+    quietHours.intervalMinutes,
+    "schedule.proactivePulse.quietHours.intervalMinutes",
+    90,
+  );
+  return Object.freeze({
+    proactivePulse: Object.freeze({
+      intervalMinutes,
+      quietHours: Object.freeze({ start, end, intervalMinutes: quietIntervalMinutes }),
+    }),
+  });
+}
+
+function parsePositiveMinutes(value: unknown, label: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Instance Configuration ${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function parseClock(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    throw new Error(`Instance Configuration ${label} must use 24-hour HH:MM format`);
+  }
+  return value;
 }
 
 function parseModelPolicy(value: unknown): ModelPolicy {
@@ -150,6 +230,7 @@ function defaultConfiguration(machineTimeZone: string): InstanceConfiguration {
   return {
     version: 1,
     timePolicy: createTimePolicy({ timeZone: machineTimeZone }),
+    schedule: DEFAULT_SCHEDULE,
   };
 }
 

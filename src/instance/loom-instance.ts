@@ -6,6 +6,7 @@ import {
   createTimePolicy,
   loadInstanceConfiguration,
   openModelRuntimeRevisions,
+  DEFAULT_SCHEDULE,
   type ModelRuntimeRevisionStatus,
   type InstanceConfiguration,
 } from "../configuration/index.js";
@@ -173,6 +174,15 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
   return new AssembledLoomInstance(runtime, revisions, createScheduler({
     runtime,
     admitAgentWork: async () => (await revisions.refresh()).state !== "blocked",
+    proactivePulse: {
+      timeZone: configuration.timePolicy.timeZone,
+      intervalMs: configuration.schedule.proactivePulse.intervalMinutes * 60 * 1_000,
+      quietHours: {
+        start: configuration.schedule.proactivePulse.quietHours.start,
+        end: configuration.schedule.proactivePulse.quietHours.end,
+        intervalMs: configuration.schedule.proactivePulse.quietHours.intervalMinutes * 60 * 1_000,
+      },
+    },
   }));
 }
 
@@ -191,6 +201,7 @@ async function loadAssemblyConfiguration(
       timePolicy: machineTimeZone
         ? createTimePolicy({ timeZone: machineTimeZone })
         : createHostTimePolicy(),
+      schedule: DEFAULT_SCHEDULE,
     };
   }
 }

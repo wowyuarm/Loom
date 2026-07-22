@@ -246,6 +246,8 @@ test("freezes idle Activity but defers Life Recorder work while models are block
     { text: "A private response" },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
     { text: "Recorded." },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -283,8 +285,11 @@ test("freezes idle Activity but defers Life Recorder work while models are block
 
   await writeModelConfiguration(root, provider.baseUrl);
 
-  assert.deepEqual(await recovered.runOnce(now), { disposition: "idle" });
-  assert.equal(provider.requests(), 3);
+  assert.deepEqual(await recovered.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 5);
   assert.equal(recovered.status().runtime.activities[0]?.status, "recorded");
 });
 
@@ -295,6 +300,8 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
     { text: "A private response" },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
     { text: "Recorded." },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -312,7 +319,7 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
   now = new Date("2026-07-22T10:30:00.000Z");
   await instance.runOnce(now);
 
-  assert.equal(provider.requests(), 3);
+  assert.equal(provider.requests(), 5);
   assert.equal(instance.status().runtime.activeSegment, undefined);
   assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
   assert.equal(instance.status().runtime.activities[0]?.receipt?.segmentId, instance.status().runtime.activities[0]?.id);
@@ -342,6 +349,261 @@ test("forms a proactive opening through a revision-bound Orientation", async t =
   assert.equal(instance.status().runtime.inputs.length, 0);
 });
 
+test("keeps the first proactive Pulse delayed until the ordinary cadence", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({
+      outcome: "none",
+      whyNow: "Nothing currently warrants an opening.",
+      evidence: ["attention.md contains one quiet curiosity"],
+    }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T10:30:00.000Z",
+  });
+  assert.equal(provider.requests(), 0);
+
+  now = new Date("2026-07-22T10:29:59.999Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T10:30:00.000Z",
+  });
+  assert.equal(provider.requests(), 0);
+
+  now = new Date("2026-07-22T10:30:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 2);
+});
+
+test("uses the quiet-hours cadence from the Instance time policy", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Quiet.", evidence: ["attention read"] }) },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Morning.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T00:45:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  await instance.runOnce(now);
+  now = new Date("2026-07-22T01:15:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T02:45:00.000Z",
+  });
+
+  now = new Date("2026-07-22T07:15:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T07:45:00.000Z",
+  });
+  assert.equal(provider.requests(), 4);
+});
+
+test("applies an explicit proactive Pulse cadence when opening the Instance", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Nothing now.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
+    intervalMinutes: 45,
+    quietIntervalMinutes: 120,
+  });
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T10:45:00.000Z",
+  });
+  now = new Date("2026-07-22T10:45:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:30:00.000Z",
+  });
+  assert.equal(provider.requests(), 2);
+});
+
+test("persists a completed Pulse schedule across Instance restart", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Still quiet.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const first = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  await first.runOnce(now);
+  now = new Date("2026-07-22T10:30:00.000Z");
+  await first.runOnce(now);
+  first.close();
+
+  now = new Date("2026-07-22T10:45:00.000Z");
+  const recovered = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => recovered.close());
+
+  assert.deepEqual(await recovered.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 2);
+  assert.equal(recovered.status().runtime.proactivePulse?.lastPulseAt, "2026-07-22T10:30:00.000Z");
+});
+
+test("continues an admitted Pulse Opportunity through the Main Agent lifecycle", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({
+      outcome: "opportunity",
+      narrative: "The garden question may still have some life in it.",
+      whyNow: "It remains in current attention.",
+      evidence: ["attention read"],
+    }) },
+    { text: "The Individual lets the opening pass quietly." },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+  await instance.runOnce(now);
+
+  now = new Date("2026-07-22T10:30:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 3);
+  assert.equal(instance.status().runtime.inputs[0]?.kind, "opportunity");
+  assert.equal(instance.status().runtime.inputs[0]?.status, "consumed");
+  assert.equal(instance.status().runtime.turns[0]?.status, "completed");
+});
+
+test("retries a failed Orientation Pulse from its persisted due time", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: "not a valid Orientation result" },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Recovered.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const first = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  await first.runOnce(now);
+
+  now = new Date("2026-07-22T10:30:00.000Z");
+  const failed = await first.runOnce(now);
+  assert.equal(failed.disposition, "deferred");
+  assert.equal("reason" in failed ? failed.reason : undefined, "orientation_failed");
+  assert.equal(first.status().runtime.proactivePulse?.consecutiveFailures, 1);
+  assert.equal(first.status().runtime.proactivePulse?.nextPulseAfter, "2026-07-22T10:35:00.000Z");
+  first.close();
+
+  now = new Date("2026-07-22T10:35:00.000Z");
+  const recovered = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => recovered.close());
+  assert.deepEqual(await recovered.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:05:00.000Z",
+  });
+  assert.equal(recovered.status().runtime.proactivePulse?.consecutiveFailures, 0);
+  assert.equal(recovered.status().runtime.proactivePulse?.lastError, undefined);
+});
+
+test("keeps a due Pulse behind an open Activity until the Activity closes", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(
+    { text: "A private response" },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "pulse-behind-activity",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+
+  await instance.runOnce(now);
+  now = new Date("2026-07-22T10:29:59.999Z");
+  assert.equal((await instance.runOnce(now)).disposition, "waiting");
+  assert.equal(provider.requests(), 1);
+
+  now = new Date("2026-07-22T10:30:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 5);
+  assert.equal(instance.status().runtime.activeSegment, undefined);
+});
+
+test("keeps a due Pulse unclaimed while model configuration is blocked", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  await instance.runOnce(now);
+  now = new Date("2026-07-22T10:30:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "deferred",
+    reason: "model_runtime_blocked",
+  });
+  assert.equal(instance.status().runtime.proactivePulse?.lastPulseAt, undefined);
+  assert.equal(instance.status().runtime.proactivePulse?.nextPulseAfter, "2026-07-22T10:30:00.000Z");
+
+  const provider = await startOpenAiProvider(
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { text: JSON.stringify({ outcome: "none", whyNow: "Recovered.", evidence: ["attention read"] }) },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 2);
+});
+
 async function createInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-instance-"));
   await mkdir(path.join(root, "configuration", "pi"), { recursive: true });
@@ -368,11 +630,21 @@ async function writeModelConfiguration(
   baseUrl: string,
   defaultRoute?: string,
   thinkingLevel = "medium",
+  schedule?: { intervalMinutes: number; quietIntervalMinutes: number },
 ): Promise<void> {
   const configurationRoot = path.join(root, "configuration");
   await writeFile(path.join(configurationRoot, "instance.yaml"), [
     "version: 1",
     ...(defaultRoute ? ["interaction:", `  defaultRoute: ${defaultRoute}`] : []),
+    ...(schedule ? [
+      "schedule:",
+      "  proactivePulse:",
+      `    intervalMinutes: ${schedule.intervalMinutes}`,
+      "    quietHours:",
+      "      start: \"01:00\"",
+      "      end: \"07:00\"",
+      `      intervalMinutes: ${schedule.quietIntervalMinutes}`,
+    ] : []),
     "models:",
     "  default:",
     "    - provider: local-test",

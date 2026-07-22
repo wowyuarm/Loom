@@ -1,6 +1,11 @@
 export { openRuntime } from "./runtime.js";
-export { createScheduler, DEFAULT_ACTIVITY_IDLE_MS } from "./scheduler.js";
-export type { Scheduler, SchedulerOptions, SchedulerRunResult } from "./scheduler.js";
+export { createScheduler, DEFAULT_ACTIVITY_IDLE_MS, DEFAULT_PULSE_RETRY_MS } from "./scheduler.js";
+export type {
+  Scheduler,
+  SchedulerOptions,
+  SchedulerPulsePolicy,
+  SchedulerRunResult,
+} from "./scheduler.js";
 export type {
   AcceptedInput,
   AdvanceOptions,
@@ -31,8 +36,11 @@ export type {
   Runtime,
   RuntimeInput,
   RuntimeOptions,
+  RuntimePulseStatus,
   RuntimeActivityStatus,
   RuntimeStatus,
+  RunOpportunityPulseOptions,
+  RunOpportunityPulseResult,
   TranscriptAnchor,
   TurnControl,
   TurnRequest,

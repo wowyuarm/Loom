@@ -37,6 +37,8 @@ import type {
   RuntimeOptions,
   RuntimeStatus,
   RuntimeTurnStatus,
+  RunOpportunityPulseOptions,
+  RunOpportunityPulseResult,
   TranscriptAnchor,
   VerifiedToolActivity,
 } from "./types.js";
@@ -102,6 +104,13 @@ interface DeliveryRow {
   error: string | null;
 }
 
+interface PulseRow {
+  last_pulse_at: string | null;
+  next_pulse_after: string;
+  consecutive_failures: number;
+  last_error: string | null;
+}
+
 interface ActiveExecution {
   turnId: string;
   fencingToken: number;
@@ -126,6 +135,7 @@ class SqliteRuntime implements Runtime {
   #activeDeliveryId: string | undefined;
   #closingActivityId: string | undefined;
   #activeActivityAttemptId: string | undefined;
+  #opportunityRunning = false;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RuntimeOptions) {
@@ -192,13 +202,62 @@ class SqliteRuntime implements Runtime {
   }
 
   async formOpportunity(): Promise<FormOpportunityResult> {
+    return this.#formOpportunityAt(this.#now());
+  }
+
+  async runOpportunityPulse(
+    options: RunOpportunityPulseOptions,
+  ): Promise<RunOpportunityPulseResult> {
+    if (!Number.isFinite(options.observedAt.getTime())) {
+      throw new Error("Opportunity Pulse requires a valid observedAt");
+    }
+    assertPositiveDuration(options.initialDelayMs, "initialDelayMs");
+    assertPositiveDuration(options.cadenceMs, "cadenceMs");
+    assertPositiveDuration(options.retryDelayMs, "retryDelayMs");
+    const schedule = this.#ensurePulseSchedule(options.observedAt, options.initialDelayMs);
+    if (options.observedAt < new Date(schedule.next_pulse_after)) {
+      return { disposition: "waiting", nextRunAt: schedule.next_pulse_after };
+    }
+    if (options.agentWork === "defer") {
+      return { disposition: "agent_work_deferred", nextRunAt: schedule.next_pulse_after };
+    }
+
+    const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
+    try {
+      const result = await this.#formOpportunityAt(options.observedAt, nextRunAt);
+      if (result.disposition === "accepted") return { ...result, nextRunAt };
+      if (result.disposition === "none") return { ...result, nextRunAt };
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retryAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+      this.#failPulse(options.observedAt, retryAt, message);
+      return { disposition: "failed", nextRunAt: retryAt, error: message };
+    }
+  }
+
+  async #formOpportunityAt(
+    observedAt: Date,
+    completedPulseNextRunAt?: string,
+  ): Promise<FormOpportunityResult> {
     if (!this.#orientation) throw new Error("Runtime has no Orientation adapter");
-    const observedAt = this.#now();
+    if (this.#opportunityRunning) return { disposition: "busy" };
     const snapshot = this.#opportunitySnapshot(observedAt);
     if (!snapshot) return { disposition: "busy" };
 
-    const result = await this.#orientation.form(snapshot.request);
-    if (result.outcome === "none") return { disposition: "none", runId: result.runId };
+    this.#opportunityRunning = true;
+    let result;
+    try {
+      result = await this.#orientation.form(snapshot.request);
+    } finally {
+      this.#opportunityRunning = false;
+    }
+    if (result.outcome === "none") {
+      if (completedPulseNextRunAt) {
+        this.#completePulse(observedAt, completedPulseNextRunAt, "orientation_none");
+      }
+      return { disposition: "none", runId: result.runId };
+    }
     if (!result.runId.trim() || !result.narrative.trim()) {
       throw new Error("Orientation Opportunity requires a runId and narrative");
     }
@@ -230,6 +289,13 @@ class SqliteRuntime implements Runtime {
         acceptedAt.toISOString(),
       );
       this.#recordTransition("input", inputId, null, "pending", "opportunity_admitted", acceptedAt, null);
+      if (completedPulseNextRunAt) {
+        this.#completePulseInTransaction(
+          observedAt,
+          completedPulseNextRunAt,
+          "opportunity_admitted",
+        );
+      }
       return { disposition: "accepted", inputId, runId: result.runId } as const;
     });
   }
@@ -436,6 +502,7 @@ class SqliteRuntime implements Runtime {
       FROM activities
       ORDER BY sequence
     `).all() as unknown as ActivityRow[];
+    const pulse = this.#readPulseSchedule();
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -493,6 +560,14 @@ class SqliteRuntime implements Runtime {
         ...(row.receipt_json ? { receipt: JSON.parse(row.receipt_json) as LifeRecorderReceipt } : {}),
         ...(row.last_error ? { lastError: row.last_error } : {}),
       })),
+      ...(pulse ? {
+        proactivePulse: {
+          ...(pulse.last_pulse_at ? { lastPulseAt: pulse.last_pulse_at } : {}),
+          nextPulseAfter: pulse.next_pulse_after,
+          consecutiveFailures: pulse.consecutive_failures,
+          ...(pulse.last_error ? { lastError: pulse.last_error } : {}),
+        },
+      } : {}),
     };
   }
 
@@ -513,6 +588,84 @@ class SqliteRuntime implements Runtime {
       SELECT id, opened_at, last_activity_at, starting_state_json, status, close_fencing_token, closed_at
       FROM active_segment WHERE singleton = 1
     `).get() as unknown as ActiveSegmentRow | undefined;
+  }
+
+  #readPulseSchedule(): PulseRow | undefined {
+    return this.#database.prepare(`
+      SELECT last_pulse_at, next_pulse_after, consecutive_failures, last_error
+      FROM proactive_pulse WHERE singleton = 1
+    `).get() as unknown as PulseRow | undefined;
+  }
+
+  #ensurePulseSchedule(observedAt: Date, initialDelayMs: number): PulseRow {
+    return this.#transaction(() => {
+      const existing = this.#readPulseSchedule();
+      if (existing) return existing;
+      const nextPulseAfter = new Date(observedAt.getTime() + initialDelayMs).toISOString();
+      this.#database.prepare(`
+        INSERT INTO proactive_pulse (
+          singleton, last_pulse_at, next_pulse_after, consecutive_failures, last_error
+        ) VALUES (1, NULL, ?, 0, NULL)
+      `).run(nextPulseAfter);
+      this.#recordTransition(
+        "proactive_pulse",
+        "singleton",
+        null,
+        "scheduled",
+        "initialized",
+        observedAt,
+        null,
+      );
+      return {
+        last_pulse_at: null,
+        next_pulse_after: nextPulseAfter,
+        consecutive_failures: 0,
+        last_error: null,
+      };
+    });
+  }
+
+  #completePulse(observedAt: Date, nextRunAt: string, reason: string): void {
+    this.#transaction(() => this.#completePulseInTransaction(observedAt, nextRunAt, reason));
+  }
+
+  #completePulseInTransaction(observedAt: Date, nextRunAt: string, reason: string): void {
+    const changed = this.#database.prepare(`
+      UPDATE proactive_pulse
+      SET last_pulse_at = ?, next_pulse_after = ?, consecutive_failures = 0, last_error = NULL
+      WHERE singleton = 1
+    `).run(observedAt.toISOString(), nextRunAt);
+    if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
+    this.#recordTransition(
+      "proactive_pulse",
+      "singleton",
+      "due",
+      "scheduled",
+      reason,
+      observedAt,
+      null,
+    );
+  }
+
+  #failPulse(observedAt: Date, nextRunAt: string, error: string): void {
+    this.#transaction(() => {
+      const changed = this.#database.prepare(`
+        UPDATE proactive_pulse
+        SET next_pulse_after = ?, consecutive_failures = consecutive_failures + 1,
+            last_error = ?
+        WHERE singleton = 1
+      `).run(nextRunAt, error.slice(0, 2_000));
+      if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
+      this.#recordTransition(
+        "proactive_pulse",
+        "singleton",
+        "due",
+        "scheduled",
+        "orientation_failed",
+        observedAt,
+        null,
+      );
+    });
   }
 
   #hasPendingInput(): boolean {
@@ -1884,6 +2037,12 @@ class SqliteRuntime implements Runtime {
       this.#database.exec("ROLLBACK");
       throw error;
     }
+  }
+}
+
+function assertPositiveDuration(value: number, label: string): void {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`Opportunity Pulse ${label} must be a positive finite number`);
   }
 }
 

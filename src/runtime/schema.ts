@@ -159,6 +159,14 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       UNIQUE (activity_id, attempt_number)
     ) STRICT;
 
-    PRAGMA user_version = 7;
+    CREATE TABLE IF NOT EXISTS proactive_pulse (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      last_pulse_at TEXT,
+      next_pulse_after TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+      last_error TEXT
+    ) STRICT;
+
+    PRAGMA user_version = 8;
   `);
 }

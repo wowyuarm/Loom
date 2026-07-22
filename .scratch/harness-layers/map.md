@@ -70,6 +70,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [25 — Schedule Runtime Lifecycle](issues/25-schedule-runtime-lifecycle.md)。Scheduler 以单一 `runOnce` Interface 推进 Runtime pending work、idle Activity close 与 Recorder retry；Active Segment 的单调活动时间和 guarded close 保持在 Runtime Store 权威内。
 - Completed: [26 — Revise Model Runtime Between Turns](issues/26-revise-model-runtime-between-turns.md)。Instance model policy 与 `ModelRuntimeRevisions` 已闭合：Pi `0.81.1` 候选 runtime 先验证全部 role model/auth 后原子切换，旧 revision 支持当前运行，坏 source 明确 degraded / blocked 且不读取凭据正文。
 - Completed: [27 — Assemble a Runtime Instance](issues/27-assemble-runtime-instance.md)。`openLoomInstance` 以小型 Interface 装配首条真实纵切；Instance Root、默认 Behavior、源码 System Guidance、route、Pi revision、Main Agent、Orientation、Activity closure、Life Recorder、Scheduler 和 failure-soft recall 已接线，blocked 时保留 agent work 且继续 delivery / 无模型 closure。
+- Completed: [28 — Schedule the Proactive Pulse](issues/28-schedule-proactive-pulse.md)。Orientation 已接入 Runtime Store 内的持久 Pulse；普通/quiet-hours cadence、配置覆盖、Activity 互斥、`none`、失败重试、blocked 与跨重启恢复均通过公开 Instance seam 闭合，未引入通用 job runner。
 
 ## Context Follow-ups
 
@@ -89,13 +90,13 @@ Ticket 03 已闭合 per-Turn session、committed branch、active window projecti
 
 nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首阶段仍缺少的闭环：
 
-1. Instance Assembly 已闭合首条可运行纵切；process driver、soft split、Orientation pulse、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 尚未接线。
+1. Instance Assembly 与 Orientation Pulse 已闭合；process driver、soft split、Attention / Thread / Memory maintenance、nmem reconcile 和真实 outbound 后的 after-chat continuation 尚未接线。
 2. channel endpoint / credential Adapter、其余 Integration 装配与节律配置仍需随真实消费者进入，不在 Assembly 中预建通用 loader。
 3. 通用化最终还需一个不同于现有参考个体的虚拟 Individual 做结构验收，并以真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械测试不能替代这一层。
 
 当前依赖顺序：其余 cadence 接线 -> 结构与行为验收。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 27 已闭合 Instance Assembly；下一步先审视尚未接线的 cadence、现有 Scheduler 与各 Cognitive Organ / nmem Module 的触发事实，选择下一条有真实消费者的纵向切片，再建立对应 ticket。
+Current work item: none。Ticket 28 已闭合 Proactive Pulse；下一步重新审视尚未接线的 Cognitive Organ、nmem projection 和 after-chat continuation 的真实触发事实，再选择一条纵向切片。
 
 ### Memory Reflector Completion Checkpoint
 

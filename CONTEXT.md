@@ -114,6 +114,10 @@ _Avoid_: scheduler, background agent, task planner, proactive gate
 Orientation 结果经 Runtime 原子确认仍然空闲后形成的一种 Input。它不是人类来信或任务，可以被 Main Agent 放下、转化为私人活动或通过 Effect 走向外部行动。
 _Avoid_: human message, scheduled task, orientation result, mandatory action
 
+**Proactive Pulse**:
+Runtime Instance 在空闲时为 Orientation 提供的一次持久节律机会。完成一次 Pulse 可以形成 Opportunity，也可以得到 `none`；它不是强制行动、后台任务内容或任意 job 的注册机制。
+_Avoid_: opportunity, background task, cron job, orientation result
+
 ## Cognitive Recording
 
 **Stable Facts**:

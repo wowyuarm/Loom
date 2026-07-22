@@ -283,6 +283,13 @@ export interface RuntimeActivityStatus {
   lastError?: string;
 }
 
+export interface RuntimePulseStatus {
+  lastPulseAt?: string;
+  nextPulseAfter: string;
+  consecutiveFailures: number;
+  lastError?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
@@ -294,6 +301,7 @@ export interface RuntimeStatus {
     lastActivityAt: string;
   };
   activities: RuntimeActivityStatus[];
+  proactivePulse?: RuntimePulseStatus;
 }
 
 export interface RuntimeOptions {
@@ -341,9 +349,27 @@ export type FormOpportunityResult =
   | { disposition: "busy" }
   | { disposition: "stale"; runId: string };
 
+export interface RunOpportunityPulseOptions {
+  observedAt: Date;
+  initialDelayMs: number;
+  cadenceMs: number;
+  retryDelayMs: number;
+  agentWork?: "allow" | "defer";
+}
+
+export type RunOpportunityPulseResult =
+  | { disposition: "waiting"; nextRunAt: string }
+  | { disposition: "accepted"; inputId: string; runId: string; nextRunAt: string }
+  | { disposition: "none"; runId: string; nextRunAt: string }
+  | { disposition: "busy" }
+  | { disposition: "stale"; runId: string }
+  | { disposition: "agent_work_deferred"; nextRunAt: string }
+  | { disposition: "failed"; nextRunAt: string; error: string };
+
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   formOpportunity(): Promise<FormOpportunityResult>;
+  runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
   advance(options?: AdvanceOptions): Promise<AdvanceResult>;
   closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;

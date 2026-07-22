@@ -1,11 +1,14 @@
 export {
   loadInstanceConfiguration,
+  DEFAULT_SCHEDULE,
   MODEL_ROLES,
   type InstanceConfiguration,
   type LoadInstanceConfigurationOptions,
   type ModelCandidate,
   type ModelPolicy,
   type ModelRole,
+  type ProactivePulseConfiguration,
+  type ScheduleConfiguration,
 } from "./instance.js";
 export {
   openModelRuntimeRevisions,
