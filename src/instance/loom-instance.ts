@@ -34,6 +34,7 @@ import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import {
   createRevisionBoundLifeRecorder,
   createRevisionBoundOrientation,
+  createRevisionBoundThreadMaintenance,
   loadWorkspaceSkillIndex,
 } from "./revision-bound-organs.js";
 
@@ -154,7 +155,14 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       evidenceSources: options.nmem?.endpoint ? ["nmem"] : [],
     }),
   });
-  const runtime = openRuntime({
+  let runtime!: Runtime;
+  const threadMaintenance = createRevisionBoundThreadMaintenance({
+    revisions,
+    layout,
+    agentWorkspace,
+    loadActivity: async activityId => runtime.frozenActivity(activityId),
+  });
+  runtime = openRuntime({
     root: layout.runtimeRoot,
     timePolicy: configuration.timePolicy,
     execution,
@@ -168,6 +176,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       layout,
       agentWorkspace,
     }),
+    threadMaintenance,
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),
     ...(options.now ? { now: options.now } : {}),
   });

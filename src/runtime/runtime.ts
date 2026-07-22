@@ -36,6 +36,9 @@ import type {
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
+  ThreadActivityObservation,
+  ThreadMaintenance,
+  ThreadMaintenanceResult,
   RuntimeTurnStatus,
   RunOpportunityPulseOptions,
   RunOpportunityPulseResult,
@@ -111,6 +114,16 @@ interface PulseRow {
   last_error: string | null;
 }
 
+interface ThreadMaintenanceRow {
+  activity_id: string;
+  observations_json: string;
+  status: "pending" | "running" | "completed";
+  attempt_count: number;
+  fencing_token: number | null;
+  result_json: string | null;
+  last_error: string | null;
+}
+
 interface ActiveExecution {
   turnId: string;
   fencingToken: number;
@@ -126,6 +139,7 @@ class SqliteRuntime implements Runtime {
   readonly #activityLifecycle: ActivityLifecycle | undefined;
   readonly #activityRecorder: ActivityRecorder | undefined;
   readonly #orientation: Orientation | undefined;
+  readonly #threadMaintenance: ThreadMaintenance | undefined;
   readonly #timePolicy: TimePolicy;
   readonly #now: () => Date;
   readonly #nextId: () => string;
@@ -135,6 +149,7 @@ class SqliteRuntime implements Runtime {
   #activeDeliveryId: string | undefined;
   #closingActivityId: string | undefined;
   #activeActivityAttemptId: string | undefined;
+  #activeThreadMaintenanceId: string | undefined;
   #opportunityRunning = false;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
@@ -146,6 +161,7 @@ class SqliteRuntime implements Runtime {
     this.#activityLifecycle = options.activityLifecycle;
     this.#activityRecorder = options.activityRecorder;
     this.#orientation = options.orientation;
+    this.#threadMaintenance = options.threadMaintenance;
     this.#timePolicy = options.timePolicy ?? createHostTimePolicy();
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
@@ -154,6 +170,7 @@ class SqliteRuntime implements Runtime {
     initializeRuntimeSchema(this.#database);
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
+    this.#reconcileExpiredThreadMaintenance();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
   }
@@ -301,13 +318,15 @@ class SqliteRuntime implements Runtime {
   }
 
   async advance(options: AdvanceOptions = {}): Promise<AdvanceResult> {
-    if (this.#active || this.#activeDeliveryId || this.#closingActivityId || this.#activeActivityAttemptId) {
+    if (this.#active || this.#activeDeliveryId || this.#closingActivityId
+      || this.#activeActivityAttemptId || this.#activeThreadMaintenanceId) {
       return { disposition: "busy" };
     }
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
+    this.#reconcileExpiredThreadMaintenance();
     if (this.#hasRunningTurn()) return { disposition: "busy" };
 
     if (this.#outboundDelivery) {
@@ -419,14 +438,20 @@ class SqliteRuntime implements Runtime {
       }
     }
 
-    if (options.agentWork === "defer" && this.#activityRecorder && this.#hasPendingActivityRecording()) {
+    if (options.agentWork === "defer" && (
+      (this.#activityRecorder && this.#hasPendingActivityRecording())
+      || (this.#threadMaintenance && this.#hasPendingThreadMaintenance())
+    )) {
       return { disposition: "agent_work_deferred" };
     }
-    return this.#advanceActivityRecording();
+    const recording = await this.#advanceActivityRecording();
+    if (recording.disposition !== "idle") return recording;
+    return this.#advanceThreadMaintenance();
   }
 
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
-    if (this.#active || this.#activeDeliveryId || this.#closingActivityId || this.#activeActivityAttemptId) {
+    if (this.#active || this.#activeDeliveryId || this.#closingActivityId
+      || this.#activeActivityAttemptId || this.#activeThreadMaintenanceId) {
       return { disposition: "busy" };
     }
     this.#reconcileExpiredActivityClose();
@@ -503,6 +528,12 @@ class SqliteRuntime implements Runtime {
       ORDER BY sequence
     `).all() as unknown as ActivityRow[];
     const pulse = this.#readPulseSchedule();
+    const threadMaintenanceRows = this.#database.prepare(`
+      SELECT activity_id, observations_json, status, attempt_count, fencing_token,
+             result_json, last_error
+      FROM thread_maintenance
+      ORDER BY created_at, activity_id
+    `).all() as unknown as ThreadMaintenanceRow[];
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -558,6 +589,15 @@ class SqliteRuntime implements Runtime {
         status: row.status,
         attempts: row.attempt_count,
         ...(row.receipt_json ? { receipt: JSON.parse(row.receipt_json) as LifeRecorderReceipt } : {}),
+        ...(row.last_error ? { lastError: row.last_error } : {}),
+      })),
+      threadMaintenance: threadMaintenanceRows.map(row => ({
+        activityId: row.activity_id,
+        status: row.status,
+        attempts: row.attempt_count,
+        ...(row.result_json
+          ? { result: JSON.parse(row.result_json) as ThreadMaintenanceResult }
+          : {}),
         ...(row.last_error ? { lastError: row.last_error } : {}),
       })),
       ...(pulse ? {
@@ -980,6 +1020,23 @@ class SqliteRuntime implements Runtime {
         JSON.stringify(activity),
         now.toISOString(),
       );
+      const observations = this.#threadMaintenance?.observationsFor(activity) ?? [];
+      if (observations.some(observation => observation.relation === "changed")) {
+        this.#database.prepare(`
+          INSERT INTO thread_maintenance (
+            activity_id, observations_json, status, created_at
+          ) VALUES (?, ?, 'pending', ?)
+        `).run(activity.segmentId, JSON.stringify(observations), now.toISOString());
+        this.#recordTransition(
+          "thread_maintenance",
+          activity.segmentId,
+          null,
+          "pending",
+          "thread_change_observed",
+          now,
+          fencingToken,
+        );
+      }
       const state = this.#database.prepare(`
         UPDATE active_execution_state SET state_json = ?, updated_at = ? WHERE singleton = 1
       `).run(JSON.stringify(successorExecutionState), now.toISOString());
@@ -1146,6 +1203,208 @@ class SqliteRuntime implements Runtime {
         );
       }
     });
+  }
+
+  #reconcileExpiredThreadMaintenance(): void {
+    if (!this.#threadMaintenance) return;
+    this.#transaction(() => {
+      const now = this.#now();
+      const expired = this.#database.prepare(`
+        SELECT activity_id, fencing_token
+        FROM thread_maintenance
+        WHERE status = 'running' AND lease_expires_at <= ?
+        ORDER BY created_at, activity_id
+      `).all(now.toISOString()) as unknown as Array<{
+        activity_id: string;
+        fencing_token: number;
+      }>;
+      for (const maintenance of expired) {
+        this.#database.prepare(`
+          UPDATE thread_maintenance
+          SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
+              lease_expires_at = NULL, last_error = 'maintenance lease expired'
+          WHERE activity_id = ? AND status = 'running' AND fencing_token = ?
+        `).run(maintenance.activity_id, maintenance.fencing_token);
+        this.#recordTransition(
+          "thread_maintenance",
+          maintenance.activity_id,
+          "running",
+          "pending",
+          "maintenance_lease_expired",
+          now,
+          maintenance.fencing_token,
+        );
+      }
+    });
+  }
+
+  async #advanceThreadMaintenance(): Promise<AdvanceResult> {
+    if (!this.#threadMaintenance) return { disposition: "idle" };
+    const claimed = this.#claimPendingThreadMaintenance();
+    if (!claimed) {
+      const unfinished = this.#database.prepare(`
+        SELECT 1 FROM thread_maintenance WHERE status <> 'completed' LIMIT 1
+      `).get();
+      return unfinished ? { disposition: "busy" } : { disposition: "idle" };
+    }
+    this.#activeThreadMaintenanceId = claimed.activity.segmentId;
+    this.#startHeartbeat("thread_maintenance", claimed.activity.segmentId, claimed.fencingToken);
+    try {
+      const observedAt = this.#now();
+      const result = await this.#threadMaintenance.maintain({
+        observedAt: observedAt.toISOString(),
+        localTime: this.#timePolicy.formatLocalTime(observedAt),
+        activity: claimed.activity,
+        observations: claimed.observations,
+      });
+      this.#finishThreadMaintenance(claimed, result);
+      return { disposition: "thread_maintenance_completed" };
+    } catch (error) {
+      this.#failThreadMaintenance(claimed, error);
+      return { disposition: "thread_maintenance_failed" };
+    } finally {
+      this.#stopHeartbeat();
+      if (this.#activeThreadMaintenanceId === claimed.activity.segmentId) {
+        this.#activeThreadMaintenanceId = undefined;
+      }
+    }
+  }
+
+  #claimPendingThreadMaintenance(): {
+    activity: FrozenActivity;
+    observations: ThreadActivityObservation[];
+    attemptNumber: number;
+    fencingToken: number;
+  } | undefined {
+    return this.#transaction(() => {
+      const next = this.#database.prepare(`
+        SELECT thread_maintenance.activity_id, thread_maintenance.observations_json,
+               thread_maintenance.attempt_count, activities.frozen_activity_json
+        FROM thread_maintenance
+        JOIN activities ON activities.id = thread_maintenance.activity_id
+        WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
+        ORDER BY thread_maintenance.created_at, thread_maintenance.activity_id
+        LIMIT 1
+      `).get() as unknown as {
+        activity_id: string;
+        observations_json: string;
+        attempt_count: number;
+        frozen_activity_json: string;
+      } | undefined;
+      if (!next) return undefined;
+      const token = this.#database.prepare(`
+        UPDATE runtime_counters SET value = value + 1
+        WHERE name = 'fencing_token'
+        RETURNING value
+      `).get() as unknown as { value: number };
+      const now = this.#now();
+      const attemptNumber = next.attempt_count + 1;
+      const changed = this.#database.prepare(`
+        UPDATE thread_maintenance
+        SET status = 'running', attempt_count = ?, lease_owner = ?, fencing_token = ?,
+            lease_expires_at = ?
+        WHERE activity_id = ? AND status = 'pending' AND attempt_count = ?
+      `).run(
+        attemptNumber,
+        this.#ownerId,
+        token.value,
+        new Date(now.getTime() + this.#leaseDurationMs).toISOString(),
+        next.activity_id,
+        next.attempt_count,
+      );
+      if (changed.changes !== 1) return undefined;
+      this.#recordTransition(
+        "thread_maintenance",
+        next.activity_id,
+        "pending",
+        "running",
+        "maintenance_claimed",
+        now,
+        token.value,
+      );
+      return {
+        activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
+        observations: JSON.parse(next.observations_json) as ThreadActivityObservation[],
+        attemptNumber,
+        fencingToken: token.value,
+      };
+    });
+  }
+
+  #finishThreadMaintenance(
+    claimed: { activity: FrozenActivity; attemptNumber: number; fencingToken: number },
+    result: ThreadMaintenanceResult,
+  ): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      const changed = this.#database.prepare(`
+        UPDATE thread_maintenance
+        SET status = 'completed', lease_owner = NULL, fencing_token = NULL,
+            lease_expires_at = NULL, result_json = ?, last_error = NULL, completed_at = ?
+        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
+          AND fencing_token = ? AND lease_owner = ?
+      `).run(
+        JSON.stringify(result),
+        now.toISOString(),
+        claimed.activity.segmentId,
+        claimed.attemptNumber,
+        claimed.fencingToken,
+        this.#ownerId,
+      );
+      if (changed.changes !== 1) {
+        throw new Error(`Thread maintenance ${claimed.activity.segmentId} no longer accepts completion`);
+      }
+      this.#recordTransition(
+        "thread_maintenance",
+        claimed.activity.segmentId,
+        "running",
+        "completed",
+        result.outcome,
+        now,
+        claimed.fencingToken,
+      );
+    });
+  }
+
+  #failThreadMaintenance(
+    claimed: { activity: FrozenActivity; attemptNumber: number; fencingToken: number },
+    error: unknown,
+  ): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      const detail = error instanceof Error ? error.message : String(error);
+      const changed = this.#database.prepare(`
+        UPDATE thread_maintenance
+        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
+            lease_expires_at = NULL, last_error = ?
+        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
+          AND fencing_token = ? AND lease_owner = ?
+      `).run(
+        detail,
+        claimed.activity.segmentId,
+        claimed.attemptNumber,
+        claimed.fencingToken,
+        this.#ownerId,
+      );
+      if (changed.changes !== 1) return;
+      this.#recordTransition(
+        "thread_maintenance",
+        claimed.activity.segmentId,
+        "running",
+        "pending",
+        `maintenance_failed:${detail}`,
+        now,
+        claimed.fencingToken,
+      );
+    });
+  }
+
+  #hasPendingThreadMaintenance(): boolean {
+    return Boolean(this.#database.prepare(`
+      SELECT 1 FROM thread_maintenance
+      WHERE status <> 'completed'
+      LIMIT 1
+    `).get());
   }
 
   async #advanceActivityRecording(): Promise<AdvanceResult> {
@@ -1989,7 +2248,7 @@ class SqliteRuntime implements Runtime {
   }
 
   #startHeartbeat(
-    kind: "turn" | "delivery" | "activity_close" | "activity_recording",
+    kind: "turn" | "delivery" | "activity_close" | "activity_recording" | "thread_maintenance",
     id: string,
     fencingToken: number,
   ): void {
@@ -2012,10 +2271,15 @@ class SqliteRuntime implements Runtime {
                 UPDATE active_segment SET close_lease_expires_at = ?
                 WHERE id = ? AND status = 'closing' AND close_fencing_token = ? AND close_owner = ?
               `).run(expiresAt, id, fencingToken, this.#ownerId)
-            : this.#database.prepare(`
-                UPDATE activities SET lease_expires_at = ?
-                WHERE id = ? AND status = 'recording' AND fencing_token = ? AND lease_owner = ?
-              `).run(expiresAt, id, fencingToken, this.#ownerId);
+            : kind === "activity_recording"
+              ? this.#database.prepare(`
+                  UPDATE activities SET lease_expires_at = ?
+                  WHERE id = ? AND status = 'recording' AND fencing_token = ? AND lease_owner = ?
+                `).run(expiresAt, id, fencingToken, this.#ownerId)
+              : this.#database.prepare(`
+                  UPDATE thread_maintenance SET lease_expires_at = ?
+                  WHERE activity_id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+                `).run(expiresAt, id, fencingToken, this.#ownerId);
       if (result.changes !== 1) this.#stopHeartbeat();
     }, intervalMs);
     this.#heartbeat.unref();

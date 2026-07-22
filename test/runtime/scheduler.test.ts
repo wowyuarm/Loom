@@ -10,6 +10,7 @@ import {
   type ActivityLifecycle,
   type ActivityRecorder,
   type AgentExecution,
+  type ThreadMaintenance,
 } from "../../src/runtime/index.js";
 
 const completingExecution: AgentExecution = {
@@ -274,4 +275,226 @@ test("retries pending Activity recording through Scheduler after restart", async
   } finally {
     recovered.close();
   }
+});
+
+test("maintains changed Thread material once after Activity recording", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-thread-maintenance-"));
+  let now = new Date("2026-07-21T16:00:00.000Z");
+  const maintained: string[] = [];
+  const execution: AgentExecution = {
+    start(request, control) {
+      control.prepareExecutionState({ version: 1 });
+      control.includeInput(request.inputs[0]!.id);
+      control.recordToolActivity({
+        toolCallId: "write-thread-note",
+        toolName: "write",
+        callArguments: { path: "threads/garden/observation.md", content: "new observation" },
+        result: { status: "written" },
+      });
+      return {
+        result: Promise.resolve({
+          outcome: "completed",
+          inputAnchors: request.inputs.map(input => ({
+            inputId: input.id,
+            transcriptAnchor: {
+              sourceId: request.recordingDay,
+              sessionId: "thread-session",
+              entryId: `input-${input.id}`,
+            },
+          })),
+          transcriptAnchor: {
+            sourceId: request.recordingDay,
+            sessionId: "thread-session",
+            entryId: `turn-${request.turnId}`,
+          },
+          executionState: { version: 1, turnId: request.turnId },
+          executionRecord: { version: 1, turnId: request.turnId },
+        }),
+        steer: async input => control.includeInput(input.id),
+        abort: async () => {},
+      };
+    },
+  };
+  const threadMaintenance: ThreadMaintenance = {
+    observationsFor: activity => activity.events.some(event => event.kind === "tool_call")
+      ? [{
+          turnId: activity.turns[0]!.turnId,
+          threadPath: "garden",
+          relation: "changed",
+          paths: ["garden/observation.md"],
+        }]
+      : [],
+    maintain: async request => {
+      maintained.push(request.activity.segmentId);
+      return { outcome: "no_change", runId: "maintain-garden", changedPaths: [] };
+    },
+  };
+  const runtime = openRuntime({
+    root,
+    execution,
+    activityLifecycle: {
+      freeze: async request => ({
+        activity: {
+          version: 1,
+          segmentId: request.segment.id,
+          recordingDay: request.segment.recordingDay,
+          openedAt: request.segment.openedAt,
+          closedAt: request.segment.closedAt,
+          events: request.toolActivities.flatMap(activity => [{
+            eventId: `tool-call:${activity.turnId}:${activity.toolCallId}`,
+            turnId: activity.turnId,
+            at: activity.completedAt,
+            actorRef: "individual" as const,
+            kind: "tool_call" as const,
+            content: {
+              toolCallId: activity.toolCallId,
+              toolName: activity.toolName,
+              arguments: activity.callArguments,
+            },
+          }]),
+          turns: request.turns.map(turn => ({
+            turnId: turn.id,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            status: turn.status,
+          })),
+        },
+        successorExecutionState: { version: 1 },
+      }),
+    },
+    activityRecorder: recorder([]),
+    threadMaintenance,
+    now: () => now,
+  });
+  const scheduler = createScheduler({ runtime });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "changed-thread",
+    kind: "interaction",
+    payload: { text: "continue the garden line" },
+  });
+  assert.equal((await scheduler.runOnce(now)).disposition, "waiting");
+
+  now = new Date("2026-07-21T16:30:00.000Z");
+  assert.deepEqual(await scheduler.runOnce(now), { disposition: "idle" });
+  assert.equal(runtime.status().activities[0]?.status, "recorded");
+  assert.deepEqual(maintained, [runtime.status().activities[0]!.id]);
+  assert.equal(runtime.status().threadMaintenance[0]?.status, "completed");
+
+  await scheduler.runOnce(now);
+  assert.equal(maintained.length, 1);
+});
+
+test("keeps failed Thread maintenance pending across restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-thread-recovery-"));
+  let now = new Date("2026-07-21T17:00:00.000Z");
+  const observationsFor: ThreadMaintenance["observationsFor"] = activity => [{
+    turnId: activity.turns[0]!.turnId,
+    threadPath: "garden",
+    relation: "changed",
+    paths: ["garden/thread.md"],
+  }];
+  const firstRuntime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    threadMaintenance: {
+      observationsFor,
+      maintain: async () => {
+        throw new Error("thread maintainer unavailable");
+      },
+    },
+    now: () => now,
+  });
+  const firstScheduler = createScheduler({ runtime: firstRuntime });
+  await firstRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "maintain-after-restart",
+    kind: "interaction",
+    payload: { text: "continue the line" },
+  });
+  await firstScheduler.runOnce(now);
+
+  now = new Date("2026-07-21T17:30:00.000Z");
+  assert.deepEqual(await firstScheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "thread_maintenance_failed",
+  });
+  const activityId = firstRuntime.status().activities[0]?.id;
+  assert.ok(activityId);
+  assert.equal(firstRuntime.status().threadMaintenance[0]?.status, "pending");
+  assert.equal(firstRuntime.status().threadMaintenance[0]?.attempts, 1);
+  assert.match(firstRuntime.status().threadMaintenance[0]?.lastError ?? "", /unavailable/);
+  firstRuntime.close();
+
+  const maintained: string[] = [];
+  const recovered = openRuntime({
+    root,
+    ownerId: "recovered-thread-maintenance-runtime",
+    threadMaintenance: {
+      observationsFor,
+      maintain: async request => {
+        maintained.push(request.activity.segmentId);
+        return { outcome: "no_change", runId: "recovered-maintenance", changedPaths: [] };
+      },
+    },
+    now: () => now,
+  });
+  try {
+    const scheduler = createScheduler({ runtime: recovered });
+    assert.deepEqual(await scheduler.runOnce(now), { disposition: "idle" });
+    assert.deepEqual(maintained, [activityId]);
+    assert.equal(recovered.status().threadMaintenance[0]?.status, "completed");
+    assert.equal(recovered.status().threadMaintenance[0]?.attempts, 2);
+    assert.equal(recovered.status().threadMaintenance[0]?.lastError, undefined);
+  } finally {
+    recovered.close();
+  }
+});
+
+test("does not claim pending Thread maintenance while agent work is deferred", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-thread-blocked-"));
+  const now = new Date("2026-07-21T18:00:00.000Z");
+  let maintenanceCalls = 0;
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    threadMaintenance: {
+      observationsFor: activity => [{
+        turnId: activity.turns[0]!.turnId,
+        threadPath: "garden",
+        relation: "changed",
+        paths: ["garden/thread.md"],
+      }],
+      maintain: async () => {
+        maintenanceCalls += 1;
+        return { outcome: "no_change", runId: "blocked-maintenance", changedPaths: [] };
+      },
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "blocked-thread-maintenance",
+    kind: "interaction",
+    payload: { text: "continue" },
+  });
+  await runtime.advance();
+  await runtime.closeActivity();
+  assert.equal((await runtime.advance()).disposition, "activity_recorded");
+
+  const scheduler = createScheduler({ runtime, admitAgentWork: () => false });
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "agent_work_not_admitted",
+  });
+  assert.equal(maintenanceCalls, 0);
+  assert.equal(runtime.status().threadMaintenance[0]?.status, "pending");
+  assert.equal(runtime.status().threadMaintenance[0]?.attempts, 0);
 });

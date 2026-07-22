@@ -323,6 +323,64 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
   assert.equal(instance.status().runtime.activeSegment, undefined);
   assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
   assert.equal(instance.status().runtime.activities[0]?.receipt?.segmentId, instance.status().runtime.activities[0]?.id);
+  assert.deepEqual(instance.status().runtime.threadMaintenance, []);
+});
+
+test("maintains changed Thread material through the assembled Instance", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  await mkdir(path.join(root, "workspace", "threads"), { recursive: true });
+  await writeFile(path.join(root, "workspace", "threads", "index.md"), "# Threads\n", "utf8");
+  const provider = await startOpenAiProvider(
+    { tool: { name: "write", arguments: {
+      path: "threads/garden/thread.md",
+      content: "# Garden\n\nA living line.\n",
+    } } },
+    { text: "The private line has a place now." },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
+    { tool: { name: "read", arguments: { path: "index.md" } } },
+    { tool: { name: "read", arguments: { path: "garden/thread.md" } } },
+    body => {
+      const reference = JSON.stringify(body).match(/Reference ID: (evidence-[A-Za-z0-9-]+)/)?.[1];
+      assert.ok(reference);
+      return { tool: { name: "read_thread_activity", arguments: {
+        referenceId: reference,
+        offset: 0,
+        limit: 200,
+      } } };
+    },
+    { text: "NO_CHANGE" },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
+    intervalMinutes: 60,
+    quietIntervalMinutes: 90,
+  });
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "thread-input",
+    kind: "interaction",
+    payload: { text: "continue the garden line" },
+  });
+  await instance.runOnce(now);
+
+  now = new Date("2026-07-22T10:30:00.000Z");
+  assert.deepEqual(await instance.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-22T11:00:00.000Z",
+  });
+  assert.equal(provider.requests(), 8);
+  assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
+  assert.equal(instance.status().runtime.threadMaintenance[0]?.status, "completed");
+  assert.equal(instance.status().runtime.threadMaintenance[0]?.attempts, 1);
+  assert.equal(instance.status().runtime.threadMaintenance[0]?.result?.outcome, "no_change");
+
+  await instance.runOnce(now);
+  assert.equal(provider.requests(), 8);
 });
 
 test("forms a proactive opening through a revision-bound Orientation", async t => {
@@ -675,7 +733,8 @@ async function writeModelConfiguration(
 
 type ProviderResponse =
   | { text: string }
-  | { tool: { name: string; arguments: Record<string, unknown> } };
+  | { tool: { name: string; arguments: Record<string, unknown> } }
+  | ((body: Record<string, unknown>) => Exclude<ProviderResponse, Function>);
 
 async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Promise<{
   baseUrl: string;
@@ -690,8 +749,11 @@ async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Pr
     request.on("data", chunk => chunks.push(Buffer.from(chunk)));
     request.on("end", () => {
       requestBodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
-      const providerResponse = providerResponses[requestCount] ?? providerResponses.at(-1);
-      assert.ok(providerResponse);
+      const configuredResponse = providerResponses[requestCount] ?? providerResponses.at(-1);
+      assert.ok(configuredResponse);
+      const providerResponse = typeof configuredResponse === "function"
+        ? configuredResponse(requestBodies.at(-1)!)
+        : configuredResponse;
       requestCount += 1;
       response.writeHead(200, {
         "content-type": "text/event-stream",

@@ -2,16 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { FrozenActivity } from "../../runtime/index.js";
+import type { FrozenActivity, ThreadActivityObservation } from "../../runtime/index.js";
 
-export type ThreadEvidenceRelation = "changed" | "observed";
-
-export interface ThreadActivityObservation {
-  turnId: string;
-  threadPath: string;
-  relation: ThreadEvidenceRelation;
-  paths: string[];
-}
+export type ThreadEvidenceRelation = ThreadActivityObservation["relation"];
+export type { ThreadActivityObservation } from "../../runtime/index.js";
 
 export interface ThreadEvidenceReference {
   referenceId: string;

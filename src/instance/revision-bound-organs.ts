@@ -6,6 +6,10 @@ import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 import { createPiLifeRecorder } from "../agents/life-recorder.js";
 import { createPiOrientation, type OrientationActionSpace } from "../agents/orientation.js";
+import {
+  createPiThreadMaintainer,
+  threadObservationsFromActivity,
+} from "../agents/thread-maintainer/index.js";
 import type { ModelRuntimeRevision, ModelRuntimeRevisions } from "../configuration/index.js";
 import type {
   ActivityRecorder,
@@ -14,6 +18,9 @@ import type {
   Orientation,
   OrientationRequest,
   OrientationResult,
+  ThreadMaintenance,
+  ThreadMaintenanceRequest,
+  ThreadMaintenanceResult,
 } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { InstanceLayout } from "./layout.js";
@@ -64,6 +71,30 @@ class RevisionBoundLifeRecorder implements ActivityRecorder {
   }
 }
 
+class RevisionBoundThreadMaintenance implements ThreadMaintenance {
+  constructor(private readonly options: RevisionBoundOrganOptions & {
+    loadActivity: (activityId: string) => Promise<FrozenActivity | undefined>;
+  }) {}
+
+  observationsFor(activity: FrozenActivity) {
+    return threadObservationsFromActivity(activity, this.options.agentWorkspace.root);
+  }
+
+  async maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult> {
+    const selection = firstCandidate(this.options.revisions.current(), "thread-maintainer");
+    const maintainer = await createPiThreadMaintainer({
+      agentWorkspace: this.options.agentWorkspace,
+      agentDir: this.options.layout.piAgentDirectory,
+      transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "thread-maintainer"),
+      stateFile: path.join(this.options.layout.runtimeRoot, "thread-evidence.json"),
+      modelRuntime: selection.modelRuntime,
+      model: selection.model,
+      loadActivity: this.options.loadActivity,
+    });
+    return maintainer.maintain(request);
+  }
+}
+
 function firstCandidate(
   revision: ModelRuntimeRevision,
   role: Parameters<ModelRuntimeRevision["selection"]>[0],
@@ -80,6 +111,14 @@ export function createRevisionBoundLifeRecorder(options: RevisionBoundOrganOptio
 
 export function createRevisionBoundOrientation(options: RevisionBoundOrganOptions): Orientation {
   return new RevisionBoundOrientation(options);
+}
+
+export function createRevisionBoundThreadMaintenance(
+  options: RevisionBoundOrganOptions & {
+    loadActivity: (activityId: string) => Promise<FrozenActivity | undefined>;
+  },
+): ThreadMaintenance {
+  return new RevisionBoundThreadMaintenance(options);
 }
 
 export async function loadWorkspaceSkillIndex(

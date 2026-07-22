@@ -126,6 +126,31 @@ export interface ActivityRecorder {
   record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
 }
 
+export interface ThreadActivityObservation {
+  turnId: string;
+  threadPath: string;
+  relation: "changed" | "observed";
+  paths: string[];
+}
+
+export interface ThreadMaintenanceRequest {
+  observedAt: string;
+  localTime: string;
+  activity: FrozenActivity;
+  observations: ThreadActivityObservation[];
+}
+
+export interface ThreadMaintenanceResult {
+  outcome: "updated" | "no_change";
+  runId: string;
+  changedPaths: string[];
+}
+
+export interface ThreadMaintenance {
+  observationsFor(activity: FrozenActivity): ThreadActivityObservation[];
+  maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult>;
+}
+
 export interface OrientationRequest {
   observedAt: string;
   localTime: string;
@@ -290,6 +315,14 @@ export interface RuntimePulseStatus {
   lastError?: string;
 }
 
+export interface RuntimeThreadMaintenanceStatus {
+  activityId: string;
+  status: "pending" | "running" | "completed";
+  attempts: number;
+  result?: ThreadMaintenanceResult;
+  lastError?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
@@ -301,6 +334,7 @@ export interface RuntimeStatus {
     lastActivityAt: string;
   };
   activities: RuntimeActivityStatus[];
+  threadMaintenance: RuntimeThreadMaintenanceStatus[];
   proactivePulse?: RuntimePulseStatus;
 }
 
@@ -311,6 +345,7 @@ export interface RuntimeOptions {
   outboundDelivery?: OutboundDelivery;
   activityLifecycle?: ActivityLifecycle;
   activityRecorder?: ActivityRecorder;
+  threadMaintenance?: ThreadMaintenance;
   orientation?: Orientation;
   now?: () => Date;
   nextId?: () => string;
@@ -330,6 +365,8 @@ export type AdvanceResult =
   | { disposition: "delivery_requires_reconciliation" }
   | { disposition: "activity_recorded" }
   | { disposition: "activity_recording_failed" }
+  | { disposition: "thread_maintenance_completed" }
+  | { disposition: "thread_maintenance_failed" }
   | { disposition: "agent_work_deferred" }
   | { disposition: "busy" };
 

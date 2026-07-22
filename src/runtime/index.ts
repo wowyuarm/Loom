@@ -37,6 +37,7 @@ export type {
   RuntimeInput,
   RuntimeOptions,
   RuntimePulseStatus,
+  RuntimeThreadMaintenanceStatus,
   RuntimeActivityStatus,
   RuntimeStatus,
   RunOpportunityPulseOptions,
@@ -44,5 +45,9 @@ export type {
   TranscriptAnchor,
   TurnControl,
   TurnRequest,
+  ThreadActivityObservation,
+  ThreadMaintenance,
+  ThreadMaintenanceRequest,
+  ThreadMaintenanceResult,
   VerifiedToolActivity,
 } from "./types.js";

@@ -7,8 +7,11 @@ import test from "node:test";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { createPiThreadMaintainer } from "../../src/agents/thread-maintainer/index.js";
-import type { FrozenActivity } from "../../src/runtime/index.js";
+import {
+  createPiThreadMaintainer,
+  threadObservationsFromActivity,
+} from "../../src/agents/thread-maintainer/index.js";
+import type { FrozenActivity, JsonValue } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
 test("keeps Thread history as references and expands an earlier Turn only on request", async () => {
@@ -318,6 +321,49 @@ test("refuses a structural decision made from only part of the current Turn", as
   );
 });
 
+test("derives Thread observations only from structured Workspace tool evidence", () => {
+  const value = activity("activity-observations", "turn-observations", "continue the line");
+  value.events.push(
+    toolCall("read-thread", "read", { path: "threads/garden/source.md" }),
+    toolCall("write-thread", "write", { path: "threads/garden/thread.md", content: "updated" }),
+    toolCall("read-related-thread", "read", { path: "threads/forest/thread.md" }),
+    toolCall("read-other", "read", { path: "notes/garden.md" }),
+    toolCall("bash-thread", "bash", { command: "touch threads/hidden/thread.md" }),
+    toolCall("write-index", "write", { path: "threads/index.md", content: "index" }),
+  );
+
+  assert.deepEqual(threadObservationsFromActivity(value, "/instance/workspace"), [
+    {
+      turnId: "turn-observations",
+      threadPath: "forest",
+      relation: "observed",
+      paths: ["forest/thread.md"],
+    },
+    {
+      turnId: "turn-observations",
+      threadPath: "garden",
+      relation: "changed",
+      paths: ["garden/source.md", "garden/thread.md"],
+    },
+  ]);
+
+  const observedOnly = activity("activity-observed", "turn-observations", "look again");
+  observedOnly.events.push(toolCall("read-only", "read", { path: "threads/garden/thread.md" }));
+  assert.deepEqual(threadObservationsFromActivity(observedOnly, "/instance/workspace"), []);
+
+  const transcriptShape = activity("activity-transcript", "turn-observations", "write it down");
+  transcriptShape.events.push({
+    ...toolCall("transcript-write", "write", { path: "threads/garden/thread.md" }),
+    content: {
+      type: "toolCall",
+      id: "transcript-write",
+      name: "write",
+      arguments: { path: "threads/garden/thread.md" },
+    },
+  });
+  assert.equal(threadObservationsFromActivity(transcriptShape, "/instance/workspace")[0]?.relation, "changed");
+});
+
 function request(activityValue: FrozenActivity, turnId: string, threadPath = "garden") {
   return {
     observedAt: activityValue.closedAt,
@@ -353,6 +399,17 @@ function activity(segmentId: string, turnId: string, text: string): FrozenActivi
       endedAt: "2026-07-21T02:00:00.000Z",
       status: "completed",
     }],
+  };
+}
+
+function toolCall(eventId: string, toolName: string, args: { [key: string]: JsonValue }) {
+  return {
+    eventId,
+    turnId: "turn-observations",
+    at: "2026-07-21T01:55:00.000Z",
+    actorRef: "individual" as const,
+    kind: "tool_call" as const,
+    content: { toolCallId: eventId, toolName, arguments: args },
   };
 }
 

@@ -81,6 +81,7 @@ For calibration: a detailed experiment and its changed judgment accumulating ins
 Return exactly NO_CHANGE when no structural write is warranted. When structural tools are available and warranted, complete every write before returning exactly UPDATED. Do not expose maintenance runs, evidence IDs, or Harness bookkeeping in Workspace files.`;
 
 export type { ThreadActivityObservation, ThreadEvidenceRelation } from "./evidence.js";
+export { threadObservationsFromActivity } from "./observations.js";
 
 export interface ThreadMaintenanceRequest {
   observedAt: string;

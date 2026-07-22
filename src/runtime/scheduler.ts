@@ -30,6 +30,7 @@ export type SchedulerRunResult =
       disposition: "deferred";
       reason:
         | "activity_recording_failed"
+        | "thread_maintenance_failed"
         | "agent_work_not_admitted"
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
@@ -183,6 +184,7 @@ function assertPositiveDuration(value: number, label: string): void {
 function deferredResult(result: AdvanceResult): SchedulerRunResult | undefined {
   switch (result.disposition) {
     case "activity_recording_failed":
+    case "thread_maintenance_failed":
     case "delivery_not_sent":
     case "delivery_requires_reconciliation":
       return { disposition: "deferred", reason: result.disposition };
