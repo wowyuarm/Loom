@@ -192,6 +192,16 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       last_error TEXT
     ) STRICT;
 
-    PRAGMA user_version = 10;
+    CREATE TABLE IF NOT EXISTS memory_reflection (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      next_day TEXT NOT NULL,
+      next_run_after TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_completed_day TEXT,
+      last_result_json TEXT,
+      last_error TEXT
+    ) STRICT;
+
+    PRAGMA user_version = 11;
   `);
 }

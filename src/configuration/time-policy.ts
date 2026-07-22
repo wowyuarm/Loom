@@ -5,6 +5,8 @@ export interface TimePolicy {
   readonly logicalDayStart: string;
   formatLocalTime(instant: Date): string;
   recordingDay(instant: Date): string;
+  nextRecordingDay(recordingDay: string): string;
+  logicalDayEnd(recordingDay: string): Date;
 }
 
 export interface TimePolicyOptions {
@@ -36,6 +38,23 @@ class TemporalTimePolicy implements TimePolicy {
     return (Temporal.PlainTime.compare(local.toPlainTime(), this.#boundary) < 0
       ? date.subtract({ days: 1 })
       : date).toString();
+  }
+
+  nextRecordingDay(recordingDay: string): string {
+    return parseRecordingDay(recordingDay).add({ days: 1 }).toString();
+  }
+
+  logicalDayEnd(recordingDay: string): Date {
+    const boundaryDate = parseRecordingDay(recordingDay).add({ days: 1 });
+    return new Date(Temporal.ZonedDateTime.from({
+      timeZone: this.timeZone,
+      year: boundaryDate.year,
+      month: boundaryDate.month,
+      day: boundaryDate.day,
+      hour: this.#boundary.hour,
+      minute: this.#boundary.minute,
+      second: this.#boundary.second,
+    }).epochMilliseconds);
   }
 }
 
@@ -80,4 +99,12 @@ function toZonedDateTime(instant: Date, timeZone: string): Temporal.ZonedDateTim
 
 function pad(value: number): string {
   return String(value).padStart(2, "0");
+}
+
+function parseRecordingDay(value: string): Temporal.PlainDate {
+  try {
+    return Temporal.PlainDate.from(value);
+  } catch {
+    throw new Error(`Recording day is not a logical date: ${value}`);
+  }
 }

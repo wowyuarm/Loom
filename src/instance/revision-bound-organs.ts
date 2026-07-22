@@ -6,6 +6,9 @@ import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 import { createPiLifeRecorder } from "../agents/life-recorder.js";
 import { createPiAttentionMaintainer } from "../agents/attention-maintainer.js";
+import { createPiMemoryReflector } from "../agents/memory-reflector.js";
+import type { NmemWorkingMemoryReader } from "../integrations/nmem/index.js";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createPiOrientation, type OrientationActionSpace } from "../agents/orientation.js";
 import {
   createPiThreadMaintainer,
@@ -17,6 +20,9 @@ import type {
   AttentionMaintenance,
   AttentionMaintenanceRequest,
   AttentionMaintenanceResult,
+  MemoryReflection,
+  MemoryReflectionRequest,
+  MemoryReflectionResult,
   FrozenActivity,
   LifeRecorderReceipt,
   Orientation,
@@ -115,6 +121,28 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
   }
 }
 
+class RevisionBoundMemoryReflection implements MemoryReflection {
+  constructor(private readonly options: RevisionBoundOrganOptions & {
+    workingMemoryReader: NmemWorkingMemoryReader;
+    nmemRecallTool: ToolDefinition;
+  }) {}
+
+  async reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult> {
+    const selection = firstCandidate(this.options.revisions.current(), "memory-reflector");
+    const reflector = await createPiMemoryReflector({
+      agentWorkspace: this.options.agentWorkspace,
+      agentDir: this.options.layout.piAgentDirectory,
+      transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "memory-reflector"),
+      backupDirectory: path.join(this.options.layout.backupRoot, "memory-reflector"),
+      modelRuntime: selection.modelRuntime,
+      model: selection.model,
+      workingMemoryReader: this.options.workingMemoryReader,
+      nmemRecallTool: this.options.nmemRecallTool,
+    });
+    return reflector.reflect(request);
+  }
+}
+
 function firstCandidate(
   revision: ModelRuntimeRevision,
   role: Parameters<ModelRuntimeRevision["selection"]>[0],
@@ -145,6 +173,15 @@ export function createRevisionBoundAttentionMaintenance(
   options: RevisionBoundOrganOptions,
 ): AttentionMaintenance {
   return new RevisionBoundAttentionMaintenance(options);
+}
+
+export function createRevisionBoundMemoryReflection(
+  options: RevisionBoundOrganOptions & {
+    workingMemoryReader: NmemWorkingMemoryReader;
+    nmemRecallTool: ToolDefinition;
+  },
+): MemoryReflection {
+  return new RevisionBoundMemoryReflection(options);
 }
 
 export async function loadWorkspaceSkillIndex(

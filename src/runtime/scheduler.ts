@@ -26,6 +26,10 @@ export interface SchedulerOptions {
     initialDelayMs?: number;
     retryDelayMs?: number;
   };
+  memoryReflection?: {
+    delayMs: number;
+    retryDelayMs?: number;
+  };
 }
 
 export type SchedulerRunResult =
@@ -38,6 +42,7 @@ export type SchedulerRunResult =
         | "activity_recording_failed"
         | "thread_maintenance_failed"
         | "attention_maintenance_failed"
+        | "memory_reflection_failed"
         | "agent_work_not_admitted"
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
@@ -59,6 +64,7 @@ class RuntimeScheduler implements Scheduler {
   readonly #admitAgentWork: () => boolean | Promise<boolean>;
   readonly #proactivePulse: SchedulerPulsePolicy | undefined;
   readonly #attentionMaintenance: SchedulerOptions["attentionMaintenance"];
+  readonly #memoryReflection: SchedulerOptions["memoryReflection"];
 
   constructor(options: SchedulerOptions) {
     const activityIdleMs = options.activityIdleMs ?? DEFAULT_ACTIVITY_IDLE_MS;
@@ -70,9 +76,15 @@ class RuntimeScheduler implements Scheduler {
     this.#admitAgentWork = options.admitAgentWork ?? (() => true);
     this.#proactivePulse = options.proactivePulse;
     this.#attentionMaintenance = options.attentionMaintenance;
+    this.#memoryReflection = options.memoryReflection;
     if (this.#proactivePulse) validatePulsePolicy(this.#proactivePulse);
     if (this.#attentionMaintenance) {
       assertPositiveDuration(this.#attentionMaintenance.intervalMs, "attentionMaintenance.intervalMs");
+    }
+    if (this.#memoryReflection) {
+      if (!Number.isFinite(this.#memoryReflection.delayMs) || this.#memoryReflection.delayMs < 0) {
+        throw new Error("Scheduler memoryReflection.delayMs must be a non-negative finite number");
+      }
     }
   }
 
@@ -97,6 +109,14 @@ class RuntimeScheduler implements Scheduler {
         agentWork: "defer",
       });
     }
+    if (this.#memoryReflection) {
+      await this.#runtime.runMemoryReflection({
+        observedAt,
+        delayMs: this.#memoryReflection.delayMs,
+        retryDelayMs: this.#memoryReflection.retryDelayMs ?? DEFAULT_MAINTENANCE_RETRY_MS,
+        agentWork: "defer",
+      });
+    }
 
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
@@ -110,7 +130,9 @@ class RuntimeScheduler implements Scheduler {
       if (!active) {
         const maintenance = await this.#runAttentionMaintenance(observedAt, agentWork);
         if (maintenance && maintenance.disposition !== "waiting") return maintenance;
-        if (!this.#proactivePulse) return maintenance ?? { disposition: "idle" };
+        const reflection = await this.#runMemoryReflection(observedAt, agentWork);
+        if (reflection && reflection.disposition !== "waiting") return reflection;
+        if (!this.#proactivePulse) return earliestWaiting(maintenance, reflection) ?? { disposition: "idle" };
         const pulse = await this.#runtime.runOpportunityPulse({
           observedAt,
           initialDelayMs: this.#proactivePulse.initialDelayMs ?? this.#proactivePulse.intervalMs,
@@ -122,7 +144,10 @@ class RuntimeScheduler implements Scheduler {
         if (pulse.disposition === "waiting" || pulse.disposition === "none") {
           return {
             disposition: "waiting",
-            nextRunAt: earlierTime(pulse.nextRunAt, maintenance?.nextRunAt),
+            nextRunAt: earlierTime(
+              pulse.nextRunAt,
+              earliestWaiting(maintenance, reflection)?.nextRunAt,
+            ),
           };
         }
         if (pulse.disposition === "agent_work_deferred") {
@@ -185,11 +210,46 @@ class RuntimeScheduler implements Scheduler {
     if (result.disposition === "waiting") return result;
     return undefined;
   }
+
+  async #runMemoryReflection(
+    observedAt: Date,
+    agentWork: "allow" | "defer",
+  ): Promise<SchedulerRunResult | undefined> {
+    if (!this.#memoryReflection) return undefined;
+    const result = await this.#runtime.runMemoryReflection({
+      observedAt,
+      delayMs: this.#memoryReflection.delayMs,
+      retryDelayMs: this.#memoryReflection.retryDelayMs ?? DEFAULT_MAINTENANCE_RETRY_MS,
+      agentWork,
+    });
+    if (result.disposition === "completed" || result.disposition === "waiting") {
+      return { disposition: "waiting", nextRunAt: result.nextRunAt };
+    }
+    if (result.disposition === "failed") {
+      return { disposition: "deferred", reason: "memory_reflection_failed" };
+    }
+    if (result.disposition === "agent_work_deferred") {
+      return { disposition: "deferred", reason: "agent_work_not_admitted" };
+    }
+    return { disposition: "busy" };
+  }
 }
 
 function earlierTime(primary: string, secondary: string | undefined): string {
   if (!secondary) return primary;
   return Date.parse(secondary) < Date.parse(primary) ? secondary : primary;
+}
+
+function earliestWaiting(
+  first: SchedulerRunResult | undefined,
+  second: SchedulerRunResult | undefined,
+): Extract<SchedulerRunResult, { disposition: "waiting" }> | undefined {
+  const times = [first, second]
+    .filter((value): value is Extract<SchedulerRunResult, { disposition: "waiting" }> =>
+      value?.disposition === "waiting");
+  if (times.length === 0) return undefined;
+  return times.reduce((earliest, candidate) =>
+    Date.parse(candidate.nextRunAt) < Date.parse(earliest.nextRunAt) ? candidate : earliest);
 }
 
 function validatePulsePolicy(policy: SchedulerPulsePolicy): void {

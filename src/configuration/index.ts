@@ -4,6 +4,7 @@ export {
   MODEL_ROLES,
   type InstanceConfiguration,
   type AttentionMaintenanceConfiguration,
+  type MemoryReflectionConfiguration,
   type LoadInstanceConfigurationOptions,
   type ModelCandidate,
   type ModelPolicy,

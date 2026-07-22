@@ -146,6 +146,29 @@ test("loads the Attention maintenance cadence independently from the proactive P
   assert.equal(configuration.schedule.proactivePulse.intervalMinutes, 30);
 });
 
+test("derives the next logical-day boundary and Memory reflection delay", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-reflection-schedule-"));
+  const file = path.join(root, "loom.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "time:",
+    "  timeZone: Europe/Berlin",
+    "  logicalDayStart: 03:00",
+    "schedule:",
+    "  memoryReflection:",
+    "    delayMinutes: 30",
+    "",
+  ].join("\n"));
+
+  const configuration = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
+  assert.deepEqual(configuration.schedule.memoryReflection, { delayMinutes: 30 });
+  assert.equal(configuration.timePolicy.nextRecordingDay("2026-10-24"), "2026-10-25");
+  assert.equal(
+    configuration.timePolicy.logicalDayEnd("2026-10-24").toISOString(),
+    "2026-10-25T02:00:00.000Z",
+  );
+});
+
 test("rejects invalid Instance time configuration before Runtime starts", async () => {
   const cases = [
     {

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { createTimePolicy } from "../../src/configuration/index.js";
+
 import {
   createScheduler,
   openRuntime,
@@ -11,6 +13,7 @@ import {
   type ActivityRecorder,
   type AgentExecution,
   type AttentionMaintenance,
+  type MemoryReflection,
   type ThreadMaintenance,
 } from "../../src/runtime/index.js";
 
@@ -26,6 +29,23 @@ function attentionMaintainer(
       });
       if (failure) throw failure;
       return { outcome: "no_change", runId: `attention-${requests.length}`, path: "attention.md" };
+    },
+  };
+}
+
+function memoryReflector(
+  requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }>,
+  failure?: Error,
+): MemoryReflection {
+  return {
+    async reflect(request) {
+      requests.push({
+        day: request.reflectionDay,
+        activityIds: request.activities.map(activity => activity.segmentId),
+        eventTurnIds: request.activities.flatMap(activity => activity.events.map(event => event.turnId)),
+      });
+      if (failure) throw failure;
+      return { outcome: "no_change", runId: `reflection-${requests.length}`, changedMaterials: [] };
     },
   };
 }
@@ -278,6 +298,191 @@ test("retries the same frozen Attention evidence window after failure", async ()
     assert.deepEqual(recovered.status().attentionMaintenance?.pendingActivityIds, [secondActivity]);
   } finally {
     recovered.close();
+  }
+});
+
+test("reflects one complete logical day and slices a cross-day Activity by Turn", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-"));
+  let now = new Date("2026-07-22T02:50:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  const lifecycle: ActivityLifecycle = {
+    freeze: async request => ({
+      activity: {
+        version: 1,
+        segmentId: request.segment.id,
+        recordingDay: request.segment.recordingDay,
+        openedAt: request.segment.openedAt,
+        closedAt: request.segment.closedAt,
+        events: request.turns.map(turn => ({
+          eventId: `event-${turn.id}`,
+          turnId: turn.id,
+          at: turn.endedAt,
+          actorRef: "individual",
+          kind: "output",
+          content: { text: turn.id },
+        })),
+        turns: request.turns.map(turn => ({
+          turnId: turn.id,
+          startedAt: turn.startedAt,
+          endedAt: turn.endedAt,
+          status: turn.status,
+          ...(turn.transcriptAnchor ? { transcriptAnchor: turn.transcriptAnchor } : {}),
+        })),
+      },
+      successorExecutionState: { version: 1 },
+    }),
+  };
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: lifecycle,
+    activityRecorder: recorder([]),
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 1,
+    memoryReflection: { delayMs: 15 * 60_000 },
+  });
+  try {
+    await runtime.acceptInput({ source: "test", sourceId: "before", kind: "interaction", payload: {} });
+    await scheduler.runOnce(now);
+    now = new Date("2026-07-22T03:10:00.000Z");
+    await runtime.acceptInput({ source: "test", sourceId: "after", kind: "interaction", payload: {} });
+    await scheduler.runOnce(now);
+    now = new Date("2026-07-22T03:10:00.001Z");
+    await scheduler.runOnce(now);
+    const turns = runtime.status().turns;
+
+    now = new Date("2026-07-22T03:15:00.000Z");
+    const result = await scheduler.runOnce(now);
+    assert.equal(result.disposition, "waiting");
+    assert.deepEqual(requests, [{
+      day: "2026-07-21",
+      activityIds: [runtime.status().activities[0]!.id],
+      eventTurnIds: [turns[0]!.id],
+    }]);
+    assert.equal(runtime.status().memoryReflection?.lastCompletedDay, "2026-07-21");
+    assert.equal(runtime.status().memoryReflection?.nextDay, "2026-07-22");
+  } finally {
+    runtime.close();
+  }
+});
+
+test("keeps a failed Memory reflection day pending across restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-retry-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  const first = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    memoryReflection: memoryReflector(requests, new Error("reflection unavailable")),
+    now: () => now,
+  });
+  const firstScheduler = createScheduler({
+    runtime: first,
+    activityIdleMs: 1,
+    memoryReflection: { delayMs: 0, retryDelayMs: 30_000 },
+  });
+  await firstScheduler.runOnce(now);
+  await first.acceptInput({ source: "test", sourceId: "memory", kind: "interaction", payload: {} });
+  await firstScheduler.runOnce(now);
+  now = new Date("2026-07-21T12:00:00.001Z");
+  await firstScheduler.runOnce(now);
+  now = new Date("2026-07-22T03:00:00.000Z");
+  assert.deepEqual(await firstScheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "memory_reflection_failed",
+  });
+  first.close();
+
+  now = new Date("2026-07-22T03:00:30.000Z");
+  const recovered = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  try {
+    const recoveredScheduler = createScheduler({
+      runtime: recovered,
+      memoryReflection: { delayMs: 0, retryDelayMs: 30_000 },
+    });
+    await recoveredScheduler.runOnce(now);
+    assert.deepEqual(requests.map(request => request.day), ["2026-07-21", "2026-07-21"]);
+    assert.equal(recovered.status().memoryReflection?.lastCompletedDay, "2026-07-21");
+  } finally {
+    recovered.close();
+  }
+});
+
+test("advances an empty Memory reflection day without model work", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-empty-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    memoryReflection: { delayMs: 0 },
+  });
+  try {
+    await scheduler.runOnce(now);
+    now = new Date("2026-07-22T03:00:00.000Z");
+    assert.deepEqual(await scheduler.runOnce(now), {
+      disposition: "waiting",
+      nextRunAt: "2026-07-23T03:00:00.000Z",
+    });
+    assert.deepEqual(requests, []);
+    assert.equal(runtime.status().memoryReflection?.lastCompletedDay, "2026-07-21");
+  } finally {
+    runtime.close();
+  }
+});
+
+test("does not claim a due Memory reflection while model work is blocked", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-blocked-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: recorder([]),
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    admitAgentWork: () => false,
+    memoryReflection: { delayMs: 0 },
+  });
+  try {
+    await scheduler.runOnce(now);
+    await runtime.acceptInput({ source: "test", sourceId: "blocked-memory", kind: "interaction", payload: {} });
+    await runtime.advance();
+    now = new Date("2026-07-21T12:00:00.001Z");
+    await runtime.closeActivity();
+    await runtime.advance();
+    now = new Date("2026-07-22T03:00:00.000Z");
+    assert.deepEqual(await scheduler.runOnce(now), {
+      disposition: "deferred",
+      reason: "agent_work_not_admitted",
+    });
+    assert.deepEqual(requests, []);
+    assert.equal(runtime.status().memoryReflection?.nextDay, "2026-07-21");
+  } finally {
+    runtime.close();
   }
 });
 

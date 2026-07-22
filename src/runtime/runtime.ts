@@ -14,6 +14,8 @@ import type {
   ActivityRecorder,
   AttentionMaintenance,
   AttentionMaintenanceResult,
+  MemoryReflection,
+  MemoryReflectionResult,
   AgentExecution,
   CloseActivityOptions,
   CloseActivityResult,
@@ -46,6 +48,8 @@ import type {
   RunOpportunityPulseResult,
   RunAttentionMaintenanceOptions,
   RunAttentionMaintenanceResult,
+  RunMemoryReflectionOptions,
+  RunMemoryReflectionResult,
   TranscriptAnchor,
   VerifiedToolActivity,
 } from "./types.js";
@@ -138,6 +142,15 @@ interface AttentionMaintenanceRow {
   last_error: string | null;
 }
 
+interface MemoryReflectionRow {
+  next_day: string;
+  next_run_after: string;
+  attempt_count: number;
+  last_completed_day: string | null;
+  last_result_json: string | null;
+  last_error: string | null;
+}
+
 interface ActiveExecution {
   turnId: string;
   fencingToken: number;
@@ -155,6 +168,7 @@ class SqliteRuntime implements Runtime {
   readonly #orientation: Orientation | undefined;
   readonly #threadMaintenance: ThreadMaintenance | undefined;
   readonly #attentionMaintenance: AttentionMaintenance | undefined;
+  readonly #memoryReflection: MemoryReflection | undefined;
   readonly #timePolicy: TimePolicy;
   readonly #now: () => Date;
   readonly #nextId: () => string;
@@ -166,6 +180,7 @@ class SqliteRuntime implements Runtime {
   #activeActivityAttemptId: string | undefined;
   #activeThreadMaintenanceId: string | undefined;
   #attentionMaintenanceRunning = false;
+  #memoryReflectionRunning = false;
   #opportunityRunning = false;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
@@ -179,6 +194,7 @@ class SqliteRuntime implements Runtime {
     this.#orientation = options.orientation;
     this.#threadMaintenance = options.threadMaintenance;
     this.#attentionMaintenance = options.attentionMaintenance;
+    this.#memoryReflection = options.memoryReflection;
     this.#timePolicy = options.timePolicy ?? createHostTimePolicy();
     this.#now = options.now ?? (() => new Date());
     this.#nextId = options.nextId ?? randomUUID;
@@ -517,6 +533,57 @@ class SqliteRuntime implements Runtime {
     }
   }
 
+  async runMemoryReflection(options: RunMemoryReflectionOptions): Promise<RunMemoryReflectionResult> {
+    assertReflectionOptions(options);
+    const schedule = this.#ensureMemoryReflectionSchedule(options.observedAt, options.delayMs);
+    if (options.observedAt < new Date(schedule.next_run_after)) {
+      return { disposition: "waiting", nextRunAt: schedule.next_run_after };
+    }
+    if (this.#memoryReflectionRunning || !this.#isMaintenanceIdle()) {
+      return { disposition: "busy" };
+    }
+    if (!this.#reflectionDayComplete(schedule.next_day)) return { disposition: "busy" };
+
+    const reflectionDay = schedule.next_day;
+    const activities = this.#reflectionActivities(reflectionDay);
+    if (activities.length === 0) {
+      const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
+      const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
+      this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, undefined);
+      return { disposition: "completed", reflectionDay, nextRunAt };
+    }
+    if (options.agentWork === "defer") {
+      return { disposition: "agent_work_deferred", nextRunAt: schedule.next_run_after };
+    }
+    if (!this.#memoryReflection) return { disposition: "busy" };
+
+    this.#memoryReflectionRunning = true;
+    this.#database.prepare(`
+      UPDATE memory_reflection SET attempt_count = attempt_count + 1 WHERE singleton = 1
+    `).run();
+    try {
+      const result = await this.#memoryReflection.reflect({
+        reflectionDay,
+        observedAt: options.observedAt.toISOString(),
+        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+        activities,
+      });
+      const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
+      const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
+      this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, result);
+      return { disposition: "completed", reflectionDay, result, nextRunAt };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+      this.#database.prepare(`
+        UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
+      `).run(nextRunAt, message.slice(0, 2_000));
+      return { disposition: "failed", reflectionDay, nextRunAt, error: message };
+    } finally {
+      this.#memoryReflectionRunning = false;
+    }
+  }
+
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
     if (this.#active || this.#activeDeliveryId || this.#closingActivityId
       || this.#activeActivityAttemptId || this.#activeThreadMaintenanceId) {
@@ -603,6 +670,7 @@ class SqliteRuntime implements Runtime {
       ORDER BY created_at, activity_id
     `).all() as unknown as ThreadMaintenanceRow[];
     const attentionMaintenance = this.#readAttentionSchedule();
+    const memoryReflection = this.#readMemoryReflectionSchedule();
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -684,6 +752,22 @@ class SqliteRuntime implements Runtime {
             ? { lastResult: JSON.parse(attentionMaintenance.last_result_json) as AttentionMaintenanceResult }
             : {}),
           ...(attentionMaintenance.last_error ? { lastError: attentionMaintenance.last_error } : {}),
+        },
+      } : {}),
+      ...(memoryReflection ? {
+        memoryReflection: {
+          nextDay: memoryReflection.next_day,
+          nextRunAfter: memoryReflection.next_run_after,
+          attempts: memoryReflection.attempt_count,
+          pendingActivityIds: this.#reflectionActivities(memoryReflection.next_day)
+            .map(activity => activity.segmentId),
+          ...(memoryReflection.last_completed_day
+            ? { lastCompletedDay: memoryReflection.last_completed_day }
+            : {}),
+          ...(memoryReflection.last_result_json
+            ? { lastResult: JSON.parse(memoryReflection.last_result_json) as MemoryReflectionResult }
+            : {}),
+          ...(memoryReflection.last_error ? { lastError: memoryReflection.last_error } : {}),
         },
       } : {}),
       ...(pulse ? {
@@ -772,6 +856,90 @@ class SqliteRuntime implements Runtime {
       && !this.#hasPendingDeliveryWork()
       && !this.#hasPendingActivityRecording()
       && !this.#hasPendingThreadMaintenance();
+  }
+
+  #readMemoryReflectionSchedule(): MemoryReflectionRow | undefined {
+    return this.#database.prepare(`
+      SELECT next_day, next_run_after, attempt_count, last_completed_day,
+             last_result_json, last_error
+      FROM memory_reflection WHERE singleton = 1
+    `).get() as unknown as MemoryReflectionRow | undefined;
+  }
+
+  #ensureMemoryReflectionSchedule(observedAt: Date, delayMs: number): MemoryReflectionRow {
+    const existing = this.#readMemoryReflectionSchedule();
+    if (existing) return existing;
+    const nextDay = this.#timePolicy.recordingDay(observedAt);
+    const nextRunAfter = this.#reflectionRunAt(nextDay, delayMs);
+    this.#database.prepare(`
+      INSERT INTO memory_reflection (
+        singleton, next_day, next_run_after, attempt_count,
+        last_completed_day, last_result_json, last_error
+      ) VALUES (1, ?, ?, 0, NULL, NULL, NULL)
+    `).run(nextDay, nextRunAfter);
+    return this.#readMemoryReflectionSchedule()!;
+  }
+
+  #reflectionRunAt(reflectionDay: string, delayMs: number): string {
+    return new Date(this.#timePolicy.logicalDayEnd(reflectionDay).getTime() + delayMs).toISOString();
+  }
+
+  #reflectionDayComplete(reflectionDay: string): boolean {
+    const unfinishedTurn = this.#database.prepare(`
+      SELECT 1 FROM turns
+      WHERE recording_day = ?
+        AND status IN ('running', 'completed', 'failed', 'timed_out', 'cancelled', 'interrupted')
+        AND segment_id NOT IN (SELECT id FROM activities)
+      LIMIT 1
+    `).get(reflectionDay);
+    if (unfinishedTurn) return false;
+    const unsettledActivity = this.#database.prepare(`
+      SELECT 1 FROM activities
+      WHERE id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
+        AND status <> 'recorded'
+      LIMIT 1
+    `).get(reflectionDay);
+    if (unsettledActivity) return false;
+    const unsettledThread = this.#database.prepare(`
+      SELECT 1 FROM thread_maintenance
+      WHERE activity_id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
+        AND status <> 'completed'
+      LIMIT 1
+    `).get(reflectionDay);
+    return !unsettledThread;
+  }
+
+  #reflectionActivities(reflectionDay: string): FrozenActivity[] {
+    const rows = this.#database.prepare(`
+      SELECT activities.id, activities.frozen_activity_json
+      FROM activities
+      WHERE activities.id IN (
+        SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?
+      )
+      ORDER BY activities.sequence
+    `).all(reflectionDay) as unknown as Array<{ id: string; frozen_activity_json: string }>;
+    const turnRows = this.#database.prepare(`
+      SELECT id FROM turns WHERE segment_id = ? AND recording_day = ? ORDER BY started_at, id
+    `);
+    return rows.map(row => reflectionSlice(
+      JSON.parse(row.frozen_activity_json) as FrozenActivity,
+      reflectionDay,
+      new Set((turnRows.all(row.id, reflectionDay) as unknown as Array<{ id: string }>).map(turn => turn.id)),
+    ));
+  }
+
+  #completeMemoryReflection(
+    reflectionDay: string,
+    nextDay: string,
+    nextRunAt: string,
+    result: MemoryReflectionResult | undefined,
+  ): void {
+    this.#database.prepare(`
+      UPDATE memory_reflection
+      SET next_day = ?, next_run_after = ?, attempt_count = 0,
+          last_completed_day = ?, last_result_json = ?, last_error = NULL
+      WHERE singleton = 1
+    `).run(nextDay, nextRunAt, reflectionDay, result ? JSON.stringify(result) : null);
   }
 
   #ensurePulseSchedule(observedAt: Date, initialDelayMs: number): PulseRow {
@@ -2460,6 +2628,31 @@ function assertMaintenanceOptions(options: RunAttentionMaintenanceOptions): void
       throw new Error(`Attention maintenance ${label} must be a positive finite number`);
     }
   }
+}
+
+function assertReflectionOptions(options: RunMemoryReflectionOptions): void {
+  if (!Number.isFinite(options.observedAt.getTime())) {
+    throw new Error("Memory reflection requires a valid observedAt");
+  }
+  if (!Number.isFinite(options.delayMs) || options.delayMs < 0) {
+    throw new Error("Memory reflection delayMs must be a non-negative finite number");
+  }
+  if (!Number.isFinite(options.retryDelayMs) || options.retryDelayMs <= 0) {
+    throw new Error("Memory reflection retryDelayMs must be a positive finite number");
+  }
+}
+
+function reflectionSlice(
+  activity: FrozenActivity,
+  reflectionDay: string,
+  turnIds: ReadonlySet<string>,
+): FrozenActivity {
+  return {
+    ...activity,
+    recordingDay: reflectionDay,
+    events: activity.events.filter(event => turnIds.has(event.turnId)),
+    turns: activity.turns.filter(turn => turnIds.has(turn.turnId)),
+  };
 }
 
 export function openRuntime(options: RuntimeOptions): Runtime {

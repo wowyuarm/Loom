@@ -26,6 +26,7 @@ import {
   createNmemEpisodeReconciler,
   createNmemRecallTool,
   createNmemThreadReconciler,
+  createNmemWorkingMemoryReader,
   type NmemEpisodeReconciler,
   type NmemProjectionStatus,
   type NmemRecallToolOptions,
@@ -42,6 +43,7 @@ import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import {
   createRevisionBoundLifeRecorder,
   createRevisionBoundAttentionMaintenance,
+  createRevisionBoundMemoryReflection,
   createRevisionBoundOrientation,
   createRevisionBoundThreadMaintenance,
   loadWorkspaceSkillIndex,
@@ -97,6 +99,7 @@ class AssembledLoomInstance implements LoomInstance {
     private readonly runtime: Runtime,
     private readonly revisions: ReturnType<typeof openModelRuntimeRevisions>,
     private readonly scheduler: Scheduler,
+    private readonly workingMemoryReader: ReturnType<typeof createNmemWorkingMemoryReader>,
     private readonly nmem?: {
       threads: NmemThreadReconciler;
       episodes: NmemEpisodeReconciler;
@@ -142,6 +145,7 @@ class AssembledLoomInstance implements LoomInstance {
 
   close(): void {
     this.runtime.close();
+    this.workingMemoryReader.close();
     this.nmem?.threads.close();
     this.nmem?.episodes.close();
   }
@@ -160,6 +164,11 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
   const configuration = await loadAssemblyConfiguration(layout, options.machineTimeZone);
   const agentWorkspace = new AgentWorkspace(layout.workspaceRoot);
   const recallTool = createNmemRecallTool(options.nmem ?? {});
+  const workingMemoryReader = createNmemWorkingMemoryReader({
+    stateRoot: layout.runtimeRoot,
+    ...(options.nmem ?? {}),
+    ...(options.now ? { now: options.now } : {}),
+  });
   const revisions = openModelRuntimeRevisions({
     configurationFile: layout.configurationFile,
     authPath: layout.piAuthFile,
@@ -217,6 +226,13 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       layout,
       agentWorkspace,
     }),
+    memoryReflection: createRevisionBoundMemoryReflection({
+      revisions,
+      layout,
+      agentWorkspace,
+      workingMemoryReader,
+      nmemRecallTool: recallTool,
+    }),
     threadMaintenance,
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),
     ...(options.now ? { now: options.now } : {}),
@@ -251,7 +267,10 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     attentionMaintenance: {
       intervalMs: configuration.schedule.attentionMaintenance.intervalMinutes * 60 * 1_000,
     },
-  }), nmem);
+    memoryReflection: {
+      delayMs: configuration.schedule.memoryReflection.delayMinutes * 60 * 1_000,
+    },
+  }), workingMemoryReader, nmem);
 }
 
 async function loadAssemblyConfiguration(

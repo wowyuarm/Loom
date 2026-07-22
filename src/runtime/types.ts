@@ -167,6 +167,23 @@ export interface AttentionMaintenance {
   maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
 }
 
+export interface MemoryReflectionRequest {
+  reflectionDay: string;
+  observedAt: string;
+  localTime: string;
+  activities: FrozenActivity[];
+}
+
+export interface MemoryReflectionResult {
+  outcome: "updated" | "no_change";
+  runId: string;
+  changedMaterials: string[];
+}
+
+export interface MemoryReflection {
+  reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult>;
+}
+
 export interface OrientationRequest {
   observedAt: string;
   localTime: string;
@@ -348,6 +365,16 @@ export interface RuntimeAttentionMaintenanceStatus {
   lastError?: string;
 }
 
+export interface RuntimeMemoryReflectionStatus {
+  nextDay: string;
+  nextRunAfter: string;
+  attempts: number;
+  pendingActivityIds: string[];
+  lastCompletedDay?: string;
+  lastResult?: MemoryReflectionResult;
+  lastError?: string;
+}
+
 export interface RuntimeStatus {
   inputs: RuntimeInputStatus[];
   turns: RuntimeTurnStatus[];
@@ -361,6 +388,7 @@ export interface RuntimeStatus {
   activities: RuntimeActivityStatus[];
   threadMaintenance: RuntimeThreadMaintenanceStatus[];
   attentionMaintenance?: RuntimeAttentionMaintenanceStatus;
+  memoryReflection?: RuntimeMemoryReflectionStatus;
   proactivePulse?: RuntimePulseStatus;
 }
 
@@ -373,6 +401,7 @@ export interface RuntimeOptions {
   activityRecorder?: ActivityRecorder;
   threadMaintenance?: ThreadMaintenance;
   attentionMaintenance?: AttentionMaintenance;
+  memoryReflection?: MemoryReflection;
   orientation?: Orientation;
   now?: () => Date;
   nextId?: () => string;
@@ -436,6 +465,20 @@ export type RunAttentionMaintenanceResult =
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; nextRunAt: string; error: string };
 
+export interface RunMemoryReflectionOptions {
+  observedAt: Date;
+  delayMs: number;
+  retryDelayMs: number;
+  agentWork?: "allow" | "defer";
+}
+
+export type RunMemoryReflectionResult =
+  | { disposition: "waiting"; nextRunAt: string }
+  | { disposition: "completed"; reflectionDay: string; result?: MemoryReflectionResult; nextRunAt: string }
+  | { disposition: "busy" }
+  | { disposition: "agent_work_deferred"; nextRunAt: string }
+  | { disposition: "failed"; reflectionDay: string; nextRunAt: string; error: string };
+
 export type RunOpportunityPulseResult =
   | { disposition: "waiting"; nextRunAt: string }
   | { disposition: "accepted"; inputId: string; runId: string; nextRunAt: string }
@@ -450,6 +493,7 @@ export interface Runtime {
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
   runAttentionMaintenance(options: RunAttentionMaintenanceOptions): Promise<RunAttentionMaintenanceResult>;
+  runMemoryReflection(options: RunMemoryReflectionOptions): Promise<RunMemoryReflectionResult>;
   advance(options?: AdvanceOptions): Promise<AdvanceResult>;
   closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;

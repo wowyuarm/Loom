@@ -197,6 +197,49 @@ test("refuses a no-change decision made without supporting evidence", async () =
   );
 });
 
+test("treats missing optional Workspace evidence as an explicit absence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-missing-optional-"));
+  const workspaceRoot = await createReflectorWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-missing-optional");
+  faux.setResponses([
+    ...baselineReadResponses(),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "daily/2026-07-21.md" }, { id: "read-missing-daily" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "segment-reflection-1",
+        offset: 0,
+      }, { id: "read-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("NO_CHANGE"),
+  ]);
+  const reflector = await createPiMemoryReflector({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    backupDirectory: path.join(root, "backups"),
+    modelRuntime,
+    model,
+    workingMemoryReader: unavailableWorkingMemory(),
+    nmemRecallTool: createNmemRecallTool({}),
+    nextRunId: () => "memory-reflector-missing-optional",
+  });
+
+  assert.deepEqual(await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  }), {
+    outcome: "no_change",
+    runId: "memory-reflector-missing-optional",
+    changedMaterials: [],
+  });
+});
+
 test("does not treat a truncated core material as completely read", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-truncated-"));
   const workspaceRoot = await createReflectorWorkspace(root);

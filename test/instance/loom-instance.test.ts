@@ -327,6 +327,54 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
   assert.deepEqual(instance.status().runtime.threadMaintenance, []);
 });
 
+test("reflects a completed logical day through the assembled Instance", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  await mkdir(path.join(root, "workspace", "daily"), { recursive: true });
+  await writeFile(path.join(root, "workspace", "daily", "2026-07-22.md"), "A day worth carrying.\n", "utf8");
+  const provider = await startOpenAiProvider(
+    { text: "A day worth carrying." },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
+    { tool: { name: "read", arguments: { path: "facts.json" } } },
+    { tool: { name: "read", arguments: { path: "identity.md" } } },
+    { tool: { name: "read", arguments: { path: "memory.md" } } },
+    { tool: { name: "read", arguments: { path: "behavior/interaction.md" } } },
+    { tool: { name: "read", arguments: { path: "behavior/background.md" } } },
+    { tool: { name: "read", arguments: { path: "attention.md" } } },
+    { tool: { name: "read", arguments: { path: "daily/2026-07-22.md" } } },
+    { text: "NO_CHANGE" },
+  );
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
+    intervalMinutes: 2_000,
+    quietIntervalMinutes: 2_000,
+    attentionIntervalMinutes: 2_000,
+    reflectionDelayMinutes: 15,
+  });
+  let now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "reflection-input",
+    kind: "interaction",
+    payload: { text: "remember the shape of today" },
+  });
+  await instance.runOnce(now);
+  now = new Date("2026-07-22T10:30:00.000Z");
+  await instance.runOnce(now);
+  assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
+
+  now = new Date("2026-07-23T03:15:00.000Z");
+  await instance.runOnce(now);
+  assert.equal(provider.requests(), 11);
+  assert.equal(instance.status().runtime.memoryReflection?.lastCompletedDay, "2026-07-22");
+  assert.equal(instance.status().runtime.memoryReflection?.lastResult?.outcome, "no_change");
+  assert.equal(instance.status().runtime.memoryReflection?.nextDay, "2026-07-23");
+});
+
 test("maintains changed Thread material through the assembled Instance", async t => {
   const root = await createInstanceRoot();
   await writeIndividualMaterials(root);
@@ -823,7 +871,12 @@ async function writeModelConfiguration(
   baseUrl: string,
   defaultRoute?: string,
   thinkingLevel = "medium",
-  schedule?: { intervalMinutes: number; quietIntervalMinutes: number },
+  schedule?: {
+    intervalMinutes: number;
+    quietIntervalMinutes: number;
+    attentionIntervalMinutes?: number;
+    reflectionDelayMinutes?: number;
+  },
 ): Promise<void> {
   const configurationRoot = path.join(root, "configuration");
   await writeFile(path.join(configurationRoot, "instance.yaml"), [
@@ -837,6 +890,14 @@ async function writeModelConfiguration(
       "      start: \"01:00\"",
       "      end: \"07:00\"",
       `      intervalMinutes: ${schedule.quietIntervalMinutes}`,
+      ...(schedule.attentionIntervalMinutes !== undefined ? [
+        "  attentionMaintenance:",
+        `    intervalMinutes: ${schedule.attentionIntervalMinutes}`,
+      ] : []),
+      ...(schedule.reflectionDelayMinutes !== undefined ? [
+        "  memoryReflection:",
+        `    delayMinutes: ${schedule.reflectionDelayMinutes}`,
+      ] : []),
     ] : []),
     "models:",
     "  default:",

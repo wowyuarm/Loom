@@ -310,7 +310,37 @@ class PiMemoryReflector implements MemoryReflector {
           ? `${tool.description} Required core materials count as read only after every consecutive page has been returned; when truncated, continue from the shown offset without setting limit.`
           : tool.description,
         execute: async (toolCallId, params, signal, onUpdate, context) => {
-          const result = await execute(toolCallId, params, signal, onUpdate, context);
+          let result: Awaited<ReturnType<typeof execute>>;
+          try {
+            result = await execute(toolCallId, params, signal, onUpdate, context);
+          } catch (error) {
+            const requested = tool.name === "read"
+              ? normalizeWorkspacePath(String((params as { path?: unknown }).path ?? ""))
+              : normalizeWorkspacePath(String((params as { path?: unknown }).path ?? "."));
+            if (isOptionalMissingMaterial(tool.name, requested, error)) {
+              return toolResult({
+                type: "loom.workspace-material",
+                version: 1,
+                path: requested,
+                status: "missing",
+              });
+            }
+            throw error;
+          }
+          const resultError = result as unknown as { isError?: boolean };
+          if (resultError.isError) {
+            const requested = tool.name === "read"
+              ? normalizeWorkspacePath(String((params as { path?: unknown }).path ?? ""))
+              : normalizeWorkspacePath(String((params as { path?: unknown }).path ?? "."));
+            if (isOptionalMissingMaterial(tool.name, requested, result)) {
+              return toolResult({
+                type: "loom.workspace-material",
+                version: 1,
+                path: requested,
+                status: "missing",
+              });
+            }
+          }
           if (tool.name === "read") {
             const readParams = params as { path?: unknown; offset?: unknown; limit?: unknown };
             const requested = String(readParams.path ?? "");
@@ -577,6 +607,17 @@ function validateRequest(request: MemoryReflectionRequest): void {
 
 function normalizeWorkspacePath(value: string): string {
   return value.replaceAll("\\", "/").replace(/^\.\//, "");
+}
+
+function isOptionalMissingMaterial(toolName: string, requested: string, result: unknown): boolean {
+  if (toolName !== "read" && toolName !== "ls") return false;
+  if (BASELINE_PATHS.includes(requested as typeof BASELINE_PATHS[number])) return false;
+  const message = result instanceof Error
+    ? result.message
+    : typeof result === "object" && result !== null && "content" in result
+      ? JSON.stringify((result as { content?: unknown }).content)
+      : String(result);
+  return /ENOENT|no such file|not found/i.test(message);
 }
 
 function toolResult(value: unknown) {

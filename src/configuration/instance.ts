@@ -16,10 +16,15 @@ export interface InstanceConfiguration {
 export interface ScheduleConfiguration {
   proactivePulse: ProactivePulseConfiguration;
   attentionMaintenance: AttentionMaintenanceConfiguration;
+  memoryReflection: MemoryReflectionConfiguration;
 }
 
 export interface AttentionMaintenanceConfiguration {
   intervalMinutes: number;
+}
+
+export interface MemoryReflectionConfiguration {
+  delayMinutes: number;
 }
 
 export interface ProactivePulseConfiguration {
@@ -41,6 +46,7 @@ export const DEFAULT_SCHEDULE: ScheduleConfiguration = Object.freeze({
     }),
   }),
   attentionMaintenance: Object.freeze({ intervalMinutes: 360 }),
+  memoryReflection: Object.freeze({ delayMinutes: 15 }),
 });
 
 export const MODEL_ROLES = [
@@ -130,7 +136,11 @@ function parseInteraction(value: unknown): string | undefined {
 function parseSchedule(value: unknown): ScheduleConfiguration {
   if (value === undefined) return DEFAULT_SCHEDULE;
   if (!isObject(value)) throw new Error("Instance Configuration schedule must be an object");
-  assertOnlyKeys(value, ["proactivePulse", "attentionMaintenance"], "Instance Configuration schedule");
+  assertOnlyKeys(
+    value,
+    ["proactivePulse", "attentionMaintenance", "memoryReflection"],
+    "Instance Configuration schedule",
+  );
   const pulse = value.proactivePulse;
   if (pulse !== undefined && !isObject(pulse)) {
     throw new Error("Instance Configuration schedule.proactivePulse must be an object");
@@ -168,12 +178,24 @@ function parseSchedule(value: unknown): ScheduleConfiguration {
     "schedule.attentionMaintenance.intervalMinutes",
     DEFAULT_SCHEDULE.attentionMaintenance.intervalMinutes,
   );
+  const reflection = value.memoryReflection;
+  if (reflection !== undefined && !isObject(reflection)) {
+    throw new Error("Instance Configuration schedule.memoryReflection must be an object");
+  }
+  const reflectionObject = reflection ?? {};
+  assertOnlyKeys(reflectionObject, ["delayMinutes"], "Instance Configuration schedule.memoryReflection");
+  const reflectionDelayMinutes = parseNonNegativeMinutes(
+    reflectionObject.delayMinutes,
+    "schedule.memoryReflection.delayMinutes",
+    DEFAULT_SCHEDULE.memoryReflection.delayMinutes,
+  );
   return Object.freeze({
     proactivePulse: Object.freeze({
       intervalMinutes,
       quietHours: Object.freeze({ start, end, intervalMinutes: quietIntervalMinutes }),
     }),
     attentionMaintenance: Object.freeze({ intervalMinutes: attentionIntervalMinutes }),
+    memoryReflection: Object.freeze({ delayMinutes: reflectionDelayMinutes }),
   });
 }
 
@@ -181,6 +203,14 @@ function parsePositiveMinutes(value: unknown, label: string, fallback: number): 
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error(`Instance Configuration ${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function parseNonNegativeMinutes(value: unknown, label: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Instance Configuration ${label} must be a non-negative integer`);
   }
   return value;
 }
