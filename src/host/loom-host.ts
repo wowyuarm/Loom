@@ -3,6 +3,9 @@ import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 
 import {
+  loadInstanceConfiguration,
+} from "../configuration/index.js";
+import {
   createProcessDriver,
   openLoomInstance,
   type LoomInstance,
@@ -12,6 +15,11 @@ import {
   type ProcessDriverStatus,
 } from "../instance/index.js";
 import { resolveInstanceLayout } from "../instance/layout.js";
+import {
+  openConfiguredWeixinAdapter,
+  type WeixinAdapter,
+  type WeixinAdapterStatus,
+} from "../integrations/weixin/index.js";
 import type { AcceptedInput, RuntimeInput } from "../runtime/index.js";
 
 export interface LoomHost {
@@ -27,6 +35,9 @@ export interface LoomHostStatus {
   state: "open" | "running" | "stopping" | "stopped";
   driver: ProcessDriverStatus;
   instance: LoomInstanceStatus;
+  integrations?: {
+    weixin: WeixinAdapterStatus;
+  };
 }
 
 export type OpenLoomHostOptions = OpenLoomInstanceOptions;
@@ -36,6 +47,7 @@ class DefaultLoomHost implements LoomHost {
   readonly #instance: LoomInstance;
   readonly #driver: ProcessDriver;
   readonly #ownership: InstanceRootOwnership;
+  readonly #weixin: WeixinAdapter | undefined;
   #state: LoomHostStatus["state"] = "open";
   #finalInstanceStatus: LoomInstanceStatus | undefined;
   #stopping: Promise<void> | undefined;
@@ -45,11 +57,13 @@ class DefaultLoomHost implements LoomHost {
     instance: LoomInstance;
     driver: ProcessDriver;
     ownership: InstanceRootOwnership;
+    weixin?: WeixinAdapter;
   }) {
     this.#root = options.root;
     this.#instance = options.instance;
     this.#driver = options.driver;
     this.#ownership = options.ownership;
+    this.#weixin = options.weixin;
   }
 
   start(): void {
@@ -58,6 +72,7 @@ class DefaultLoomHost implements LoomHost {
     }
     this.#driver.start();
     this.#state = "running";
+    this.#weixin?.start(input => this.acceptInput(input));
   }
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -80,6 +95,7 @@ class DefaultLoomHost implements LoomHost {
       state: this.#state,
       driver: this.#driver.status(),
       instance: this.#finalInstanceStatus ?? this.#instance.status(),
+      ...(this.#weixin ? { integrations: { weixin: this.#weixin.status() } } : {}),
     };
   }
 
@@ -94,7 +110,11 @@ class DefaultLoomHost implements LoomHost {
 
   async #finishStop(): Promise<void> {
     try {
-      await this.#driver.stop();
+      try {
+        await this.#driver.stop();
+      } finally {
+        await this.#weixin?.stop();
+      }
     } finally {
       try {
         this.#ownership.release();
@@ -108,15 +128,38 @@ class DefaultLoomHost implements LoomHost {
 export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHost> {
   const root = path.resolve(options.root);
   const ownership = await acquireInstanceRootOwnership(root);
+  let weixin: WeixinAdapter | undefined;
   try {
-    const instance = await openLoomInstance({ ...options, root });
+    const layout = resolveInstanceLayout(root);
+    const configuration = await loadInstanceConfiguration({
+      file: layout.configurationFile,
+      ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
+    });
+    weixin = await openConfiguredWeixinAdapter({
+      configurationFile: layout.weixinConfigurationFile,
+      authFile: layout.weixinAuthFile,
+      stateFile: layout.weixinStateFile,
+      ...(configuration.defaultInteractionRoute
+        ? { expectedRouteRef: configuration.defaultInteractionRoute }
+        : {}),
+    });
+    if (weixin && options.outboundDelivery) {
+      throw new Error("Loom Host cannot combine configured Weixin with another OutboundDelivery");
+    }
+    const instance = await openLoomInstance({
+      ...options,
+      root,
+      ...(weixin ? { outboundDelivery: weixin } : {}),
+    });
     return new DefaultLoomHost({
       root,
       instance,
       driver: createProcessDriver({ instance, ...(options.now ? { now: options.now } : {}) }),
       ownership,
+      ...(weixin ? { weixin } : {}),
     });
   } catch (error) {
+    await weixin?.stop();
     ownership.release();
     throw error;
   }
