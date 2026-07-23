@@ -3,6 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 export function initializeRuntimeSchema(database: DatabaseSync): void {
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (version.user_version === 11) migrateVersion11(database);
+  const migrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (migrated.user_version === 12) migrateVersion12(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -68,7 +70,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       input_position INTEGER NOT NULL CHECK (input_position > 0),
       status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'reconciliation_required', 'abandoned')),
       created_at TEXT NOT NULL,
-      ended_at TEXT
+      ended_at TEXT,
+      next_delivery_after TEXT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS turn_tool_activity (
@@ -221,7 +224,20 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       reason TEXT
     ) STRICT;
 
-    PRAGMA user_version = 12;
+    PRAGMA user_version = 13;
+  `);
+}
+
+function migrateVersion12(database: DatabaseSync): void {
+  const effects = database.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'effects'
+  `).get();
+  if (!effects) return;
+  database.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE effects ADD COLUMN next_delivery_after TEXT;
+    PRAGMA user_version = 13;
+    COMMIT;
   `);
 }
 

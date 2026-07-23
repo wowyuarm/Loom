@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { createTimePolicy } from "../../src/configuration/index.js";
@@ -137,7 +138,7 @@ function failingRecorder(attempted: string[]): ActivityRecorder {
   };
 }
 
-test("continues after a confirmed not-sent Delivery without polling it", async () => {
+test("backs off after a confirmed not-sent Delivery", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-not-sent-"));
   const now = new Date("2026-07-21T08:00:00.000Z");
   const runtime = openRuntime({
@@ -152,11 +153,139 @@ test("continues after a confirmed not-sent Delivery without polling it", async (
     assert.deepEqual(await createScheduler({ runtime }).runOnce(now), {
       disposition: "deferred",
       reason: "delivery_not_sent",
-      nextRunAt: "2026-07-21T08:00:00.000Z",
+      nextRunAt: "2026-07-21T08:01:00.000Z",
     });
   } finally {
     runtime.close();
   }
+});
+
+test("keeps a Delivery retry time across Runtime restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-restart-"));
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const first = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    now: () => now,
+  });
+  await first.acceptInput({ source: "test", sourceId: "not-sent-restart", kind: "interaction", payload: {} });
+  await createScheduler({ runtime: first }).runOnce(now);
+  first.close();
+
+  let deliveryCalls = 0;
+  const recovered = openRuntime({
+    root,
+    outboundDelivery: {
+      deliver: async () => {
+        deliveryCalls += 1;
+        return { status: "delivered", remoteId: "remote-retry" };
+      },
+    },
+    now: () => now,
+  });
+  t.after(() => recovered.close());
+  const scheduler = createScheduler({ runtime: recovered });
+
+  now = new Date("2026-07-21T08:00:30.000Z");
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-21T08:01:00.000Z",
+  });
+  assert.equal(deliveryCalls, 0);
+
+  now = new Date("2026-07-21T08:01:00.000Z");
+  await scheduler.runOnce(now);
+  assert.equal(deliveryCalls, 1);
+  assert.equal(recovered.status().effects[0]?.status, "completed");
+  assert.equal(recovered.status().deliveries.length, 2);
+});
+
+test("increases the Delivery retry delay after each confirmed not-sent result", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-backoff-"));
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+  await runtime.acceptInput({ source: "test", sourceId: "not-sent-backoff", kind: "interaction", payload: {} });
+  const scheduler = createScheduler({ runtime });
+
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "delivery_not_sent",
+    nextRunAt: "2026-07-21T08:01:00.000Z",
+  });
+
+  now = new Date("2026-07-21T08:01:00.000Z");
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "delivery_not_sent",
+    nextRunAt: "2026-07-21T08:03:00.000Z",
+  });
+  assert.equal(runtime.status().deliveries.length, 2);
+});
+
+test("caps the Delivery retry delay at one hour", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-backoff-cap-"));
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+  await runtime.acceptInput({ source: "test", sourceId: "not-sent-cap", kind: "interaction", payload: {} });
+  const scheduler = createScheduler({ runtime });
+  const attempts = [
+    ["2026-07-21T08:00:00.000Z", "2026-07-21T08:01:00.000Z"],
+    ["2026-07-21T08:01:00.000Z", "2026-07-21T08:03:00.000Z"],
+    ["2026-07-21T08:03:00.000Z", "2026-07-21T08:07:00.000Z"],
+    ["2026-07-21T08:07:00.000Z", "2026-07-21T08:15:00.000Z"],
+    ["2026-07-21T08:15:00.000Z", "2026-07-21T08:31:00.000Z"],
+    ["2026-07-21T08:31:00.000Z", "2026-07-21T09:03:00.000Z"],
+    ["2026-07-21T09:03:00.000Z", "2026-07-21T10:03:00.000Z"],
+  ] as const;
+
+  for (const [attemptedAt, expectedRetryAt] of attempts) {
+    now = new Date(attemptedAt);
+    const result = await scheduler.runOnce(now);
+    assert.equal(result.disposition, "deferred");
+    assert.equal("nextRunAt" in result ? result.nextRunAt : undefined, expectedRetryAt);
+  }
+  assert.equal(runtime.status().deliveries.length, 7);
+});
+
+test("upgrades a version 12 Runtime Store before scheduling Delivery retry", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-schema-upgrade-"));
+  const seed = openRuntime({ root });
+  seed.close();
+  const database = new DatabaseSync(path.join(root, "runtime.db"));
+  database.exec(`
+    ALTER TABLE effects DROP COLUMN next_delivery_after;
+    PRAGMA user_version = 12;
+  `);
+  database.close();
+
+  const now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+  await runtime.acceptInput({ source: "test", sourceId: "not-sent-upgrade", kind: "interaction", payload: {} });
+
+  assert.deepEqual(await createScheduler({ runtime }).runOnce(now), {
+    disposition: "deferred",
+    reason: "delivery_not_sent",
+    nextRunAt: "2026-07-21T08:01:00.000Z",
+  });
 });
 
 test("waits for explicit reconciliation after an unknown Delivery", async () => {

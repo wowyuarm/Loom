@@ -320,6 +320,7 @@ export interface RuntimeEffectStatus {
   routeRef?: string;
   coveredInputPosition: number;
   status: "pending" | "completed" | "reconciliation_required" | "abandoned";
+  nextDeliveryAt?: string;
 }
 
 export interface RuntimeDeliveryStatus {
@@ -436,7 +437,7 @@ export type AdvanceResult =
   | { disposition: "idle" }
   | { disposition: "turn_completed" }
   | { disposition: "delivery_completed" }
-  | { disposition: "delivery_not_sent" }
+  | { disposition: "delivery_not_sent"; nextRunAt: string }
   | { disposition: "delivery_requires_reconciliation" }
   | { disposition: "activity_recorded" }
   | { disposition: "activity_recording_failed" }

@@ -1,4 +1,4 @@
-import type { AdvanceResult, Runtime } from "./types.js";
+import type { AdvanceResult, Runtime, RuntimeStatus } from "./types.js";
 
 export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
 export const DEFAULT_ACTIVITY_MAX_MS = 2 * 60 * 60 * 1_000;
@@ -141,15 +141,20 @@ class RuntimeScheduler implements Scheduler {
         return { disposition: "deferred", reason: "agent_work_not_admitted" };
       }
       if (afterChat.disposition === "busy") return { disposition: "busy" };
-      if (afterChat.disposition === "waiting") return afterChat;
+      const afterChatWaiting = afterChat.disposition === "waiting" ? afterChat : undefined;
 
-      const active = this.#runtime.status().activeSegment;
+      const status = this.#runtime.status();
+      const deliveryWaiting = pendingDeliveryWaiting(status);
+      const active = status.activeSegment;
       if (!active) {
         const maintenance = await this.#runAttentionMaintenance(observedAt, agentWork);
         if (maintenance && maintenance.disposition !== "waiting") return maintenance;
         const reflection = await this.#runMemoryReflection(observedAt, agentWork);
         if (reflection && reflection.disposition !== "waiting") return reflection;
-        if (!this.#proactivePulse) return earliestWaiting(maintenance, reflection) ?? { disposition: "idle" };
+        if (!this.#proactivePulse) {
+          return earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting)
+            ?? { disposition: "idle" };
+        }
         const pulse = await this.#runtime.runOpportunityPulse({
           observedAt,
           initialDelayMs: this.#proactivePulse.initialDelayMs ?? this.#proactivePulse.intervalMs,
@@ -163,7 +168,7 @@ class RuntimeScheduler implements Scheduler {
             disposition: "waiting",
             nextRunAt: earlierTime(
               pulse.nextRunAt,
-              earliestWaiting(maintenance, reflection)?.nextRunAt,
+              earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting)?.nextRunAt,
             ),
           };
         }
@@ -185,7 +190,11 @@ class RuntimeScheduler implements Scheduler {
         new Date(active.openedAt).getTime() + this.#activityMaxMs,
       ));
       if (observedAt < nextRunAt) {
-        return { disposition: "waiting", nextRunAt: nextRunAt.toISOString() };
+        return earliestWaiting(
+          { disposition: "waiting", nextRunAt: nextRunAt.toISOString() },
+          afterChatWaiting,
+          deliveryWaiting,
+        )!;
       }
 
       const inactiveBefore = new Date(observedAt.getTime() - this.#activityIdleMs).toISOString();
@@ -193,13 +202,17 @@ class RuntimeScheduler implements Scheduler {
       const closed = await this.#runtime.closeActivity({ inactiveBefore, openedBefore });
       if (closed.disposition === "busy") return { disposition: "busy" };
       if (closed.disposition === "not_due") {
-        return {
-          disposition: "waiting",
-          nextRunAt: new Date(Math.min(
-            new Date(closed.lastActivityAt).getTime() + this.#activityIdleMs,
-            new Date(closed.openedAt).getTime() + this.#activityMaxMs,
-          )).toISOString(),
-        };
+        return earliestWaiting(
+          {
+            disposition: "waiting",
+            nextRunAt: new Date(Math.min(
+              new Date(closed.lastActivityAt).getTime() + this.#activityIdleMs,
+              new Date(closed.openedAt).getTime() + this.#activityMaxMs,
+            )).toISOString(),
+          },
+          afterChatWaiting,
+          deliveryWaiting,
+        )!;
       }
       if (closed.disposition === "no_activity") return { disposition: "idle" };
     }
@@ -269,15 +282,25 @@ function earlierTime(primary: string, secondary: string | undefined): string {
 }
 
 function earliestWaiting(
-  first: SchedulerRunResult | undefined,
-  second: SchedulerRunResult | undefined,
+  ...results: Array<SchedulerRunResult | undefined>
 ): Extract<SchedulerRunResult, { disposition: "waiting" }> | undefined {
-  const times = [first, second]
+  const times = results
     .filter((value): value is Extract<SchedulerRunResult, { disposition: "waiting" }> =>
       value?.disposition === "waiting");
   if (times.length === 0) return undefined;
   return times.reduce((earliest, candidate) =>
     Date.parse(candidate.nextRunAt) < Date.parse(earliest.nextRunAt) ? candidate : earliest);
+}
+
+function pendingDeliveryWaiting(
+  status: RuntimeStatus,
+): Extract<SchedulerRunResult, { disposition: "waiting" }> | undefined {
+  const nextRunAt = status.effects
+    .filter(effect => effect.status === "pending" && effect.nextDeliveryAt)
+    .map(effect => effect.nextDeliveryAt!)
+    .reduce<string | undefined>((earliest, candidate) =>
+      !earliest || Date.parse(candidate) < Date.parse(earliest) ? candidate : earliest, undefined);
+  return nextRunAt ? { disposition: "waiting", nextRunAt } : undefined;
 }
 
 function validatePulsePolicy(policy: SchedulerPulsePolicy): void {
@@ -339,7 +362,7 @@ function deferredResult(result: AdvanceResult, observedAt: Date): SchedulerRunRe
       return {
         disposition: "deferred",
         reason: result.disposition,
-        nextRunAt: observedAt.toISOString(),
+        nextRunAt: result.nextRunAt,
       };
     case "delivery_requires_reconciliation":
       return { disposition: "deferred", reason: result.disposition };

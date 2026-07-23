@@ -106,6 +106,7 @@ interface EffectRow {
   route_ref: string | null;
   input_position: number;
   status: RuntimeEffectStatus["status"];
+  next_delivery_after: string | null;
 }
 
 interface DeliveryRow {
@@ -172,6 +173,16 @@ interface AfterChatContinuationRow {
 
 const AFTER_CHAT_DELAY_MS = 5 * 60 * 1_000;
 const AFTER_CHAT_EXPIRY_MS = 20 * 60 * 1_000;
+const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
+const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
+
+function deliveryRetryDelay(attempt: number): number {
+  const exponent = Math.min(
+    Math.max(0, attempt - 1),
+    Math.ceil(Math.log2(DELIVERY_RETRY_MAX_MS / DELIVERY_RETRY_BASE_MS)),
+  );
+  return Math.min(DELIVERY_RETRY_BASE_MS * 2 ** exponent, DELIVERY_RETRY_MAX_MS);
+}
 
 interface ActiveExecution {
   turnId: string;
@@ -461,7 +472,7 @@ class SqliteRuntime implements Runtime {
     if (this.#hasRunningTurn()) return { disposition: "busy" };
 
     if (this.#outboundDelivery) {
-      const delivery = this.#claimPendingDelivery();
+      const delivery = this.#claimPendingDelivery(options.observedAt ?? this.#now());
       if (delivery) {
         this.#activeDeliveryId = delivery.request.attemptId;
         this.#startHeartbeat("delivery", delivery.request.attemptId, delivery.fencingToken);
@@ -472,9 +483,16 @@ class SqliteRuntime implements Runtime {
           } catch (error) {
             observation = { status: "unknown", error: error instanceof Error ? error.message : String(error) };
           }
-          this.#finishDelivery(delivery.request.attemptId, delivery.fencingToken, observation);
+          const nextDeliveryAt = this.#finishDelivery(
+            delivery.request.attemptId,
+            delivery.fencingToken,
+            observation,
+          );
           if (observation.status === "delivered") return { disposition: "delivery_completed" };
-          if (observation.status === "not_sent") return { disposition: "delivery_not_sent" };
+          if (observation.status === "not_sent") {
+            if (!nextDeliveryAt) throw new Error("A not-sent Delivery requires a retry time");
+            return { disposition: "delivery_not_sent", nextRunAt: nextDeliveryAt };
+          }
           return { disposition: "delivery_requires_reconciliation" };
         } finally {
           this.#stopHeartbeat();
@@ -744,7 +762,8 @@ class SqliteRuntime implements Runtime {
       ORDER BY position
     `);
     const effectRows = this.#database.prepare(`
-      SELECT id, turn_id, kind, payload_json, route_ref, input_position, status
+      SELECT id, turn_id, kind, payload_json, route_ref, input_position, status,
+             next_delivery_after
       FROM effects
       ORDER BY created_at, id
     `).all() as unknown as EffectRow[];
@@ -801,6 +820,7 @@ class SqliteRuntime implements Runtime {
         ...(row.route_ref ? { routeRef: row.route_ref } : {}),
         coveredInputPosition: row.input_position,
         status: row.status,
+        ...(row.next_delivery_after ? { nextDeliveryAt: row.next_delivery_after } : {}),
       })),
       deliveries: deliveryRows.map(row => ({
         id: row.id,
@@ -2596,12 +2616,13 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #claimPendingDelivery(): { request: DeliveryAttemptRequest; fencingToken: number } | undefined {
+  #claimPendingDelivery(observedAt: Date): { request: DeliveryAttemptRequest; fencingToken: number } | undefined {
     return this.#transaction(() => {
       const effect = this.#database.prepare(`
         SELECT id, kind, payload_json, route_ref
         FROM effects
         WHERE status = 'pending' AND route_ref IS NOT NULL
+          AND (next_delivery_after IS NULL OR next_delivery_after <= ?)
           AND NOT EXISTS (
             SELECT 1 FROM delivery_attempts
             WHERE delivery_attempts.effect_id = effects.id
@@ -2609,7 +2630,10 @@ class SqliteRuntime implements Runtime {
           )
         ORDER BY created_at, id
         LIMIT 1
-      `).get() as unknown as Pick<EffectRow, "id" | "kind" | "payload_json" | "route_ref"> | undefined;
+      `).get(observedAt.toISOString()) as unknown as Pick<
+        EffectRow,
+        "id" | "kind" | "payload_json" | "route_ref"
+      > | undefined;
       if (!effect?.route_ref) return undefined;
 
       const tokenRow = this.#database.prepare(`
@@ -2662,13 +2686,20 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #finishDelivery(attemptId: string, fencingToken: number, observation: DeliveryObservation): void {
-    this.#transaction(() => {
+  #finishDelivery(
+    attemptId: string,
+    fencingToken: number,
+    observation: DeliveryObservation,
+  ): string | undefined {
+    return this.#transaction(() => {
       const now = this.#now();
       const attempt = this.#database.prepare(`
-        SELECT effect_id FROM delivery_attempts
+        SELECT effect_id, attempt_number FROM delivery_attempts
         WHERE id = ? AND status = 'dispatching' AND fencing_token = ? AND lease_owner = ?
-      `).get(attemptId, fencingToken, this.#ownerId) as unknown as { effect_id: string } | undefined;
+      `).get(attemptId, fencingToken, this.#ownerId) as unknown as {
+        effect_id: string;
+        attempt_number: number;
+      } | undefined;
       if (!attempt) throw new Error(`Delivery ${attemptId} no longer accepts writes from lease ${fencingToken}`);
       this.#database.prepare(`
         UPDATE delivery_attempts
@@ -2688,9 +2719,18 @@ class SqliteRuntime implements Runtime {
         : observation.status === "unknown"
           ? "reconciliation_required"
           : "pending";
-      if (effectState !== "pending") {
+      const nextDeliveryAt = observation.status === "not_sent"
+        ? new Date(now.getTime() + deliveryRetryDelay(attempt.attempt_number)).toISOString()
+        : undefined;
+      if (effectState === "pending") {
         this.#database.prepare(`
-          UPDATE effects SET status = ?, ended_at = ? WHERE id = ? AND status = 'pending'
+          UPDATE effects SET next_delivery_after = ? WHERE id = ? AND status = 'pending'
+        `).run(nextDeliveryAt ?? null, attempt.effect_id);
+      } else {
+        this.#database.prepare(`
+          UPDATE effects
+          SET status = ?, ended_at = ?, next_delivery_after = NULL
+          WHERE id = ? AND status = 'pending'
         `).run(effectState, now.toISOString(), attempt.effect_id);
       }
       this.#touchSegmentForEffect(attempt.effect_id, now);
@@ -2701,6 +2741,7 @@ class SqliteRuntime implements Runtime {
       if (observation.status === "delivered") {
         this.#scheduleAfterChatContinuation(attempt.effect_id, attemptId, now);
       }
+      return nextDeliveryAt;
     });
   }
 
