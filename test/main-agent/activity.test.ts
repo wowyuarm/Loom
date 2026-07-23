@@ -108,6 +108,42 @@ test("freezes verified transcript and Runtime evidence into a successor Context"
   assert.match(JSON.stringify(expansion.content), /Plan contents/);
 });
 
+test("keeps a Harness message correction out of Frozen Activity Input", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-internal-prompt-"));
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcriptWithInternalPrompt(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+    nextWindowId: () => "window-2",
+  });
+  const closing = request();
+  const correctedAnchor = {
+    sourceId: "2026-07-19",
+    sessionId: "session-1",
+    entryId: "message-result",
+  };
+  closing.executionState = serializeContextWindowState({
+    version: 1,
+    id: "window-1",
+    frozenSeed: [],
+    recentActivityReferences: [],
+    committedTrace: [],
+    transcriptSources: [correctedAnchor],
+    transcriptAnchor: correctedAnchor,
+  });
+  closing.turns[0]!.transcriptAnchor = correctedAnchor;
+
+  const { activity } = await lifecycle.freeze(closing);
+
+  assert.equal(activity.events.filter(event => event.kind === "input").length, 2);
+  assert.equal(
+    activity.events.filter(event => event.kind === "input" && event.actorRef === "human").length,
+    2,
+  );
+  assert.doesNotMatch(JSON.stringify(activity.events), /message_decision_required/);
+  assert.match(JSON.stringify(activity.events), /visible reply/);
+});
+
 test("freezes one Activity from committed Turns across daily transcripts", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-cross-day-"));
   const transcriptDirectory = path.join(root, "transcripts");
@@ -633,6 +669,66 @@ function transcript(root: string): string {
     },
     "",
   ].map(record => typeof record === "string" ? record : JSON.stringify(record)).join("\n");
+}
+
+function transcriptWithInternalPrompt(root: string): string {
+  const records = transcript(root)
+    .trimEnd()
+    .split("\n")
+    .map(line => JSON.parse(line) as Record<string, unknown>);
+  records.push(
+    {
+      type: "custom",
+      customType: "loom.internal-prompt.v1",
+      data: { version: 1, turnId: "turn-1", purpose: "message-decision-correction" },
+      id: "internal-prompt",
+      parentId: "assistant-final",
+      timestamp: "2026-07-19T10:00:05.000Z",
+    },
+    {
+      type: "message",
+      id: "internal-user",
+      parentId: "internal-prompt",
+      timestamp: "2026-07-19T10:00:05.100Z",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "<message_decision_required>" }],
+        timestamp: 6,
+      },
+    },
+    {
+      type: "message",
+      id: "message-call",
+      parentId: "internal-user",
+      timestamp: "2026-07-19T10:00:06.000Z",
+      message: {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: "message-1",
+          name: "message",
+          arguments: { action: "send", text: "visible reply" },
+        }],
+        stopReason: "toolUse",
+        timestamp: 7,
+      },
+    },
+    {
+      type: "message",
+      id: "message-result",
+      parentId: "message-call",
+      timestamp: "2026-07-19T10:00:07.000Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "message-1",
+        toolName: "message",
+        content: [{ type: "text", text: "Effect accepted." }],
+        isError: false,
+        timestamp: 8,
+      },
+    },
+  );
+  return `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
 }
 
 async function writePrimaryTranscript(root: string, content: string): Promise<{

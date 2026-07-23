@@ -723,6 +723,153 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   await running.result;
 });
 
+test("requires a message decision after a human steers a proactive Turn", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-proactive-steering-message-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const providerStarted = deferred();
+  const releaseProvider = deferred();
+  faux.setResponses([
+    async () => {
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return fauxAssistantMessage("Private background thought.");
+    },
+    context => {
+      const currentInput = JSON.stringify(context.messages.at(-1));
+      assert.match(currentInput, /human message arrived/i);
+      assert.match(currentInput, /message\.send/);
+      assert.match(currentInput, /new human input/);
+      return fauxAssistantMessage("An unsent response to the human.");
+    },
+    context => {
+      const followup = JSON.stringify(context.messages.at(-1));
+      assert.match(followup, /did not choose how this interaction ends/i);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "send",
+        text: "A visible response to the new input.",
+      }, { id: "message-send" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+  const running = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [{
+      ...executionInput("input-1", "background opportunity"),
+      kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "A private line may be worth exploring.",
+        observedAt: "2026-07-19T00:00:00.000Z",
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-1" };
+    },
+  });
+  await providerStarted.promise;
+  await running.steer({
+    ...executionInput("input-2", "new human input"),
+    inclusionPosition: 2,
+  });
+  releaseProvider.resolve();
+
+  await running.result;
+  assert.equal(faux.state.callCount, 3);
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "A visible response to the new input." },
+    routeRef: "primary-route",
+  }]);
+});
+
+test("reminds only the first human input to enter a Turn", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-single-message-reminder-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const providerStarted = deferred();
+  const releaseProvider = deferred();
+  faux.setResponses([
+    async () => {
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return fauxAssistantMessage("Private background thought.");
+    },
+    context => {
+      const messages = JSON.stringify(context.messages);
+      assert.equal(messages.match(/To make a reply visible to the human/g)?.length, 1);
+      assert.equal(messages.match(/A human message arrived while the non-interaction Turn was still running/g)?.length, 1);
+      assert.equal(messages.match(/<human_input>/g)?.length, 1);
+      assert.match(messages, /first human input/);
+      assert.doesNotMatch(messages, /second human input/);
+      return fauxAssistantMessage("The first input is present.");
+    },
+    context => {
+      const messages = JSON.stringify(context.messages);
+      assert.equal(messages.match(/To make a reply visible to the human/g)?.length, 1);
+      assert.equal(messages.match(/A human message arrived while the non-interaction Turn was still running/g)?.length, 1);
+      assert.equal(messages.match(/<human_input>/g)?.length, 2);
+      assert.match(messages, /first human input/);
+      assert.match(messages, /second human input/);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "no_reply",
+      }, { id: "message-no-reply" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+  const running = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [{
+      ...executionInput("input-1", "background opportunity"),
+      kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "A private line may be worth exploring.",
+        observedAt: "2026-07-19T00:00:00.000Z",
+      },
+    }],
+  }, noEffectControl());
+  await providerStarted.promise;
+  await running.steer({
+    ...executionInput("input-2", "first human input"),
+    inclusionPosition: 2,
+  });
+  await running.steer({
+    ...executionInput("input-3", "second human input"),
+    inclusionPosition: 3,
+  });
+  releaseProvider.resolve();
+
+  await running.result;
+});
+
 test("continues after chat in the current Context with the source background Behavior", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-after-chat-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
@@ -749,6 +896,14 @@ test("continues after chat in the current Context with the source background Beh
       assert.match(messages, /Do not manufacture a follow-up/);
       return fauxAssistantMessage("quiet continuation");
     },
+    context => {
+      const followup = JSON.stringify(context.messages.at(-1));
+      assert.match(followup, /did not choose how this interaction ends/i);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "no_reply",
+        reason: "Nothing genuinely remains.",
+      }, { id: "message-no-reply" }), { stopReason: "toolUse" });
+    },
   ]);
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -757,6 +912,7 @@ test("continues after chat in the current Context with the source background Beh
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
+    defaultInteractionRoute: "primary-route",
     loadContextMaterials: async () => ({
       turnLive: [],
       windowFrozen: [contextMessage("recent activity bridge")],
@@ -779,7 +935,7 @@ test("continues after chat in the current Context with the source background Beh
     }],
   }, noEffectControl()).result;
 
-  await execution.start({
+  const continuation = await execution.start({
     turnId: "turn-after-chat",
     leaseToken: 2,
     recordingDay: "2026-07-19",
@@ -797,6 +953,9 @@ test("continues after chat in the current Context with the source background Beh
     }],
     executionState: first.executionState,
   }, noEffectControl()).result;
+
+  assert.equal(continuation.outcome, "no_reply");
+  assert.equal(faux.state.callCount, 3);
 });
 
 test("records a successful ordinary tool before the provider can continue", async t => {
@@ -1111,6 +1270,134 @@ test("continues committed Context across daily Primary Transcripts", async t => 
     readFile(path.join(transcriptDirectory, "2026-07-19", "agent.jsonl"), "utf8"),
     readFile(path.join(transcriptDirectory, "2026-07-20", "agent.jsonl"), "utf8"),
   ]);
+});
+
+test("reminds the Main Agent how to make the first interaction visible", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-reminder-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const currentInput = JSON.stringify(context.messages.at(-1));
+      assert.match(currentInput, /ordinary assistant text is not delivered/i);
+      assert.match(currentInput, /message\.send/);
+      assert.match(currentInput, /message\.no_reply/);
+      assert.match(currentInput, /hello/);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "no_reply",
+      }, { id: "message-no-reply" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl()).result;
+});
+
+test("asks once for a missing message decision in the same interaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-followup-"));
+  const transcriptDirectory = path.join(root, "transcript");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("A reply that was not sent."),
+    context => {
+      const followup = JSON.stringify(context.messages.at(-1));
+      assert.match(followup, /did not choose how this interaction ends/i);
+      assert.match(followup, /ordinary assistant text is not delivered/i);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "send",
+        text: "A visible reply.",
+      }, { id: "message-send" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-1", "hello")],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-1" };
+    },
+  }).result;
+
+  assert.equal(faux.state.callCount, 2);
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "A visible reply." },
+    routeRef: "primary-route",
+  }]);
+  const transcript = await readTranscript(path.join(transcriptDirectory, "2026-07-19", "agent.jsonl"));
+  const markerIndex = transcript.findIndex(entry =>
+    entry.type === "custom" && entry.customType === "loom.internal-prompt.v1");
+  assert.ok(markerIndex >= 0);
+  assert.deepEqual(transcript[markerIndex]?.data, {
+    version: 1,
+    turnId: "turn-1",
+    purpose: "message-decision-correction",
+  });
+  assert.equal(transcript[markerIndex + 1]?.parentId, transcript[markerIndex]?.id);
+});
+
+test("fails an interaction that still has no message decision after the correction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-missing-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("First unsent reply."),
+    fauxAssistantMessage("Second unsent reply."),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+
+  const running = execution.start({
+    turnId: "turn-1",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-1", "hello")],
+  }, noEffectControl());
+
+  await assert.rejects(
+    running.result,
+    /did not choose message\.send or message\.no_reply after one correction/,
+  );
+  assert.equal(faux.state.callCount, 2);
 });
 
 test("prepares a message Effect through the Main Agent action interface", async t => {

@@ -45,7 +45,9 @@ Judgment belongs to the Individual. Carry forward the facts needed to recognize 
 
 ## Grounding
 
-Stable Facts are appended below this instruction. They describe durable identity, relationship, forms of address, places, and language. Use them to attribute evidence and choose natural language. They do not prove that a current event happened, and they do not override an explicit correction in current evidence.
+The Individual's complete Identity and Stable Facts are appended below this instruction. Identity grounds what kind of life this Individual is actually living and what may have genuine pull for it; it does not prove that an opening exists now. Stable Facts ground attribution, relationship coordinates, forms of address, places, and language. Neither overrides an explicit correction in current evidence.
+
+Look for an opening that belongs to this Individual rather than favoring work, relationship, self-development, or any other subject in advance. Identity shapes relevance; recent evidence establishes whether the relevance is alive now.
 
 Start from the indexes in the run context. Read only the materials that help you understand a promising scene; do not preload the whole Workspace. Use read_recent_activity when recent lived evidence matters. Distinguish facts you actually observed from possibilities you inferred.
 
@@ -74,7 +76,7 @@ A useful narrative usually contains:
 2. enough preceding context for the Main Agent to recognize it;
 3. a light entrance, question, or direction without completing the judgment.
 
-One to three sentences is usually enough. A Workspace path may be included when it provides a real entrance, but a path is an address, not a reason. Preserve important quoted language when wording or tone is the evidence. Write in the predominant language of the evidence, not the language of this instruction.
+One to three sentences is usually enough. A Workspace path may be included when it provides a real entrance, but a path is an address, not a reason. Preserve important quoted language when wording or tone is the evidence. When the opening directly continues a human interaction in one clear language, write every output field in that language. Otherwise follow the language of the lived material at issue, and use Stable Facts only when that material has no clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the output language.
 
 Good boundaries:
 
@@ -101,7 +103,7 @@ or:
 
 {"outcome":"none","whyNow":"...","evidence":["...","..."]}
 
-Write every output field in the predominant language of the evidence. whyNow is a concise audit reason for choosing this opening now. Every evidence item must describe something actually read during this run, without inference. whyNow, evidence, and the complete organ transcript are retained for audit and diagnosis; they are not passed to the Main Agent.`;
+Write every output field in that same evidence-grounded language. whyNow is a concise audit reason for choosing this opening now. Every evidence item must describe something actually read during this run, without inference. whyNow, evidence, and the complete organ transcript are retained for audit and diagnosis; they are not passed to the Main Agent.`;
 
 export interface OrientationActionSpace {
   skills: Array<{ name: string; description: string }>;
@@ -126,7 +128,8 @@ class PiOrientation implements Orientation {
   async form(request: OrientationRequest): Promise<OrientationResult> {
     validateRequest(request);
     const runId = this.options.nextRunId?.() ?? randomUUID();
-    const [stableFacts, actionSpace] = await Promise.all([
+    const [identity, stableFacts, actionSpace] = await Promise.all([
+      this.options.agentWorkspace.loadIdentity(),
       this.options.agentWorkspace.loadStableFacts(),
       this.options.loadActionSpace(),
     ]);
@@ -191,6 +194,10 @@ class PiOrientation implements Orientation {
       noContextFiles: true,
       systemPromptOverride: () => [
         SYSTEM_PROMPT,
+        "",
+        "<individual_identity>",
+        identity.trim(),
+        "</individual_identity>",
         "",
         "<stable_facts>",
         stableFacts.trim(),
@@ -304,12 +311,9 @@ function parseResult(messages: AgentMessage[], runId: string): OrientationResult
     throw new Error(message.errorMessage ?? `Orientation stopped with ${message.stopReason}`);
   }
   const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    throw new Error("Orientation did not return one valid JSON object");
-  }
+  const value = [...jsonObjectsIn(text)].reverse().find(candidate =>
+    isObject(candidate) && (candidate.outcome === "opportunity" || candidate.outcome === "none"));
+  if (value === undefined) throw new Error("Orientation did not return a valid JSON result object");
   if (!isObject(value) || (value.outcome !== "opportunity" && value.outcome !== "none")) {
     throw new Error("Orientation returned an invalid outcome");
   }
@@ -324,6 +328,46 @@ function parseResult(messages: AgentMessage[], runId: string): OrientationResult
     whyNow,
     evidence,
   };
+}
+
+function jsonObjectsIn(text: string): unknown[] {
+  const direct = parseJson(text);
+  if (direct !== undefined) return [direct];
+
+  const values: unknown[] = [];
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === "\"") inString = false;
+        continue;
+      }
+      if (character === "\"") inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") {
+        depth -= 1;
+        if (depth !== 0) continue;
+        const value = parseJson(text.slice(start, index + 1));
+        if (value !== undefined) values.push(value);
+        break;
+      }
+    }
+  }
+  return values;
+}
+
+function parseJson(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function validateRequest(request: OrientationRequest): void {

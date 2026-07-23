@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -40,6 +40,10 @@ The usual horizon is several days, roughly two to five, but this is not an expir
 
 Current Attention is not a task list, next-Turn plan, Daily timeline, Recent Activity replay, Opportunity, behavior instruction, Long-term Memory, or cross-time pattern analysis. Do not preserve an event merely because it is recent. Do not turn every open matter into work.
 
+It is also not a progress report for private work. A Thread may contain several notes, completed stages, options, and future directions; Current Attention should usually name only the living pull and a doorway back into it. Do not enumerate what was just finished or copy the Thread's "next steps" unless that awareness itself would change how the Individual naturally chooses, speaks, stays silent, or turns elsewhere.
+
+In particular, do not list a Thread's open questions, candidate solutions, planned next steps, or "待续" items here. Those belong in the Thread. If the only thing that would be lost is knowledge of where to resume the file, leave the detail in the Thread and keep Current Attention shorter.
+
 ## The deciding test
 
 Ask one question: if this were absent from attention.md, would the Individual's expression, direction choices, relationship approach, or judgment about speaking and staying silent naturally be different over the next few days?
@@ -48,11 +52,17 @@ Daily Narratives, Frozen Activity, Episodes, or threads may already preserve the
 
 ## Grounding
 
-The system prompt ends with the complete Stable Facts for this Individual and the primary human. Use them for identity, attribution, natural forms of address, places, and language. They do not prove a current event happened and do not override an explicit correction in current evidence.
+The system prompt ends with the complete Identity and Stable Facts for this Individual. Identity grounds what kind of life this Individual is actually living and therefore what can naturally remain present; it is not evidence that a current event happened or a category that attention must contain. Stable Facts ground attribution, natural forms of address, places, and language. Neither overrides an explicit correction in current evidence.
+
+Judge attention for this Individual rather than favoring work, relationship, self-development, or any other subject in advance. The evidence may make one of them central, but the Harness does not.
 
 The run context gives indexes, not a prewritten briefing. First read the complete existing attention.md. Then inspect enough additional Workspace or Recent Activity evidence to know whether its awareness has changed. A Daily candidate labeled [attention] is only a lead to inspect, not accepted Current Attention. Threads and private work show where an explicit line has actually reached; Recent Activity supplies immutable recent evidence; Long-term Memory supplies durable weight but does not by itself make something current.
 
-Use only evidence you actually read. Do not infer that an output reached the human without Delivery evidence. Preserve quoted speech and source text in their original language. Write the surrounding attention in the predominant language of the evidence; when that is unclear, follow Stable Facts.
+Use only evidence you actually read. Do not infer that an output reached the human without Delivery evidence. Preserve quoted speech and source text in their original language. When new attention directly arises from a human interaction in one clear language, write that surrounding material in the same language. Otherwise preserve the language of the established attention or continued private line; use Stable Facts only when neither has a clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, paths, and other system evidence; none of those chooses the language of this file.
+
+Keep evidence at its actual scope. A bounded request such as "today, do not contact me" may shape attention only while that time window is still current and only as a situational fact. Do not turn one request into a standing communication rule, a relationship pattern, or a claim about the relationship's enduring character. Do not write "until revoked", "from now on", or similar permanence unless the evidence clearly establishes it.
+
+Do not create a separate relationship, rhythm, calibration, or "new beginning" section from one interaction. Include that context inline only when it changes the Individual's near-term judgment and remains within the evidence's time and certainty. A single request to leave private material while someone is busy is usually a Daily or Recent Activity fact, not a new relationship pattern.
 
 ## Writing
 
@@ -75,6 +85,12 @@ Not Current Attention:
   At 10:00 the sensor command succeeded, and at 10:04 a file was edited. This is an event log.
 
   Next time, finish the experiment and send Mara the result. This is a task and behavior instruction.
+
+  The project has completed analysis and should next move to wireframes, then technology selection. This is a Thread roadmap, not carried awareness.
+
+  The person said not to be contacted today, so contact is forbidden until they revoke it. This turns a bounded request into a standing rule.
+
+  The thread has three unresolved questions and four possible designs. This is source material, not Current Attention.
 
   The relationship is characterized by a general pattern of secure disagreement across many months. This is long-term analysis.
 
@@ -110,6 +126,7 @@ export interface PiAttentionMaintainerOptions {
   transcriptDirectory: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
   nextRunId?: () => string;
 }
 
@@ -119,7 +136,8 @@ class PiAttentionMaintainer implements AttentionMaintainer {
   async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
     validateRequest(request);
     const runId = this.options.nextRunId?.() ?? randomUUID();
-    const [stableFacts, previousAttention] = await Promise.all([
+    const [identity, stableFacts, previousAttention] = await Promise.all([
+      this.options.agentWorkspace.loadIdentity(),
       this.options.agentWorkspace.loadStableFacts(),
       this.options.agentWorkspace.loadCurrentAttention(),
     ]);
@@ -128,8 +146,9 @@ class PiAttentionMaintainer implements AttentionMaintainer {
     let attentionRead = false;
     let supportingEvidenceRead = false;
     let replaced = false;
+    const workspaceRoot = this.options.agentWorkspace.root;
 
-    const workspaceTools = createWorkspaceReadTools(this.options.agentWorkspace.root)
+    const workspaceTools = createWorkspaceReadTools(workspaceRoot)
       .map(tool => observeWorkspaceRead(tool));
     const tools: ToolDefinition[] = [
       ...workspaceTools,
@@ -192,7 +211,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
     ];
 
     try {
-      const finalOutput = await this.#runSession(request, runId, stableFacts, tools);
+      const finalOutput = await this.#runSession(request, runId, identity, stableFacts, tools);
       assertGrounded(attentionRead, supportingEvidenceRead);
       if (replaced) {
         if (finalOutput !== "UPDATED") throw new Error("Attention Maintainer must return UPDATED after replacement");
@@ -211,7 +230,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
         ...tool,
         execute: async (toolCallId, params, signal, onUpdate, context) => {
           const result = await execute(toolCallId, params, signal, onUpdate, context);
-          if (tool.name === "read" && isAttentionPath((params as { path?: unknown }).path)) {
+          if (tool.name === "read" && isAttentionPath(workspaceRoot, (params as { path?: unknown }).path)) {
             attentionRead = true;
           } else {
             supportingEvidenceRead = true;
@@ -225,6 +244,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
   async #runSession(
     request: AttentionMaintenanceRequest,
     runId: string,
+    identity: string,
     stableFacts: string,
     tools: ToolDefinition[],
   ): Promise<string> {
@@ -251,6 +271,10 @@ class PiAttentionMaintainer implements AttentionMaintainer {
       systemPromptOverride: () => [
         SYSTEM_PROMPT,
         "",
+        "<individual_identity>",
+        identity.trim(),
+        "</individual_identity>",
+        "",
         "<stable_facts>",
         stableFacts.trim(),
         "</stable_facts>",
@@ -263,6 +287,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
+      ...(this.options.thinkingLevel ? { thinkingLevel: this.options.thinkingLevel } : {}),
       noTools: "builtin",
       customTools: tools,
       resourceLoader,
@@ -325,22 +350,14 @@ function buildRunPrompt(request: AttentionMaintenanceRequest, runId: string): st
 }
 
 function finalAssistantText(messages: AgentMessage[]): string {
-  const failedToolResult = messages.find(message => message.role === "toolResult" && message.isError);
-  if (failedToolResult?.role === "toolResult") {
-    const detail = failedToolResult.content
-      .flatMap(block => block.type === "text" ? [block.text] : [])
-      .join("\n")
-      .trim();
-    throw new Error(
-      `Current Attention tool ${failedToolResult.toolName} failed${detail ? `: ${detail}` : ""}`,
-    );
-  }
   const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
   if (!message) throw new Error("Attention Maintainer did not return an assistant message");
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     throw new Error(message.errorMessage ?? `Attention Maintainer stopped with ${message.stopReason}`);
   }
-  return message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
+  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
 }
 
 function validateRequest(request: AttentionMaintenanceRequest): void {
@@ -360,8 +377,14 @@ function assertGrounded(attentionRead: boolean, supportingEvidenceRead: boolean)
   if (!supportingEvidenceRead) throw new Error("Attention Maintainer must inspect supporting evidence before deciding");
 }
 
-function isAttentionPath(value: unknown): boolean {
-  return typeof value === "string" && path.normalize(value).replace(/^\.([/\\])/, "") === ATTENTION_PATH;
+function isAttentionPath(root: string, value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = path.normalize(value);
+  if (path.isAbsolute(normalized)) {
+    const relative = path.relative(path.resolve(root), normalized);
+    return relative === ATTENTION_PATH;
+  }
+  return normalized.replace(/^\.([/\\])/, "") === ATTENTION_PATH;
 }
 
 function normalizeAttention(content: string): string {

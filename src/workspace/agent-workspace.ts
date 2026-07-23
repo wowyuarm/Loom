@@ -72,6 +72,10 @@ export class AgentWorkspace {
     return source;
   }
 
+  async loadIdentity(): Promise<string> {
+    return this.#read("identity.md");
+  }
+
   async loadCurrentAttention(): Promise<string> {
     return this.#read("attention.md");
   }

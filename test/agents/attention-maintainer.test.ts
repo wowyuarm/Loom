@@ -26,6 +26,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
       ]);
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
+      assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
       const prompt = userPrompt(context.messages);
       assert.match(prompt, /attention\.md/);
       assert.match(prompt, /activity-recent/);
@@ -111,6 +112,68 @@ test("keeps Current Attention unchanged after grounded inspection", async () => 
     path: "attention.md",
   });
   assert.equal(await readFile(path.join(workspaceRoot, "attention.md"), "utf8"), "old attention body\n");
+});
+
+test("counts a Workspace-internal absolute path as the Current Attention baseline", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-absolute-path-"));
+  const workspaceRoot = await createWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "attention-absolute-path");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: path.join(workspaceRoot, "attention.md") }, { id: "read-absolute-attention" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: path.join(workspaceRoot, "memory.md") }, { id: "read-absolute-memory" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("NO_CHANGE"),
+  ]);
+  const maintainer = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+    nextRunId: () => "attention-absolute-path",
+  });
+
+  assert.equal((await maintainer.maintain({
+    observedAt: "2026-07-20T08:00:00.000Z",
+    localTime: "2026-07-20 16:00 +08:00",
+    recentActivities: [],
+  })).outcome, "no_change");
+});
+
+test("accepts an explicit terminal outcome after explanatory prose", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-terminal-outcome-"));
+  const workspaceRoot = await createWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "attention-terminal-outcome");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "attention.md" }, { id: "read-attention-terminal" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "memory.md" }, { id: "read-memory-terminal" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("The carried awareness remains accurate.\n\nNO_CHANGE"),
+  ]);
+  const maintainer = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+    nextRunId: () => "attention-terminal-outcome",
+  });
+
+  assert.equal((await maintainer.maintain({
+    observedAt: "2026-07-20T08:00:00.000Z",
+    localTime: "2026-07-20 16:00 +08:00",
+    recentActivities: [],
+  })).outcome, "no_change");
 });
 
 test("refuses a decision made without supporting evidence", async () => {

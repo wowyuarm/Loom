@@ -383,6 +383,7 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
   assert.equal(instance.status().runtime.activeSegment, undefined);
   assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
   assert.equal(instance.status().runtime.activities[0]?.receipt?.segmentId, instance.status().runtime.activities[0]?.id);
+  assert.equal(instance.status().runtime.activities[0]?.receipt?.recordedAt, "2026-07-22T10:30:00.000Z");
   assert.deepEqual(instance.status().runtime.threadMaintenance, []);
 });
 
@@ -410,7 +411,7 @@ test("reflects a completed logical day through the assembled Instance", async t 
     quietIntervalMinutes: 2_000,
     attentionIntervalMinutes: 2_000,
     reflectionDelayMinutes: 15,
-  });
+  }, { "memory-reflector": "max" });
   let now = new Date("2026-07-22T10:00:00.000Z");
   const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
   t.after(() => instance.close());
@@ -429,6 +430,7 @@ test("reflects a completed logical day through the assembled Instance", async t 
   now = new Date("2026-07-23T03:15:00.000Z");
   await instance.runOnce(now);
   assert.equal(provider.requests(), 11);
+  assert.equal(provider.bodies()[3]?.reasoning_effort, "max");
   assert.equal(instance.status().runtime.memoryReflection?.lastCompletedDay, "2026-07-22");
   assert.equal(instance.status().runtime.memoryReflection?.lastResult?.outcome, "no_change");
   assert.equal(instance.status().runtime.memoryReflection?.nextDay, "2026-07-23");
@@ -464,7 +466,7 @@ test("maintains changed Thread material through the assembled Instance", async t
   await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
     intervalMinutes: 60,
     quietIntervalMinutes: 90,
-  });
+  }, { "thread-maintainer": "max" });
   let now = new Date("2026-07-22T10:00:00.000Z");
   const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
   t.after(() => instance.close());
@@ -482,6 +484,7 @@ test("maintains changed Thread material through the assembled Instance", async t
     nextRunAt: "2026-07-22T11:00:00.000Z",
   });
   assert.equal(provider.requests(), 8);
+  assert.equal(provider.bodies()[4]?.reasoning_effort, "max");
   assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
   assert.equal(instance.status().runtime.threadMaintenance[0]?.status, "completed");
   assert.equal(instance.status().runtime.threadMaintenance[0]?.attempts, 1);
@@ -697,7 +700,9 @@ test("uses the quiet-hours cadence from the Instance time policy", async t => {
     { text: JSON.stringify({ outcome: "none", whyNow: "Morning.", evidence: ["attention read"] }) },
   );
   t.after(() => provider.close());
-  await writeModelConfiguration(root, provider.baseUrl);
+  await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", undefined, {
+    "attention-maintainer": "high",
+  });
   let now = new Date("2026-07-22T00:45:00.000Z");
   const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
   t.after(() => instance.close());
@@ -715,6 +720,7 @@ test("uses the quiet-hours cadence from the Instance time policy", async t => {
     nextRunAt: "2026-07-22T07:45:00.000Z",
   });
   assert.equal(provider.requests(), 7);
+  assert.equal(provider.bodies()[2]?.reasoning_effort, "high");
 });
 
 test("applies an explicit proactive Pulse cadence when opening the Instance", async t => {
@@ -937,6 +943,10 @@ async function writeModelConfiguration(
     attentionIntervalMinutes?: number;
     reflectionDelayMinutes?: number;
   },
+  roleThinkingLevels?: Partial<Record<
+    "attention-maintainer" | "thread-maintainer" | "memory-reflector",
+    "high" | "max"
+  >>,
 ): Promise<void> {
   const configurationRoot = path.join(root, "configuration");
   await writeFile(path.join(configurationRoot, "instance.yaml"), [
@@ -964,6 +974,12 @@ async function writeModelConfiguration(
     "    - provider: local-test",
     "      model: local-model",
     `      thinkingLevel: ${thinkingLevel}`,
+    ...Object.entries(roleThinkingLevels ?? {}).flatMap(([role, level]) => [
+      `  ${role}:`,
+      "    - provider: local-test",
+      "      model: local-model",
+      `      thinkingLevel: ${level}`,
+    ]),
     "",
   ].join("\n"), "utf8");
   await writeFile(path.join(configurationRoot, "pi", "models.json"), JSON.stringify({
@@ -977,6 +993,7 @@ async function writeModelConfiguration(
           id: "local-model",
           name: "Local Model",
           reasoning: true,
+          thinkingLevelMap: { max: "max" },
           input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: 262_144,

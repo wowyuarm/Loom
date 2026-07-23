@@ -26,9 +26,11 @@ import { createWorkspaceReadTools } from "../workspace/tools.js";
 
 const SYSTEM_PROMPT = `You are the Life Recorder for one Agent Individual. Preserve first-hand records of what happened; do not turn them into long-term analysis.
 
-## Stable facts
+## Individual grounding
 
-The system prompt ends with the complete contents of the Agent Workspace's facts.json. It provides stable grounding about the Agent Individual, the primary human, their names, natural forms of address, identities, relationship, places, and languages. It is not evidence that an event happened and it is not a behavior instruction. If current evidence explicitly corrects an existing fact, preserve the correction instead of rewriting it to match the old fact.
+The system prompt ends with the complete Identity and Stable Facts of the Agent Individual. Identity grounds what kind of life this Individual is actually living and what may matter for its continuity; it does not prove an event happened or prescribe a category that must be recorded. Stable Facts ground attribution, names, natural forms of address, relationship coordinates, places, and language. If current evidence explicitly corrects an existing fact, preserve the correction instead of rewriting it to match the old fact.
+
+Judge salience for this Individual rather than favoring work, relationship, self-development, or any other subject in advance. The same event may matter differently to different Individuals. Let the Activity decide what happened and Identity help explain why it may be worth carrying forward.
 
 ## Working method
 
@@ -50,7 +52,7 @@ Use read_activity until every event page has been read. Raw events are available
 
 ## Language fidelity
 
-Preserve quoted speech and source text in the language actually used. Never translate a quotation merely because this instruction is in English. Write surrounding narrative in the predominant language of the activity; when the activity has no clear language signal, use the Individual's preferred language from stable facts.
+Preserve quoted speech and source text in the language actually used. Never translate a quotation merely because this instruction is in English. When the Activity contains a human Input in one clear language and the record concerns that interaction or work directly arising from it, write the Daily and any Episode in that language. Preserve source wording and technical terms when they are genuinely useful, but do not code-switch ordinary prose merely because surrounding materials are bilingual. Otherwise follow the language of the private work or scene being recorded, then the existing Daily when it supplies continuity, and finally Stable Facts when nothing else has a clear signal. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, paths, and other system evidence; none of those chooses the language of the record.
 
 ## Daily Narrative
 
@@ -62,7 +64,7 @@ An optional candidates section contains short evidence clues for a later Cogniti
 - [fact]: a stable fact that may require a future facts.json update
 - [calibration]: an explicit correction, preference, or boundary from the primary human
 - [self-discovery]: a consequential understanding the Individual formed about itself
-- [growth]: a meaningful change in capability or action space
+- [growth]: a meaningful change in capability or action space; successful use of an existing ability, ordinary restraint, no_reply, or routine tool success is not growth
 - [attention]: a live thread worth carrying forward, not a task list item
 - [limit]: a capability, knowledge, or system boundary
 - [observation]: something uncertain that deserves further observation
@@ -81,7 +83,7 @@ Record an Episode when the Activity contains a concrete change worth returning t
 - an important decision or understanding formed together
 - autonomous exploration that materially changed understanding, direction, or later action
 
-Do not record ordinary greetings, routine tool success or failure, inconsequential thinking, or a repeated scene with no new change. Warmth or interest alone is not enough unless the concrete moment remains worth replaying.
+Do not record ordinary greetings, routine tool success or failure, inconsequential thinking, or a repeated scene with no new change. Correctly following one stated communication boundary, choosing no_reply, following through on an invitation, creating a Thread, or completing expected first-pass private work is not an Episode by itself. Initial analysis that forms a view where none existed is still ordinary work. Private work becomes replayable only when the scene contains a consequential turn such as revising an earlier view, discovering a surprising constraint, making a commitment that changes later action, or otherwise materially changing prior understanding, direction, relationship, or action space.
 
 The scene is not a summary or an analysis. Restore the reader to the moment:
 - preserve the order of events, decisive actions, and important exact words
@@ -179,6 +181,10 @@ class PiLifeRecorder implements LifeRecorder {
     const recordedAt = (this.options.now?.() ?? new Date()).toISOString();
     const dailyPath = `daily/${activity.recordingDay}.md`;
     const stableFacts = await this.options.agentWorkspace.loadStableFacts();
+    const [identity, dailyNarratives] = await Promise.all([
+      this.options.agentWorkspace.loadIdentity(),
+      this.options.agentWorkspace.loadDailyNarratives(activity.recordingDay),
+    ]);
     const journal = new WorkspaceWriteJournal(this.options.agentWorkspace.root);
     const readEventIndexes = new Set<number>();
     const eventIndexById = new Map(activity.events.map((event, index) => [event.eventId, index]));
@@ -303,7 +309,15 @@ class PiLifeRecorder implements LifeRecorder {
     ];
 
     try {
-      await this.#runSession(activity, runId, dailyPath, stableFacts, tools);
+      await this.#runSession(
+        activity,
+        runId,
+        dailyPath,
+        dailyNarratives.current !== undefined,
+        identity,
+        stableFacts,
+        tools,
+      );
       if (readEventIndexes.size !== activity.events.length) {
         throw new Error("Life Recorder did not read all frozen activity events");
       }
@@ -325,6 +339,8 @@ class PiLifeRecorder implements LifeRecorder {
     activity: FrozenActivity,
     runId: string,
     dailyPath: string,
+    dailyExists: boolean,
+    identity: string,
     stableFacts: string,
     tools: ToolDefinition[],
   ): Promise<void> {
@@ -351,6 +367,10 @@ class PiLifeRecorder implements LifeRecorder {
       systemPromptOverride: () => [
         SYSTEM_PROMPT,
         "",
+        "<individual_identity>",
+        identity.trim(),
+        "</individual_identity>",
+        "",
         "<stable_facts>",
         stableFacts.trim(),
         "</stable_facts>",
@@ -373,7 +393,10 @@ class PiLifeRecorder implements LifeRecorder {
     try {
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(buildRunPrompt(activity, runId, dailyPath), { expandPromptTemplates: false });
+      await session.prompt(
+        buildRunPrompt(activity, runId, dailyPath, dailyExists),
+        { expandPromptTemplates: false },
+      );
       assertSuccessfulCompletion(session.messages);
     } finally {
       session.dispose();
@@ -407,7 +430,12 @@ function assertSuccessfulCompletion(messages: AgentMessage[]): void {
   }
 }
 
-function buildRunPrompt(activity: FrozenActivity, runId: string, dailyPath: string): string {
+function buildRunPrompt(
+  activity: FrozenActivity,
+  runId: string,
+  dailyPath: string,
+  dailyExists: boolean,
+): string {
   return [
     "Life Recorder run",
     "",
@@ -424,7 +452,9 @@ function buildRunPrompt(activity: FrozenActivity, runId: string, dailyPath: stri
     "",
     "## Workspace index",
     `- Current Daily: ${dailyPath}`,
-    "  This is the existing narrative for the recording day. Read it when present before replacing it; a missing file means the day has no Daily yet.",
+    ...(dailyExists
+      ? ["  Status: available. Read it before replacing the complete Daily Narrative."]
+      : ["  Status: missing. Do not call read for this path; the recording day has no Daily yet."]),
     "- Paths mentioned by activity tool events are entry points to work performed during the activity. Read only those needed to understand what actually changed.",
     "- Long-term Memory and existing episodes are not evidence for this recording run; do not seek them out.",
     "",

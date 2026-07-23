@@ -24,6 +24,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
     context => {
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
+      assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
         "grep",
         "ls",
@@ -34,6 +35,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       ]);
       const prompt = userPrompt(context.messages);
       assert.match(prompt, /daily\/2026-07-19\.md/);
+      assert.match(prompt, /Status: missing/);
       assert.doesNotMatch(prompt, /asked Rowan to keep the exact attribution/);
       return fauxAssistantMessage(
         fauxToolCall("read_activity", { offset: 0, limit: 20 }, { id: "read-activity" }),
@@ -371,12 +373,15 @@ function activity(): FrozenActivity {
 async function createRecorderWorkspace(root: string): Promise<string> {
   const workspaceRoot = path.join(root, "workspace");
   await mkdir(workspaceRoot, { recursive: true });
-  await writeFile(path.join(workspaceRoot, "facts.json"), JSON.stringify({
-    version: 1,
-    individual: { name: "Rowan", languages: ["en"] },
-    human: { name: "Alex", languages: ["en"] },
-    relationship: { roles: ["long-term counterpart"] },
-  }, null, 2), "utf8");
+  await Promise.all([
+    writeFile(path.join(workspaceRoot, "identity.md"), "Rowan is an Agent Individual.\n", "utf8"),
+    writeFile(path.join(workspaceRoot, "facts.json"), JSON.stringify({
+      version: 1,
+      individual: { name: "Rowan", languages: ["en"] },
+      human: { name: "Alex", languages: ["en"] },
+      relationship: { roles: ["long-term counterpart"] },
+    }, null, 2), "utf8"),
+  ]);
   return workspaceRoot;
 }
 

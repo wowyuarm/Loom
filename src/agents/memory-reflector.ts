@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -102,7 +102,7 @@ Daily candidates use a small set of labels. The label says why a lead may deserv
 - [fact]: a stable coordinate that may eventually require a Stable Facts correction. Verify it explicitly or across repeated evidence before changing facts.json.
 - [calibration]: an explicit correction, preference, or boundary from the primary human. It may affect Memory or either Behavior view, but care is not the same as automatic compliance.
 - [self-discovery]: a consequential understanding the Individual formed about itself. It may belong in Long-term Memory; only repeated, lived change can reach Identity.
-- [growth]: a meaningful change in capability or action space. Preserve the durable change, not a tool-success log or a demand for continual productivity.
+- [growth]: a meaningful change in capability or action space. Preserve the durable change, not a tool-success log, one correct use of no_reply or restraint, or a demand for continual productivity.
 - [attention]: a live line worth carrying in Current Attention. Current Attention is read-only here; do not promote a short-lived foreground merely because it was labeled.
 - [limit]: a capability, knowledge, or system limit. Decide whether it is temporary context, a durable Memory, or a Behavior-relevant boundary rather than treating every failure as identity.
 - [observation]: an uncertain signal that deserves further observation. It normally remains in Daily material until other evidence clarifies it.
@@ -136,7 +136,7 @@ Do not copy one narrative into several materials. Memory may retain the durable 
 
 ## Writing quality
 
-Write each material as something the Individual can naturally carry, not as a report about it. Preserve established voice and language. Keep quoted speech and source text in their original language; write surrounding material in the predominant language of the evidence, and use Stable Facts when the evidence has no clear language signal.
+Write each material as something the Individual can naturally carry, not as a report about it. Preserve established voice and language. Keep quoted speech and source text in their original language. When a change directly arises from human interaction in one clear language, write its new surrounding prose in that language. Otherwise preserve the existing material's language and voice or follow the lived private material under reflection; use Stable Facts only when neither has a clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the language of a replacement.
 
 The Individual will live with these materials, not read them as maintenance documentation. Write Identity as lived self-understanding, Memory as connected recollection and durable understanding, and Behavior as recognizable inclinations in a situation rather than instructions addressed to an agent. Preserve concrete phrases, relational texture, unresolved tension, humor, and ambiguity when they still matter. Do not make the material cleaner by making the life inside it flatter.
 
@@ -178,6 +178,7 @@ export interface PiMemoryReflectorOptions {
   backupDirectory: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
   workingMemoryReader: NmemWorkingMemoryReader;
   nmemRecallTool: ToolDefinition;
   nextRunId?: () => string;
@@ -196,8 +197,9 @@ class PiMemoryReflector implements MemoryReflector {
     const baselineNextOffsets = new Map<string, number>();
     const changedMaterials: CoreMaterial[] = [];
     let supportingEvidenceRead = false;
+    const workspaceRoot = this.options.agentWorkspace.root;
 
-    const workspaceTools = createWorkspaceReadTools(this.options.agentWorkspace.root)
+    const workspaceTools = createWorkspaceReadTools(workspaceRoot)
       .map(tool => observeWorkspaceTool(tool));
     const tools: ToolDefinition[] = [
       ...workspaceTools,
@@ -315,8 +317,8 @@ class PiMemoryReflector implements MemoryReflector {
             result = await execute(toolCallId, params, signal, onUpdate, context);
           } catch (error) {
             const requested = tool.name === "read"
-              ? normalizeWorkspacePath(String((params as { path?: unknown }).path ?? ""))
-              : normalizeWorkspacePath(String((params as { path?: unknown }).path ?? "."));
+              ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
+              : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
             if (isOptionalMissingMaterial(tool.name, requested, error)) {
               return toolResult({
                 type: "loom.workspace-material",
@@ -330,8 +332,8 @@ class PiMemoryReflector implements MemoryReflector {
           const resultError = result as unknown as { isError?: boolean };
           if (resultError.isError) {
             const requested = tool.name === "read"
-              ? normalizeWorkspacePath(String((params as { path?: unknown }).path ?? ""))
-              : normalizeWorkspacePath(String((params as { path?: unknown }).path ?? "."));
+              ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
+              : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
             if (isOptionalMissingMaterial(tool.name, requested, result)) {
               return toolResult({
                 type: "loom.workspace-material",
@@ -344,7 +346,7 @@ class PiMemoryReflector implements MemoryReflector {
           if (tool.name === "read") {
             const readParams = params as { path?: unknown; offset?: unknown; limit?: unknown };
             const requested = String(readParams.path ?? "");
-            const normalized = normalizeWorkspacePath(requested);
+            const normalized = normalizeWorkspacePath(workspaceRoot, requested);
             if (BASELINE_PATHS.includes(normalized as typeof BASELINE_PATHS[number])) {
               const offset = typeof readParams.offset === "number" ? readParams.offset : 1;
               const expectedOffset = baselineNextOffsets.get(normalized) ?? 1;
@@ -432,6 +434,7 @@ class PiMemoryReflector implements MemoryReflector {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
+      ...(this.options.thinkingLevel ? { thinkingLevel: this.options.thinkingLevel } : {}),
       noTools: "builtin",
       customTools: tools,
       resourceLoader,
@@ -572,22 +575,14 @@ function assertGrounded(
 }
 
 function finalAssistantText(messages: AgentMessage[]): string {
-  const failedToolResult = messages.find(message => message.role === "toolResult" && message.isError);
-  if (failedToolResult?.role === "toolResult") {
-    const detail = failedToolResult.content
-      .flatMap(block => block.type === "text" ? [block.text] : [])
-      .join("\n")
-      .trim();
-    throw new Error(
-      `Memory Reflector tool ${failedToolResult.toolName} failed${detail ? `: ${detail}` : ""}`,
-    );
-  }
   const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
   if (!message) throw new Error("Memory Reflector did not return an assistant message");
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     throw new Error(message.errorMessage ?? `Memory Reflector stopped with ${message.stopReason}`);
   }
-  return message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
+  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
 }
 
 function validateRequest(request: MemoryReflectionRequest): void {
@@ -605,8 +600,16 @@ function validateRequest(request: MemoryReflectionRequest): void {
   }
 }
 
-function normalizeWorkspacePath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/^\.\//, "");
+function normalizeWorkspacePath(root: string, value: string): string {
+  const normalized = value.replaceAll("\\", "/");
+  if (!path.isAbsolute(normalized)) return normalized.replace(/^\.\//, "");
+
+  const relative = path.relative(path.resolve(root), path.resolve(normalized));
+  if (relative === "") return ".";
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return normalized;
+  }
+  return relative.split(path.sep).join("/");
 }
 
 function isOptionalMissingMaterial(toolName: string, requested: string, result: unknown): boolean {

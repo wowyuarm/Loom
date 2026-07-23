@@ -97,6 +97,71 @@ test("keeps Thread history as references and expands an earlier Turn only on req
   assert.equal((await second.maintain(request(secondActivity, "turn-2"))).outcome, "no_change");
 });
 
+test("counts Workspace-internal absolute paths as required Thread reads", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-thread-absolute-paths-"));
+  const workspaceRoot = await createWorkspace(root);
+  const threadsRoot = path.join(workspaceRoot, "threads");
+  const current = activity("activity-absolute", "turn-absolute", "the current private trace");
+  const { faux, model, modelRuntime } = await createTestPi(root, "thread-absolute-paths");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: path.join(threadsRoot, "index.md") }, { id: "read-absolute-index" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: path.join(threadsRoot, "garden", "thread.md") }, { id: "read-absolute-thread" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(fauxToolCall("read_thread_activity", {
+      referenceId: "evidence-activity-absolute-turn-absolute-thread-garden",
+      offset: 0,
+    }, { id: "read-absolute-activity" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("NO_CHANGE"),
+  ]);
+  const maintainer = await createPiThreadMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    stateFile: path.join(root, "state", "thread-evidence.json"),
+    modelRuntime,
+    model,
+    loadActivity: async activityId => activityId === current.segmentId ? current : undefined,
+    nextRunId: () => "thread-absolute-paths",
+    nextThreadRef: () => "thread-garden",
+  });
+
+  assert.equal((await maintainer.maintain(request(current, "turn-absolute"))).outcome, "no_change");
+});
+
+test("accepts an explicit terminal outcome after explanatory prose", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-thread-terminal-outcome-"));
+  const workspaceRoot = await createWorkspace(root);
+  const current = activity("activity-terminal", "turn-terminal", "the current private trace");
+  const { faux, model, modelRuntime } = await createTestPi(root, "thread-terminal-outcome");
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("read", { path: "index.md" }, { id: "read-terminal-index" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read", { path: "garden/thread.md" }, { id: "read-terminal-thread" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read_thread_activity", {
+      referenceId: "evidence-activity-terminal-turn-terminal-thread-garden",
+      offset: 0,
+    }, { id: "read-terminal-activity" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("The existing structure already preserves the line.\n\nNO_CHANGE"),
+  ]);
+  const maintainer = await createPiThreadMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    stateFile: path.join(root, "state", "thread-evidence.json"),
+    modelRuntime,
+    model,
+    loadActivity: async activityId => activityId === current.segmentId ? current : undefined,
+    nextRunId: () => "thread-terminal-outcome",
+    nextThreadRef: () => "thread-garden",
+  });
+
+  assert.equal((await maintainer.maintain(request(current, "turn-terminal"))).outcome, "no_change");
+});
+
 test("preserves a substantive movement as a note and rewrites the Thread entrances together", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-thread-structure-"));
   const workspaceRoot = await createWorkspace(root);

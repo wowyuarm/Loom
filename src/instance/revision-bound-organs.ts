@@ -39,6 +39,7 @@ export interface RevisionBoundOrganOptions {
   revisions: ModelRuntimeRevisions;
   layout: InstanceLayout;
   agentWorkspace: AgentWorkspace;
+  now?: () => Date;
   loadOrientationActionSpace?: () => Promise<OrientationActionSpace>;
 }
 
@@ -76,6 +77,7 @@ class RevisionBoundLifeRecorder implements ActivityRecorder {
       modelRuntime: selection.modelRuntime,
       model: selection.model,
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
+      ...(this.options.now ? { now: this.options.now } : {}),
     });
     return recorder.record(activity);
   }
@@ -99,6 +101,7 @@ class RevisionBoundThreadMaintenance implements ThreadMaintenance {
       stateFile: path.join(this.options.layout.runtimeRoot, "thread-evidence.json"),
       modelRuntime: selection.modelRuntime,
       model: selection.model,
+      ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
       loadActivity: this.options.loadActivity,
     });
     return maintainer.maintain(request);
@@ -116,6 +119,7 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "attention-maintainer"),
       modelRuntime: selection.modelRuntime,
       model: selection.model,
+      ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
     });
     return maintainer.maintain(request);
   }
@@ -136,6 +140,7 @@ class RevisionBoundMemoryReflection implements MemoryReflection {
       backupDirectory: path.join(this.options.layout.backupRoot, "memory-reflector"),
       modelRuntime: selection.modelRuntime,
       model: selection.model,
+      ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
       workingMemoryReader: this.options.workingMemoryReader,
       nmemRecallTool: this.options.nmemRecallTool,
     });

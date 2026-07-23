@@ -251,6 +251,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       revisions,
       layout,
       agentWorkspace,
+      ...(options.now ? { now: options.now } : {}),
     }),
     attentionMaintenance: createRevisionBoundAttentionMaintenance({
       revisions,

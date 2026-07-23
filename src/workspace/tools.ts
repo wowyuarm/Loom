@@ -38,9 +38,12 @@ export function createWorkspaceReadTools(root: string): ToolDefinition[] {
 
 async function assertWorkspacePath(root: string, requestedPath: string): Promise<void> {
   if (isLexicalEscape(requestedPath)) throw new Error(OUTSIDE_WORKSPACE);
+  const target = path.isAbsolute(requestedPath)
+    ? path.resolve(requestedPath)
+    : path.resolve(root, requestedPath);
   const [canonicalRoot, canonicalTarget] = await Promise.all([
     realpath(root),
-    realpath(path.resolve(root, requestedPath)),
+    realpath(target),
   ]);
   const relative = path.relative(canonicalRoot, canonicalTarget);
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
@@ -49,7 +52,7 @@ async function assertWorkspacePath(root: string, requestedPath: string): Promise
 }
 
 function isLexicalEscape(requestedPath: string): boolean {
-  if (path.isAbsolute(requestedPath) || path.win32.isAbsolute(requestedPath)) return true;
+  if (path.win32.isAbsolute(requestedPath) && !path.isAbsolute(requestedPath)) return true;
   if (requestedPath === "~" || requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")) return true;
   return requestedPath.split(/[\\/]+/).includes("..");
 }

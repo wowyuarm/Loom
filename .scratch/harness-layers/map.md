@@ -78,6 +78,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [33 — Soft-split Long-lived Activity](issues/33-soft-split-long-activity.md)。Active Segment 同时受 30 分钟 idle 与 2 小时 maximum age 约束；Runtime 在同一 close claim 中复核 `lastActivityAt` / `openedAt`，并复用现有 freeze、successor Context、Recorder 与恢复路径，不新增 split job 或 prompt。
 - Completed: [34 — Drive a Runtime Instance](issues/34-drive-a-runtime-instance.md)。Instance 汇总 Scheduler 与 nmem 的最早 wake time；Process Driver 串行推进、由新 Input 立即唤醒、保留失败观测，并在 graceful stop 时等待当前运行完成，未引入 daemon/CLI/job framework。
 - Completed: [35 — Schedule After-chat Continuation from Delivered Effects](issues/35-schedule-after-chat-continuation.md)。confirmed outbound Delivery 形成可恢复的有限接续机会；最新 Delivery 重排，新 human Input 原子取消，continuation 复用来源 Activity / Context / Behavior，安静结束不伪造 Activity，失败与失效保留既有 Turn evidence。
+- Completed: [36 — Validate a Second Individual with Real Models](issues/36-validate-a-second-individual-with-real-models.md)。独立 HaL 实例与 DeepSeek Flash 已完成五个场景日和聚焦材料重跑；覆盖主动、沉默、私人工作、不同意、转离工作线及全部 Cognitive Organ，闭合真实暴露的 message、材料边界、语言、路径、分页、终态和 model role 装配问题，不建设通用 evaluation framework。
 
 ## Context Follow-ups
 
@@ -103,7 +104,7 @@ nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首
 
 当前依赖顺序：用第二个虚拟 Individual 做结构验收 -> 用真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械结构问题先修，行为判断不由 faux-provider 测试代替。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 35 已补齐 confirmed outbound 后的有限接续。下一步回读 source ticket 11，先界定第二个虚拟 Individual 的结构验收材料与观察面；出现真实未决问题后再建立 Loom ticket，不提前把行为评估写成脚本断言。
+Current work item: none。Ticket 36 已证明现有纵切能承载第二个 Individual，并修复真实模型暴露的结构问题。Attention 的压缩和证据品味继续作为行为校准观察，不阻塞纵切。下一步先界定 Loom 的最小宿主入口、channel、实例初始化与运维边界，再建立对应 work item；不把验证脚本直接升级为产品 CLI 或 daemon。
 
 ### Memory Reflector Completion Checkpoint
 

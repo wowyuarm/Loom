@@ -111,7 +111,138 @@ test("reflects grounded evidence into protected core material", async () => {
   await access(path.join(root, "transcripts", "reflector-run-1.jsonl"));
 });
 
-test("rolls back every core replacement when a later material is invalid", async () => {
+test("accepts a completed reflection after the model recovers from a tool error", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-recovered-tool-"));
+  const workspaceRoot = await createReflectorWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-recovered-tool");
+  faux.setResponses([
+    ...baselineReadResponses(),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "activity-not-indexed",
+        offset: 0,
+      }, { id: "read-invalid-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "segment-reflection-1",
+        offset: 0,
+      }, { id: "read-valid-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("replace_core_material", {
+        material: "long_term_memory",
+        content: "The recovered run still made a grounded change.\n",
+      }, { id: "replace-after-recovery" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("UPDATED"),
+  ]);
+  const reflector = await createPiMemoryReflector({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    backupDirectory: path.join(root, "backups"),
+    modelRuntime,
+    model,
+    workingMemoryReader: unavailableWorkingMemory(),
+    nmemRecallTool: createNmemRecallTool({}),
+    nextRunId: () => "reflector-recovered-tool",
+  });
+
+  assert.deepEqual(await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  }), {
+    outcome: "updated",
+    runId: "reflector-recovered-tool",
+    changedMaterials: ["long_term_memory"],
+  });
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "memory.md"), "utf8"),
+    "The recovered run still made a grounded change.\n",
+  );
+});
+
+test("counts Workspace-internal absolute paths as complete core reads", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-absolute-paths-"));
+  const workspaceRoot = await createReflectorWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-absolute-paths");
+  faux.setResponses([
+    ...baselineReadResponses(workspaceRoot),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "segment-reflection-1",
+        offset: 0,
+      }, { id: "read-activity-absolute" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("NO_CHANGE"),
+  ]);
+  const reflector = await createPiMemoryReflector({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    backupDirectory: path.join(root, "backups"),
+    modelRuntime,
+    model,
+    workingMemoryReader: unavailableWorkingMemory(),
+    nmemRecallTool: createNmemRecallTool({}),
+    nextRunId: () => "reflector-absolute-paths",
+  });
+
+  assert.deepEqual(await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  }), {
+    outcome: "no_change",
+    runId: "reflector-absolute-paths",
+    changedMaterials: [],
+  });
+});
+
+test("accepts an explicit terminal outcome after explanatory prose", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-terminal-outcome-"));
+  const workspaceRoot = await createReflectorWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-terminal-outcome");
+  faux.setResponses([
+    ...baselineReadResponses(),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "segment-reflection-1",
+        offset: 0,
+      }, { id: "read-activity-terminal-outcome" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("The evidence does not cross a durable threshold.\n\nNO_CHANGE"),
+  ]);
+  const reflector = await createPiMemoryReflector({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    backupDirectory: path.join(root, "backups"),
+    modelRuntime,
+    model,
+    workingMemoryReader: unavailableWorkingMemory(),
+    nmemRecallTool: createNmemRecallTool({}),
+    nextRunId: () => "reflector-terminal-outcome",
+  });
+
+  assert.equal((await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  })).outcome, "no_change");
+});
+
+test("rolls back every core replacement when the final outcome contradicts a write", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-rollback-"));
   const workspaceRoot = await createReflectorWorkspace(root);
   const originalFacts = await readFile(path.join(workspaceRoot, "facts.json"), "utf8");
@@ -139,7 +270,7 @@ test("rolls back every core replacement when a later material is invalid", async
       }, { id: "replace-invalid-facts" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage("NO_CHANGE"),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -160,7 +291,7 @@ test("rolls back every core replacement when a later material is invalid", async
       localTime: "2026-07-21 20:05 UTC+08:00",
       activities: [activity()],
     }),
-    /Stable Facts must keep version 1/,
+    /must return UPDATED/,
   );
 
   assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), "Previous long-term memory.\n");
@@ -537,7 +668,7 @@ function unavailableWorkingMemory(): NmemWorkingMemoryReader {
   };
 }
 
-function baselineReadResponses() {
+function baselineReadResponses(root?: string) {
   return [
     "facts.json",
     "identity.md",
@@ -546,7 +677,7 @@ function baselineReadResponses() {
     "behavior/background.md",
     "attention.md",
   ].map((file, index) => fauxAssistantMessage(
-    fauxToolCall("read", { path: file }, { id: `read-required-${index}` }),
+    fauxToolCall("read", { path: root ? path.join(root, file) : file }, { id: `read-required-${index}` }),
     { stopReason: "toolUse" },
   ));
 }

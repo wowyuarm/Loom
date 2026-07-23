@@ -157,6 +157,24 @@ function projectActivityEntries(request: {
       index += 1;
       continue;
     }
+    if (entry.type === "custom" && entry.customType === "loom.internal-prompt.v1") {
+      const data = entry.data;
+      const userEntry = request.entries[index + 1];
+      if (!data
+        || typeof data !== "object"
+        || Array.isArray(data)
+        || (data as Record<string, unknown>).version !== 1
+        || (data as Record<string, unknown>).turnId !== request.expectedTurnId
+        || (data as Record<string, unknown>).purpose !== "message-decision-correction"
+        || currentTurnId !== request.expectedTurnId
+        || userEntry?.type !== "message"
+        || userEntry.parentId !== entry.id
+        || !isMessageRole(userEntry, "user")) {
+        throw new Error(`Transcript internal prompt ${entry.id} does not match Harness evidence`);
+      }
+      index += 1;
+      continue;
+    }
     if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
     const message = entry.message as Record<string, unknown>;
     if (message.role === "user") {

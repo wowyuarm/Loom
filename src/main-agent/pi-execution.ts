@@ -117,6 +117,8 @@ interface ActiveTurn {
   control: TurnControl;
   pending: ExecutionInput[];
   annotations: InputAnnotationReference[];
+  includedInteraction: boolean;
+  presentedInteraction: boolean;
 }
 
 class InputAnnotationLifecycle {
@@ -126,7 +128,14 @@ class InputAnnotationLifecycle {
 
   begin(request: TurnRequest, control: TurnControl): void {
     if (this.#active) throw new Error(`Agent Execution is already running Turn ${this.#active.request.turnId}`);
-    this.#active = { request, control, pending: [...request.inputs], annotations: [] };
+    this.#active = {
+      request,
+      control,
+      pending: [...request.inputs],
+      annotations: [],
+      includedInteraction: false,
+      presentedInteraction: false,
+    };
   }
 
   enqueue(turnId: string, input: ExecutionInput): void {
@@ -156,6 +165,7 @@ class InputAnnotationLifecycle {
       payload: input.payload,
     });
     active.annotations.push({ inputId: input.id, annotationEntryId });
+    if (input.kind === "interaction") active.includedInteraction = true;
     active.control.includeInput(input.id);
   }
 
@@ -165,6 +175,17 @@ class InputAnnotationLifecycle {
 
   control(turnId: string): TurnControl {
     return this.#require(turnId).control;
+  }
+
+  hasIncludedInteraction(turnId: string): boolean {
+    return this.#require(turnId).includedInteraction;
+  }
+
+  presentInteraction(turnId: string): boolean {
+    const active = this.#require(turnId);
+    const first = !active.presentedInteraction;
+    active.presentedInteraction = true;
+    return first;
   }
 
   end(turnId: string): void {
@@ -236,7 +257,15 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         lifecycle.enqueue(request.turnId, input);
         try {
           const session = await this.#sessionReady!.promise;
-          await session.steer(inputText(input, request.inputs[0]!.kind === "opportunity"));
+          const firstInteraction = input.kind === "interaction"
+            ? lifecycle.presentInteraction(request.turnId)
+            : false;
+          await session.steer(inputText(input, {
+            structureHumanInput: input.kind === "interaction",
+            includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
+            humanArrivedDuringNonInteraction:
+              request.inputs[0]!.kind !== "interaction" && firstInteraction,
+          }));
         } catch (error) {
           lifecycle.removePending(request.turnId, input.id);
           throw error;
@@ -332,8 +361,15 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         throw new Error("Accepted skills require an active read tool");
       }
       session.setAutoCompactionEnabled(false);
+      const firstInteraction = request.inputs[0]!.kind === "interaction"
+        ? lifecycle.presentInteraction(request.turnId)
+        : false;
+      const initialInputOptions = {
+        structureHumanInput: Boolean(this.defaultInteractionRoute) && firstInteraction,
+        includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
+      };
       const materialized = materializeTurnContext({
-        currentInput: currentInputMessage(request.inputs[0]!),
+        currentInput: currentInputMessage(request.inputs[0]!, initialInputOptions),
         requiredTurnLive: [currentAttentionMessage(workspaceSnapshot.currentAttention)],
         turnLive: structuredClone(materials.turnLive),
         windowFrozen: restoreMessages(preparedWindow.frozenSeed),
@@ -346,11 +382,28 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       });
       session.agent.state.messages = materialized.messages;
       const previousMessageCount = session.messages.length;
-      const prompt = session.prompt(inputText(request.inputs[0]!), { expandPromptTemplates: false });
+      const prompt = session.prompt(
+        inputText(request.inputs[0]!, initialInputOptions),
+        { expandPromptTemplates: false },
+      );
       this.#sessionReady!.resolve(session);
       await prompt;
       this.#acceptsSteering = false;
       this.#throwIfAborted(request.turnId);
+      if (this.defaultInteractionRoute
+        && (requiresMessageDecision(request.inputs[0]!) || lifecycle.hasIncludedInteraction(request.turnId))
+        && !hasMessageDecision(messageDecision)) {
+        sessionManager.appendCustomEntry("loom.internal-prompt.v1", {
+          version: 1,
+          turnId: request.turnId,
+          purpose: "message-decision-correction",
+        });
+        await session.prompt(messageDecisionFollowupText(), { expandPromptTemplates: false });
+        this.#throwIfAborted(request.turnId);
+        if (!hasMessageDecision(messageDecision)) {
+          throw new Error("Main Agent did not choose message.send or message.no_reply after one correction");
+        }
+      }
       const evidence = await verifyPrimaryTranscriptEvidence({
         transcriptDirectory: this.transcriptDirectory,
         sourceId: request.recordingDay,
@@ -615,24 +668,58 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-function inputText(input: ExecutionInput, withinOpportunityTurn = false): string {
+function inputText(input: ExecutionInput, options: {
+  structureHumanInput?: boolean;
+  includeMessageReminder?: boolean;
+  humanArrivedDuringNonInteraction?: boolean;
+} = {}): string {
   if (input.kind === "opportunity") return opportunityInputText(input);
   if (input.kind === "continuation") return afterChatContinuationInputText(input);
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
     const text = input.payload.text;
     if (typeof text === "string") {
-      if (!withinOpportunityTurn) return text;
-      return [
-        "A human message arrived while the proactive Turn was still running.",
-        "Treat the following as a real current interaction, not as part of the earlier proactive opportunity:",
-        "",
+      if (!options.structureHumanInput && !options.humanArrivedDuringNonInteraction) return text;
+      const lines = options.humanArrivedDuringNonInteraction ? [
+          "A human message arrived while the non-interaction Turn was still running.",
+          "Treat it as a real current interaction, not as part of the earlier background opportunity or continuation.",
+          "",
+        ] : [];
+      lines.push(
         "<human_input>",
         text,
         "</human_input>",
-      ].join("\n");
+      );
+      if (options.includeMessageReminder) {
+        lines.push(
+          "",
+          "To make a reply visible to the human, use message.send; ordinary assistant text is not delivered.",
+          "If this interaction can naturally end without another message, use message.no_reply.",
+          "This interaction must end with one of those decisions.",
+        );
+      }
+      return lines.join("\n");
     }
   }
   return JSON.stringify(input.payload);
+}
+
+function requiresMessageDecision(input: Pick<ExecutionInput, "kind">): boolean {
+  return input.kind === "interaction" || input.kind === "continuation";
+}
+
+function hasMessageDecision(decision: MessageTurnDecision): boolean {
+  return decision.sent > 0 || decision.noReply;
+}
+
+function messageDecisionFollowupText(): string {
+  return [
+    "<message_decision_required>",
+    "The Main Agent did not choose how this interaction ends.",
+    "Ordinary assistant text is not delivered to the human.",
+    "If you want to reply, call message.send. If no reply is needed, call message.no_reply.",
+    "Make one of those decisions now; do not answer only with ordinary assistant text.",
+    "</message_decision_required>",
+  ].join("\n");
 }
 
 function afterChatContinuationInputText(input: ExecutionInput): string {
@@ -747,10 +834,13 @@ function serializeValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
-function currentInputMessage(input: ExecutionInput): AgentMessage {
+function currentInputMessage(
+  input: ExecutionInput,
+  options: Parameters<typeof inputText>[1],
+): AgentMessage {
   return {
     role: "user",
-    content: [{ type: "text", text: inputText(input) }],
+    content: [{ type: "text", text: inputText(input, options) }],
     timestamp: Date.parse(input.occurredAt),
   };
 }

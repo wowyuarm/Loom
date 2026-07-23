@@ -17,11 +17,13 @@ test("retains Pi read, ls and grep behavior inside the Agent Workspace", async (
   const listing = await execute(tools, "ls", { path: "notes" });
   const reading = await execute(tools, "read", { path: "notes/today.md", offset: 2, limit: 1 });
   const matches = await execute(tools, "grep", { path: "notes", pattern: "second" });
+  const absoluteReading = await execute(tools, "read", { path: path.join(root, "notes", "today.md"), limit: 1 });
 
   assert.equal(text(listing), "today.md");
   assert.match(text(reading), /^second/);
   assert.match(text(reading), /more lines in file/);
   assert.match(text(matches), /today\.md:2: second/);
+  assert.match(text(absoluteReading), /^first/);
 });
 
 test("rejects lexical paths outside the Agent Workspace", async () => {

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -66,7 +66,7 @@ Stable Facts are appended below this instruction. They ground identity, attribut
 
 The run context contains indexes and references, not prewritten Thread content or copied traces. The current Workspace files are the Individual's present material. A Thread Evidence Reference links one Thread to an immutable Activity and Turn that changed or observably consulted it. Use read_thread_activity to inspect the detailed Turn only when needed. The reference itself proves only that the association was recorded.
 
-Thinking in a Frozen Activity belongs to the Individual and may explain why its private structure changed. It is not an external fact and must not be promoted into a settled claim merely because it appears in a trace. Preserve quoted or source language as written. Write surrounding material in the predominant language of the Thread; when unclear, follow Stable Facts.
+Thinking in a Frozen Activity belongs to the Individual and may explain why its private structure changed. It is not an external fact and must not be promoted into a settled claim merely because it appears in a trace. Preserve quoted or source language as written. When a Thread directly grows from a human interaction in one clear language, write new surrounding material in that language. Otherwise preserve the language already carried by the Thread and its lived source material; an Index entry should use the same primary language as the Thread it describes. Use Stable Facts only when neither has a clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the language of a Thread.
 
 ## Method
 
@@ -107,6 +107,7 @@ export interface PiThreadMaintainerOptions {
   stateFile: string;
   modelRuntime: ModelRuntime;
   model: Model<any>;
+  thinkingLevel?: ThinkingLevel;
   loadActivity: (activityId: string) => Promise<FrozenActivity | undefined>;
   nextRunId?: () => string;
   nextThreadRef?: () => string;
@@ -306,7 +307,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
         execute: async (toolCallId, params, signal, onUpdate, context) => {
           const result = await execute(toolCallId, params, signal, onUpdate, context);
           if (tool.name === "read") {
-            const relative = normalizeRelativePath(String((params as { path?: unknown }).path ?? ""), "read path");
+            const relative = normalizeReadPath(threadsRoot, String((params as { path?: unknown }).path ?? ""));
             readPaths.add(relative);
             if (relative === "index.md") indexRead = true;
           }
@@ -359,6 +360,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
       agentDir: this.options.agentDir,
       modelRuntime: this.options.modelRuntime,
       model: this.options.model,
+      ...(this.options.thinkingLevel ? { thinkingLevel: this.options.thinkingLevel } : {}),
       noTools: "builtin",
       customTools: tools,
       resourceLoader,
@@ -527,21 +529,24 @@ function normalizeRelativePath(value: string, field: string): string {
   return normalized;
 }
 
-function finalAssistantText(messages: AgentMessage[]): string {
-  const failedToolResult = messages.find(message => message.role === "toolResult" && message.isError);
-  if (failedToolResult?.role === "toolResult") {
-    const detail = failedToolResult.content
-      .flatMap(block => block.type === "text" ? [block.text] : [])
-      .join("\n")
-      .trim();
-    throw new Error(`Thread Maintainer tool ${failedToolResult.toolName} failed${detail ? `: ${detail}` : ""}`);
+function normalizeReadPath(root: string, value: string): string {
+  if (!path.isAbsolute(value)) return normalizeRelativePath(value, "read path");
+  const relative = path.relative(path.resolve(root), path.resolve(value));
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("read path must stay inside threads/");
   }
+  return normalizeRelativePath(relative, "read path");
+}
+
+function finalAssistantText(messages: AgentMessage[]): string {
   const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
   if (!message) throw new Error("Thread Maintainer did not return an assistant message");
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     throw new Error(message.errorMessage ?? `Thread Maintainer stopped with ${message.stopReason}`);
   }
-  return message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
+  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
+  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
 }
 
 function toolResult(value: unknown) {
