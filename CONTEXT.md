@@ -38,6 +38,10 @@ _Avoid_: daemon, job queue, workflow engine, Runtime
 持续驱动一个已装配 Runtime Instance 的宿主入口。它按 Instance 给出的时间等待、在新 Input 或外部状态变化时唤醒，并在停止时等待当前运行自然结束；它不决定工作顺序或生命周期政策。
 _Avoid_: Scheduler, daemon framework, job runner, OS service
 
+**Host**:
+一个进程内对单一 Instance Root 的 live owner。它持有 Runtime Instance 与 Process Driver，提供 Input ingress、状态和 graceful stop；channel lifecycle 会在 Integration 接入时由它协调。它不是 Gateway、Scheduler、OS service 或多实例控制面。
+_Avoid_: Gateway, Runtime, Process Driver, supervisor, multi-instance host
+
 **Main Agent**:
 Loom 内部负责主 Agent 的 Pi 执行、Context 组装、Primary Agent Transcript 和 tool trace 的模块。它不负责 Runtime 生命周期，也不定义认知器官如何运行。
 _Avoid_: Agent Individual, Agent Harness, runtime, cognitive organ

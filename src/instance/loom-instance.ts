@@ -1,12 +1,9 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import {
-  createHostTimePolicy,
-  createTimePolicy,
   loadInstanceConfiguration,
   openModelRuntimeRevisions,
-  DEFAULT_SCHEDULE,
   type ModelRuntimeRevisionStatus,
   type InstanceConfiguration,
 } from "../configuration/index.js";
@@ -34,10 +31,6 @@ import {
 } from "../integrations/nmem/index.js";
 import { createMainAgentActivityLifecycle } from "../main-agent/activity.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
-import {
-  DEFAULT_BACKGROUND_BEHAVIOR,
-  DEFAULT_INTERACTION_BEHAVIOR,
-} from "./default-materials.js";
 import { resolveInstanceLayout, type InstanceLayout } from "./layout.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import {
@@ -190,10 +183,13 @@ function mergeNextRunAt(
 
 export async function openLoomInstance(options: OpenLoomInstanceOptions): Promise<LoomInstance> {
   const layout = resolveInstanceLayout(options.root);
-  await prepareInstanceDirectories(layout);
-  await materializeDefaultBehavior(layout.workspaceRoot);
   const configuration = await loadAssemblyConfiguration(layout, options.machineTimeZone);
   const agentWorkspace = new AgentWorkspace(layout.workspaceRoot);
+  await Promise.all([
+    agentWorkspace.loadTurnSnapshot("interaction"),
+    agentWorkspace.loadStableFacts(),
+  ]);
+  await prepareRuntimeDirectories(layout);
   const recallTool = createNmemRecallTool(options.nmem ?? {});
   const workingMemoryReader = createNmemWorkingMemoryReader({
     stateRoot: layout.runtimeRoot,
@@ -309,48 +305,17 @@ async function loadAssemblyConfiguration(
   layout: InstanceLayout,
   machineTimeZone: string | undefined,
 ): Promise<InstanceConfiguration> {
-  try {
-    return await loadInstanceConfiguration({
-      file: layout.configurationFile,
-      ...(machineTimeZone ? { machineTimeZone } : {}),
-    });
-  } catch {
-    return {
-      version: 1,
-      timePolicy: machineTimeZone
-        ? createTimePolicy({ timeZone: machineTimeZone })
-        : createHostTimePolicy(),
-      schedule: DEFAULT_SCHEDULE,
-    };
-  }
+  return loadInstanceConfiguration({
+    file: layout.configurationFile,
+    ...(machineTimeZone ? { machineTimeZone } : {}),
+  });
 }
 
-async function prepareInstanceDirectories(layout: InstanceLayout): Promise<void> {
+async function prepareRuntimeDirectories(layout: InstanceLayout): Promise<void> {
   await Promise.all([
-    mkdir(path.dirname(layout.configurationFile), { recursive: true }),
-    mkdir(layout.piAgentDirectory, { recursive: true }),
-    mkdir(layout.workspaceRoot, { recursive: true }),
     mkdir(layout.runtimeRoot, { recursive: true }),
     mkdir(layout.mainTranscriptDirectory, { recursive: true }),
     mkdir(layout.organTranscriptRoot, { recursive: true }),
     mkdir(layout.backupRoot, { recursive: true }),
   ]);
-}
-
-async function materializeDefaultBehavior(workspaceRoot: string): Promise<void> {
-  const behaviorRoot = path.join(workspaceRoot, "behavior");
-  await mkdir(behaviorRoot, { recursive: true });
-  await Promise.all([
-    writeIfMissing(path.join(behaviorRoot, "interaction.md"), DEFAULT_INTERACTION_BEHAVIOR),
-    writeIfMissing(path.join(behaviorRoot, "background.md"), DEFAULT_BACKGROUND_BEHAVIOR),
-  ]);
-}
-
-async function writeIfMissing(file: string, content: string): Promise<void> {
-  try {
-    await writeFile(file, content, { encoding: "utf8", flag: "wx" });
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "EEXIST") return;
-    throw error;
-  }
 }

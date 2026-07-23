@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -48,41 +48,34 @@ test("keeps accepted Input pending while blocked and resumes it after model conf
   assert.equal(instance.status().runtime.turns[0]?.status, "completed");
 });
 
-test("opens recovery state and keeps Input pending when instance YAML is malformed", async t => {
+test("refuses to open when Instance Configuration is malformed", async () => {
   const root = await createInstanceRoot();
   await writeFile(
     path.join(root, "configuration", "instance.yaml"),
     "version: [private malformed configuration",
     "utf8",
   );
-  const instance = await openLoomInstance({ root, machineTimeZone: "UTC" });
-  t.after(() => instance.close());
 
-  await instance.acceptInput({
-    source: "test-channel",
-    sourceId: "malformed-configuration-input",
-    kind: "interaction",
-    payload: { text: "held safely" },
-  });
-
-  assert.equal((await instance.runOnce(new Date("2026-07-22T10:00:00.000Z"))).disposition, "deferred");
-  assert.equal(instance.status().models?.state, "blocked");
-  assert.equal(instance.status().runtime.inputs[0]?.status, "pending");
+  await assert.rejects(
+    openLoomInstance({ root, machineTimeZone: "UTC" }),
+    /Instance Configuration could not be read/,
+  );
 });
 
-test("materializes only missing Harness-owned Behavior materials", async t => {
+test("does not initialize missing Harness-owned Behavior materials while opening", async () => {
   const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
   const interaction = path.join(root, "workspace", "behavior", "interaction.md");
-  await mkdir(path.dirname(interaction), { recursive: true });
   await writeFile(interaction, "Existing individual interaction behavior.\n", "utf8");
+  await rm(path.join(root, "workspace", "behavior", "background.md"));
 
-  const instance = await openLoomInstance({ root });
-  t.after(() => instance.close());
-
-  assert.equal(await readFile(interaction, "utf8"), "Existing individual interaction behavior.\n");
-  assert.match(
-    await readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
-    /Background time belongs to the Agent Individual/,
+  await assert.rejects(
+    openLoomInstance({ root }),
+    /Required Agent Workspace material behavior\/background\.md is missing/,
+  );
+  await assert.rejects(
+    readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
+    /ENOENT/,
   );
 });
 
@@ -126,26 +119,18 @@ test("runs one Main Agent Turn through the assembled Instance", async t => {
   assert.equal(instance.status().runtime.turns[0]?.status, "completed");
 });
 
-test("stops before model execution when Individual-owned materials are missing", async t => {
+test("refuses to open before model execution when Individual-owned materials are missing", async t => {
   const root = await createInstanceRoot();
   const provider = await startOpenAiProvider({ text: "must not run" });
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
-  const now = new Date("2026-07-22T10:00:00.000Z");
-  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
-  t.after(() => instance.close());
-  await instance.acceptInput({
-    source: "test-channel",
-    sourceId: "missing-material-input",
-    kind: "interaction",
-    payload: { text: "hello" },
-  });
 
-  await assert.rejects(instance.runOnce(now), /Required Agent Workspace material .* is missing/);
+  await assert.rejects(
+    openLoomInstance({ root, machineTimeZone: "UTC" }),
+    /Required Agent Workspace material .* is missing/,
+  );
 
   assert.equal(provider.requests(), 0);
-  assert.equal(instance.status().runtime.inputs[0]?.status, "pending");
-  assert.equal(instance.status().runtime.turns[0]?.status, "failed");
 });
 
 test("binds message Effects to the configured default Interaction Route", async t => {
@@ -929,6 +914,8 @@ async function writeIndividualMaterials(root: string): Promise<void> {
     writeFile(path.join(workspace, "identity.md"), "Rowan is a continuing AI Individual.\n", "utf8"),
     writeFile(path.join(workspace, "memory.md"), "Rowan and Alex are getting to know each other.\n", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "Rowan is curious about Alex's garden.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "interaction.md"), "Respond as Rowan in direct interaction.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "background.md"), "Use background time as Rowan's own.\n", "utf8"),
   ]);
 }
 
