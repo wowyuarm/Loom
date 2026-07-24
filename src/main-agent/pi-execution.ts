@@ -2,7 +2,7 @@ import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Model } from "@earendil-works/pi-ai";
+import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -33,6 +33,7 @@ import type {
 import {
   type InputAnnotationReference,
   openPrimaryTranscriptSession,
+  redactTranscriptImages,
   verifyPrimaryTranscriptEntry,
   verifyPrimaryTranscriptEvidence,
 } from "./transcript.js";
@@ -54,6 +55,9 @@ import {
 import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
 import { createMessageTool, type MessageTurnDecision } from "./message.js";
 import { loadDailyContext } from "./daily-context.js";
+import { attachmentReferences, type AttachmentReference } from "../attachments/index.js";
+import type { AttachmentStore } from "../integrations/attachments/index.js";
+import { createAttachmentTool } from "./attachment.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -88,6 +92,7 @@ export interface PiAgentExecutionOptions {
   loadContextMaterials?: (request: TurnRequest) => Promise<PiContextMaterials>;
   contextBudget?: Partial<ContextBudget>;
   toolTraceCompactor?: ToolTraceCompactor;
+  attachmentStore?: AttachmentStore;
 }
 
 export interface PiSkillSources {
@@ -229,6 +234,8 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly defaultInteractionRoute: string | undefined,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
     private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
+    private readonly attachmentStore: AttachmentStore | undefined,
+    private readonly supportsNativeImages: boolean,
     private readonly ordinaryToolNames: Set<string>,
   ) {}
 
@@ -260,12 +267,13 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           const firstInteraction = input.kind === "interaction"
             ? lifecycle.presentInteraction(request.turnId)
             : false;
-          await session.steer(inputText(input, {
+          const presentation = await presentInput(input, {
             structureHumanInput: input.kind === "interaction",
             includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
             humanArrivedDuringNonInteraction:
               request.inputs[0]!.kind !== "interaction" && firstInteraction,
-          }));
+          }, this.attachmentStore, this.supportsNativeImages);
+          await session.steer(presentation.text, presentation.images);
         } catch (error) {
           lifecycle.removePending(request.turnId, input.id);
           throw error;
@@ -331,11 +339,19 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         window: preparedWindow,
         transcriptDirectory: this.transcriptDirectory,
       })];
+      if (this.attachmentStore) {
+        turnTools.push(createAttachmentTool({
+          store: this.attachmentStore,
+          workspaceRoot: this.agentWorkspace.root,
+        }));
+      }
       if (this.defaultInteractionRoute) {
         turnTools.push(createMessageTool({
           control: lifecycle.control(request.turnId),
           routeRef: this.defaultInteractionRoute,
           decision: messageDecision,
+          workspaceRoot: this.agentWorkspace.root,
+          ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
         }));
       }
       const preparedSession = await this.createSession(
@@ -368,8 +384,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         structureHumanInput: Boolean(this.defaultInteractionRoute) && firstInteraction,
         includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
       };
+      const initialPresentation = await presentInput(
+        request.inputs[0]!,
+        initialInputOptions,
+        this.attachmentStore,
+        this.supportsNativeImages,
+      );
       const materialized = materializeTurnContext({
-        currentInput: currentInputMessage(request.inputs[0]!, initialInputOptions),
+        currentInput: currentInputMessage(request.inputs[0]!, initialPresentation),
         requiredTurnLive: [currentAttentionMessage(workspaceSnapshot.currentAttention)],
         turnLive: structuredClone(materials.turnLive),
         windowFrozen: restoreMessages(preparedWindow.frozenSeed),
@@ -383,8 +405,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       session.agent.state.messages = materialized.messages;
       const previousMessageCount = session.messages.length;
       const prompt = session.prompt(
-        inputText(request.inputs[0]!, initialInputOptions),
-        { expandPromptTemplates: false },
+        initialPresentation.text,
+        {
+          expandPromptTemplates: false,
+          ...(initialPresentation.images.length > 0 ? { images: initialPresentation.images } : {}),
+        },
       );
       this.#sessionReady!.resolve(session);
       await prompt;
@@ -414,7 +439,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       this.#throwIfAborted(request.turnId);
       const completedWindow = completeContextWindow(
         preparedWindow,
-        serializeMessages(session.messages.slice(previousMessageCount)),
+        serializeMessages(session.messages.slice(previousMessageCount).map(redactTranscriptImages)),
         evidence.transcriptAnchor,
       );
       return {
@@ -482,6 +507,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
   const reservedTools = new Set<string>([
     ...MAIN_AGENT_BUILTIN_TOOLS,
     "expand_tool_result",
+    "attachment",
     "message",
   ]);
   const additionalToolNames = new Set<string>();
@@ -577,9 +603,12 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,
+    options.attachmentStore,
+    options.model.input.includes("image"),
     new Set([
       ...MAIN_AGENT_BUILTIN_TOOLS,
       ...(options.additionalTools ?? []).map(tool => tool.name),
+      ...(options.attachmentStore ? ["attachment"] : []),
     ]),
   );
 }
@@ -646,7 +675,7 @@ function toolActivityExtension(
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           callArguments: call.args,
-          result: serializeValue(event.result),
+          result: withoutImagePixels(serializeValue(event.result)),
         });
       });
     },
@@ -677,8 +706,9 @@ function inputText(input: ExecutionInput, options: {
   if (input.kind === "continuation") return afterChatContinuationInputText(input);
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
     const text = input.payload.text;
-    if (typeof text === "string") {
-      if (!options.structureHumanInput && !options.humanArrivedDuringNonInteraction) return text;
+    if (typeof text === "string" || Array.isArray(input.payload.attachments)) {
+      const visibleText = typeof text === "string" ? text : "";
+      if (!options.structureHumanInput && !options.humanArrivedDuringNonInteraction) return visibleText;
       const lines = options.humanArrivedDuringNonInteraction ? [
           "A human message arrived while the non-interaction Turn was still running.",
           "Treat it as a real current interaction, not as part of the earlier background opportunity or continuation.",
@@ -686,7 +716,7 @@ function inputText(input: ExecutionInput, options: {
         ] : [];
       lines.push(
         "<human_input>",
-        text,
+        visibleText,
         "</human_input>",
       );
       if (options.includeMessageReminder) {
@@ -701,6 +731,60 @@ function inputText(input: ExecutionInput, options: {
     }
   }
   return JSON.stringify(input.payload);
+}
+
+interface InputPresentation {
+  text: string;
+  images: ImageContent[];
+}
+
+async function presentInput(
+  input: ExecutionInput,
+  options: Parameters<typeof inputText>[1],
+  attachmentStore: AttachmentStore | undefined,
+  supportsNativeImages: boolean,
+): Promise<InputPresentation> {
+  const attachments = input.kind === "interaction" ? attachmentReferences(input.payload) : [];
+  if (attachments.length === 0) return { text: inputText(input, options), images: [] };
+  if (attachments.length > 1) throw new Error("This Loom version accepts one attachment per Input");
+  if (!attachmentStore) throw new Error("Attachment Input requires an Attachment Store");
+
+  const images: ImageContent[] = [];
+  const descriptions: string[] = [];
+  for (const attachment of attachments) {
+    let representation: string;
+    if (attachment.kind === "image" && supportsNativeImages) {
+      const content = await attachmentStore.read(attachment);
+      images.push({ type: "image", data: content.toString("base64"), mimeType: attachment.mediaType });
+      representation = "native image included in this user message";
+    } else if (attachment.kind === "image") {
+      representation = "metadata only; image content was not shown because the current model does not declare image input support";
+    } else {
+      representation = "metadata only; file content was not parsed or shown automatically";
+    }
+    descriptions.push(attachmentDescription(attachment, representation));
+  }
+  return {
+    text: [
+      inputText(input, options),
+      "",
+      "<attachments>",
+      ...descriptions,
+      "</attachments>",
+    ].join("\n"),
+    images,
+  };
+}
+
+function attachmentDescription(attachment: AttachmentReference, representation: string): string {
+  return [
+    `- id: ${attachment.id}`,
+    `  kind: ${attachment.kind}`,
+    `  media_type: ${attachment.mediaType}`,
+    `  byte_size: ${attachment.byteSize}`,
+    ...(attachment.fileName ? [`  file_name: ${JSON.stringify(attachment.fileName)}`] : []),
+    `  representation: ${representation}`,
+  ].join("\n");
 }
 
 function requiresMessageDecision(input: Pick<ExecutionInput, "kind">): boolean {
@@ -834,13 +918,31 @@ function serializeValue(value: unknown): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
 }
 
+function withoutImagePixels(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map(withoutImagePixels);
+  if (!value || typeof value !== "object") return value;
+  if (value.type === "image") {
+    return {
+      type: "image",
+      ...(typeof value.mimeType === "string" ? { mimeType: value.mimeType } : {}),
+      pixelContentOmitted: true,
+    };
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [key, withoutImagePixels(nested)]),
+  );
+}
+
 function currentInputMessage(
   input: ExecutionInput,
-  options: Parameters<typeof inputText>[1],
+  presentation: InputPresentation,
 ): AgentMessage {
   return {
     role: "user",
-    content: [{ type: "text", text: inputText(input, options) }],
+    content: [
+      { type: "text", text: presentation.text },
+      ...presentation.images,
+    ],
     timestamp: Date.parse(input.occurredAt),
   };
 }

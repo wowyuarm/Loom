@@ -51,7 +51,7 @@ Agent Individual 的高权限文件工作空间，存放身份、关系、认知
 _Avoid_: runtime store, security sandbox, deployment root
 
 **Primary Agent Transcript**:
-主 Agent 按 logical day 追加的一份完整执行轨迹，保留原始消息、工具调用和结果等证据。进行中的 Turn 固定使用准入时所属日的 Transcript；它不是整理后的记忆，也不是恢复事实的权威来源。
+主 Agent 按 logical day 追加的一份完整执行轨迹，保留原始消息、工具调用和结果等证据；附件只保留引用和省略标记，不嵌入原始二进制内容。进行中的 Turn 固定使用准入时所属日的 Transcript；它不是整理后的记忆，也不是恢复事实的权威来源。
 _Avoid_: chat history, memory file, runtime store
 
 **Runtime Store**:
@@ -101,6 +101,14 @@ _Avoid_: provider abstraction, model health, mutable session model
 **Integration**:
 Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。它为 Harness 提供能力，不定义 Individual 的身份或关系。
 _Avoid_: individual capability, relationship material, executor abstraction
+
+**Attachment**:
+随一份 Input 或 outbound Effect 携带的不可变内容引用及其有界元数据。原始内容由 Instance Root 内、Agent Workspace 外的 Integration-owned store 持有；Attachment 不是独立 Input，也不是 channel wire payload。
+_Avoid_: workspace file, message, remote media item, embedded bytes
+
+**Attachment Snapshot**:
+Loom 在接受 outbound Effect 前，从 Agent Workspace 文件形成的一份不可变 Attachment。后续 Workspace 修改不改变该 Effect 将要投递的内容。
+_Avoid_: workspace path, live file reference, delivery upload
 
 **Integration Receipt**:
 Runtime Store 中证明一份本地证据已经由某个 Integration 完成外部投影的持久事实。它用于幂等恢复，不改变本地证据的成立或语义。

@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { openLoomInstance } from "../../src/instance/index.js";
+import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { parseAttachmentReference } from "../../src/attachments/index.js";
 import type { DeliveryAttemptRequest } from "../../src/runtime/index.js";
 
 test("keeps accepted Input pending while blocked and resumes it after model configuration recovers", async t => {
@@ -46,6 +48,96 @@ test("keeps accepted Input pending while blocked and resumes it after model conf
   assert.equal(instance.status().models?.state, "active");
   assert.equal(instance.status().runtime.inputs[0]?.status, "consumed");
   assert.equal(instance.status().runtime.turns[0]?.status, "completed");
+});
+
+test("retains Input attachment content until 30 days after the Input is consumed", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  let now = new Date("2026-07-01T00:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+  const attachments = await openAttachmentStore({
+    root: path.join(root, "runtime", "integrations", "attachments"),
+    now: () => now,
+  });
+  t.after(() => attachments.close());
+  const attachment = await attachments.put({
+    kind: "image",
+    mediaType: "image/png",
+    content: Buffer.from("retained while pending", "utf8"),
+  });
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "attachment-input",
+    kind: "interaction",
+    payload: { attachments: [JSON.parse(JSON.stringify(attachment))] },
+  });
+
+  now = new Date("2026-08-15T00:00:00.000Z");
+  await instance.runOnce(now);
+  assert.equal((await attachments.read(attachment)).toString("utf8"), "retained while pending");
+
+  const provider = await startOpenAiProvider({ text: "Observed the attachment metadata." });
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  await instance.runOnce(now);
+  assert.equal(instance.status().runtime.inputs[0]?.status, "consumed");
+
+  now = new Date("2026-09-14T00:00:00.000Z");
+  await instance.runOnce(now);
+  await assert.rejects(attachments.read(attachment), /is unavailable/);
+});
+
+test("retains outbound attachment content while Delivery requires reconciliation", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  await mkdir(path.join(root, "workspace", "outbound"), { recursive: true });
+  await writeFile(path.join(root, "workspace", "outbound", "note.txt"), "keep for delivery", "utf8");
+  const provider = await startOpenAiProvider({
+    tool: {
+      name: "message",
+      arguments: { action: "send", attachment_path: "outbound/note.txt" },
+    },
+  });
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl, "primary-route");
+  let now = new Date("2026-07-01T00:00:00.000Z");
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    outboundDelivery: {
+      deliver: async () => ({ status: "unknown", error: "remote outcome unknown" }),
+    },
+  });
+  let instanceClosed = false;
+  t.after(() => { if (!instanceClosed) instance.close(); });
+  const attachments = await openAttachmentStore({
+    root: path.join(root, "runtime", "integrations", "attachments"),
+    now: () => now,
+  });
+  t.after(() => attachments.close());
+
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "outbound-attachment-input",
+    kind: "interaction",
+    payload: { text: "send the note" },
+  });
+  await instance.runOnce(now);
+  const effectPayload = instance.status().runtime.effects[0]?.payload as {
+    attachments?: unknown[];
+  };
+  const attachment = parseAttachmentReference(effectPayload.attachments?.[0]);
+
+  await instance.runOnce(now);
+  assert.equal(instance.status().runtime.effects[0]?.status, "reconciliation_required");
+  instance.close();
+  instanceClosed = true;
+
+  now = new Date("2026-08-15T00:00:00.000Z");
+  await attachments.reconcileRetention({ activeAttachmentIds: [], observedAt: now });
+  assert.equal((await attachments.read(attachment)).toString("utf8"), "keep for delivery");
 });
 
 test("refuses to open when Instance Configuration is malformed", async () => {
@@ -105,6 +197,7 @@ test("runs one Main Agent Turn through the assembled Instance", async t => {
   assert.equal(provider.requests(), 1);
   assert.equal(provider.bodies()[0]?.reasoning_effort, "high");
   assert.deepEqual(toolNames(provider.bodies()[0]!), [
+    "attachment",
     "bash",
     "edit",
     "expand_tool_result",

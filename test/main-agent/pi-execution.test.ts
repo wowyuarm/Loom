@@ -13,6 +13,8 @@ import {
 import { Type } from "typebox";
 
 import { createNmemRecallTool } from "../../src/integrations/nmem/index.js";
+import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
@@ -183,6 +185,164 @@ test("uses the baseline read tool with accepted skills", async t => {
   }).result;
   assert.equal(faux.state.callCount, 1);
   assert.deepEqual(included, ["input-1"]);
+});
+
+test("presents a durable image natively when the selected model supports image input", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-image-input-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const attachmentStore = await openAttachmentStore({ root: path.join(root, "attachments") });
+  const content = Buffer.from("native image content", "utf8");
+  const attachment = await attachmentStore.put({
+    kind: "image",
+    mediaType: "image/png",
+    fileName: "view.png",
+    content,
+  });
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  assert.ok(model.input.includes("image"));
+  faux.setResponses([
+    context => {
+      const current = [...context.messages].reverse().find(message => message.role === "user");
+      assert.ok(current && Array.isArray(current.content));
+      const text = current.content.find(block => block.type === "text");
+      const image = current.content.find(block => block.type === "image");
+      assert.match(text?.text ?? "", new RegExp(attachment.id));
+      assert.match(text?.text ?? "", /native image/i);
+      assert.deepEqual(image, {
+        type: "image",
+        data: content.toString("base64"),
+        mimeType: "image/png",
+      });
+      return fauxAssistantMessage("image received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    attachmentStore,
+  });
+  t.after(() => execution.close());
+
+  const result = await execution.start({
+    turnId: "turn-image",
+    leaseToken: 1,
+    recordingDay: "2026-07-24",
+    inputs: [{
+      id: "input-image",
+      kind: "interaction",
+      payload: JSON.parse(JSON.stringify({ text: "look at this", attachments: [attachment] })) as JsonValue,
+      occurredAt: "2026-07-24T08:00:00.000Z",
+      inclusionPosition: 1,
+    }],
+  }, noEffectControl()).result;
+  const encoded = content.toString("base64");
+  assert.doesNotMatch(await readFile(path.join(root, "transcript", "2026-07-24", "agent.jsonl"), "utf8"), new RegExp(encoded));
+  assert.doesNotMatch(JSON.stringify(result.executionState), new RegExp(encoded));
+});
+
+test("presents only honest image metadata to a text-only model", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-image-metadata-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const attachmentStore = await openAttachmentStore({ root: path.join(root, "attachments") });
+  const attachment = await attachmentStore.put({
+    kind: "image",
+    mediaType: "image/jpeg",
+    fileName: "scene.jpg",
+    content: Buffer.from("not shown to this model", "utf8"),
+  });
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  model.input = ["text"];
+  faux.setResponses([
+    context => {
+      const current = [...context.messages].reverse().find(message => message.role === "user");
+      assert.ok(current && Array.isArray(current.content));
+      assert.equal(current.content.some(block => block.type === "image"), false);
+      const text = current.content.find(block => block.type === "text");
+      assert.match(text?.text ?? "", new RegExp(attachment.id));
+      assert.match(text?.text ?? "", /image content was not shown/i);
+      return fauxAssistantMessage("metadata received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    attachmentStore,
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-image-metadata",
+    leaseToken: 1,
+    recordingDay: "2026-07-24",
+    inputs: [{
+      id: "input-image-metadata",
+      kind: "interaction",
+      payload: JSON.parse(JSON.stringify({ text: "what arrived?", attachments: [attachment] })) as JsonValue,
+      occurredAt: "2026-07-24T08:00:00.000Z",
+      inclusionPosition: 1,
+    }],
+  }, noEffectControl()).result;
+});
+
+test("copies a referenced attachment into the Agent Workspace through the Main Agent tool", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-attachment-copy-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const attachmentStore = await openAttachmentStore({ root: path.join(root, "attachments") });
+  const attachment = await attachmentStore.put({
+    kind: "file",
+    mediaType: "text/plain",
+    fileName: "source.txt",
+    content: Buffer.from("retained by choice", "utf8"),
+  });
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const tool = (context.tools ?? []).find(candidate => candidate.name === "attachment");
+      assert.ok(tool);
+      assert.match(tool.description, /copy.*Agent Workspace/i);
+      return fauxAssistantMessage(fauxToolCall("attachment", {
+        action: "copy_to_workspace",
+        attachment_id: attachment.id,
+        destination: "kept/source.txt",
+      }, { id: "keep-attachment" }), { stopReason: "toolUse" });
+    },
+    context => {
+      assert.match(JSON.stringify(context.messages), /kept\/source\.txt/);
+      return fauxAssistantMessage("attachment retained");
+    },
+  ]);
+  const recorded: string[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    attachmentStore,
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-attachment-copy",
+    leaseToken: 1,
+    recordingDay: "2026-07-24",
+    inputs: [executionInput("input-attachment-copy", "keep the referenced file")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity.toolName),
+  }).result;
+
+  assert.equal(await readFile(path.join(workspaceRoot, "kept", "source.txt"), "utf8"), "retained by choice");
+  assert.deepEqual(recorded, ["attachment"]);
 });
 
 test("refreshes Workspace skills between Turns but freezes them during steering", async t => {
@@ -1000,6 +1160,45 @@ test("records a successful ordinary tool before the provider can continue", asyn
   }]);
 });
 
+test("omits image pixels from ordinary tool activity persisted by Runtime", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-image-activity-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const imageBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+  await writeFile(path.join(workspaceRoot, "pixel.png"), Buffer.from(imageBase64, "base64"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "pixel.png" }, { id: "read-image" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("image read"),
+  ]);
+  const recorded: unknown[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-config"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-image-activity",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-image-activity", "read the image")],
+  }, {
+    ...noEffectControl(),
+    recordToolActivity: activity => recorded.push(activity),
+  }).result;
+
+  const serialized = JSON.stringify(recorded);
+  assert.doesNotMatch(serialized, /iVBOR/);
+  assert.match(serialized, /pixelContentOmitted/);
+});
+
 test("does not record Context expansion as ordinary lived activity", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-tool-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
@@ -1443,6 +1642,60 @@ test("prepares a message Effect through the Main Agent action interface", async 
     payload: { text: "A message from the Individual." },
     routeRef: "primary-route",
   }]);
+});
+
+test("snapshots a Workspace file before accepting an outbound message Effect", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-attachment-"));
+  const workspaceRoot = await createAgentWorkspaceFixture(root);
+  const sourceFile = path.join(workspaceRoot, "outbound", "note.txt");
+  await mkdir(path.dirname(sourceFile), { recursive: true });
+  await writeFile(sourceFile, "accepted snapshot", "utf8");
+  const attachmentStore = await openAttachmentStore({ root: path.join(root, "attachments") });
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "Here is the note.",
+      attachment_path: "outbound/note.txt",
+    }, { id: "message-attachment" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "primary-route",
+    attachmentStore,
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-attachment-send",
+    leaseToken: 1,
+    recordingDay: "2026-07-24",
+    inputs: [executionInput("input-attachment-send", "send the note")],
+  }, {
+    ...noEffectControl(),
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-attachment" };
+    },
+  }).result;
+
+  assert.equal(effects.length, 1);
+  const payload = effects[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  assert.equal(payload.text, "Here is the note.");
+  assert.equal(payload.attachments?.length, 1);
+  const attachment = parseAttachmentReference(payload.attachments?.[0]);
+  assert.equal(attachment.kind, "file");
+  assert.equal(attachment.mediaType, "text/plain");
+  assert.equal(attachment.fileName, "note.txt");
+
+  await writeFile(sourceFile, "changed after acceptance", "utf8");
+  assert.equal((await attachmentStore.read(attachment)).toString("utf8"), "accepted snapshot");
 });
 
 test("finishes with no_reply without preparing an Effect", async t => {

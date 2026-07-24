@@ -9,6 +9,8 @@ import type {
   OutboundDelivery,
   RuntimeInput,
 } from "../../runtime/index.js";
+import type { AttachmentStore } from "../attachments/index.js";
+import { parseAttachmentReference, type AttachmentReference } from "../../attachments/index.js";
 import { createWeixinHttpRemote } from "./weixin-http.js";
 
 const RECONNECT_DELAY_MS = 2_000;
@@ -21,7 +23,18 @@ export interface WeixinRemoteMessage {
   messageType?: "user" | "bot";
   messageState?: "finished" | "partial";
   contextToken?: string;
-  items?: Array<{ type?: "text"; text?: string }>;
+  items?: Array<{
+    type?: "text" | "image";
+    text?: string;
+    image?: WeixinRemoteImage;
+  }>;
+}
+
+export interface WeixinRemoteImage {
+  encryptedQueryParam?: string;
+  aesKey?: string;
+  aesKeyHex?: string;
+  fullUrl?: string;
 }
 
 export interface WeixinRemotePollResult {
@@ -32,11 +45,30 @@ export interface WeixinRemotePollResult {
 export interface WeixinRemote {
   start(request: { baseUrl: string; token: string; signal: AbortSignal }): Promise<void>;
   poll(request: { baseUrl: string; token: string; cursor: string; signal: AbortSignal }): Promise<WeixinRemotePollResult>;
+  downloadImage(request: {
+    cdnBaseUrl: string;
+    image: WeixinRemoteImage;
+    signal: AbortSignal;
+  }): Promise<{ content: Uint8Array; mediaType: string; fileName?: string }>;
   sendText(request: {
     baseUrl: string;
     token: string;
     peerId: string;
     text: string;
+    clientId: string;
+    contextToken?: string;
+  }): Promise<
+    | { disposition: "sent"; remoteId: string }
+    | { disposition: "rejected"; error: string; code?: number }
+  >;
+  sendAttachment(request: {
+    baseUrl: string;
+    cdnBaseUrl: string;
+    token: string;
+    peerId: string;
+    text: string;
+    attachment: AttachmentReference;
+    content: Uint8Array;
     clientId: string;
     contextToken?: string;
   }): Promise<
@@ -63,6 +95,7 @@ export interface OpenWeixinAdapterOptions {
   authFile: string;
   stateFile: string;
   expectedRouteRef: string;
+  attachmentStore: AttachmentStore;
   remote?: WeixinRemote;
 }
 
@@ -74,6 +107,7 @@ interface WeixinConfiguration {
   routeRef: string;
   peerId: string;
   baseUrl: string;
+  cdnBaseUrl: string;
   token: string;
 }
 
@@ -94,6 +128,7 @@ class DefaultWeixinAdapter implements WeixinAdapter {
   constructor(
     private readonly configuration: WeixinConfiguration,
     private readonly remote: WeixinRemote,
+    private readonly attachmentStore: AttachmentStore,
     stateFile: string,
   ) {
     this.#database = new DatabaseSync(stateFile);
@@ -142,8 +177,22 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     if (attempt.routeRef !== this.configuration.routeRef) {
       return { status: "not_sent", error: `Weixin route does not own ${attempt.routeRef}` };
     }
-    if (attempt.kind !== "message" || !isTextPayload(attempt.payload)) {
-      return { status: "not_sent", error: "Weixin accepts only text message Effects" };
+    if (attempt.kind !== "message") {
+      return { status: "not_sent", error: "Weixin accepts only message Effects" };
+    }
+    let payload: ReturnType<typeof parseMessagePayload>;
+    try {
+      payload = parseMessagePayload(attempt.payload);
+    } catch (error) {
+      return { status: "not_sent", error: errorMessage(error) };
+    }
+    let attachmentContent: Buffer | undefined;
+    if (payload.attachment) {
+      try {
+        attachmentContent = await this.attachmentStore.read(payload.attachment);
+      } catch (error) {
+        return { status: "not_sent", error: errorMessage(error) };
+      }
     }
     try {
       const contextToken = this.#readState().context_token;
@@ -151,18 +200,26 @@ class DefaultWeixinAdapter implements WeixinAdapter {
         baseUrl: this.configuration.baseUrl,
         token: this.configuration.token,
         peerId: this.configuration.peerId,
-        text: attempt.payload.text,
+        text: payload.text,
         clientId: attempt.idempotencyKey,
         ...(contextToken ? { contextToken } : {}),
       };
-      let result = await this.remote.sendText(request);
+      const send = (candidate: typeof request | Omit<typeof request, "contextToken">) => payload.attachment
+        ? this.remote.sendAttachment({
+            ...candidate,
+            cdnBaseUrl: this.configuration.cdnBaseUrl,
+            attachment: payload.attachment,
+            content: attachmentContent!,
+          })
+        : this.remote.sendText(candidate);
+      let result = await send(request);
       if (result.disposition === "rejected" && result.code === -14 && contextToken) {
         this.#database.prepare(`
           UPDATE state SET context_token = NULL
           WHERE singleton = 1 AND context_token = ?
         `).run(contextToken);
         const { contextToken: _expired, ...withoutContext } = request;
-        result = await this.remote.sendText(withoutContext);
+        result = await send(withoutContext);
       }
       if (result.disposition === "rejected") return { status: "not_sent", error: result.error };
       return { status: "delivered", remoteId: result.remoteId };
@@ -191,7 +248,7 @@ class DefaultWeixinAdapter implements WeixinAdapter {
             signal,
           });
           if (signal.aborted) break;
-          await this.#acceptPoll(response, acceptInput);
+          await this.#acceptPoll(response, acceptInput, signal);
           const now = new Date().toISOString();
           this.#writeState({ lastPollAt: now, lastError: null });
           this.#state = { state: "connected", lastPollAt: now };
@@ -212,9 +269,16 @@ class DefaultWeixinAdapter implements WeixinAdapter {
   async #acceptPoll(
     response: WeixinRemotePollResult,
     acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>,
+    signal: AbortSignal,
   ): Promise<void> {
     for (const message of response.messages ?? []) {
-      const input = toRuntimeInput(message, this.configuration.peerId);
+      const input = await toRuntimeInput(
+        message,
+        this.configuration,
+        this.remote,
+        this.attachmentStore,
+        signal,
+      );
       if (!input) continue;
       await acceptInput(input);
       if (message.contextToken) this.#writeState({ contextToken: message.contextToken });
@@ -263,6 +327,7 @@ export async function openWeixinAdapter(options: OpenWeixinAdapterOptions): Prom
   return new DefaultWeixinAdapter(
     configuration,
     options.remote ?? createWeixinHttpRemote(),
+    options.attachmentStore,
     options.stateFile,
   );
 }
@@ -293,7 +358,7 @@ async function loadConfiguration(configurationFile: string, authFile: string): P
     readJson(authFile, "Weixin auth"),
   ]);
   assertObject(configurationDocument, "Weixin configuration");
-  assertExactKeys(configurationDocument, ["version", "routeRef", "peerId", "baseUrl"], "Weixin configuration");
+  assertExactKeys(configurationDocument, ["version", "routeRef", "peerId", "baseUrl", "cdnBaseUrl"], "Weixin configuration");
   assertObject(authDocument, "Weixin auth");
   assertExactKeys(authDocument, ["version", "token"], "Weixin auth");
   if (configurationDocument.version !== 1) throw new Error("Weixin configuration requires version: 1");
@@ -302,33 +367,74 @@ async function loadConfiguration(configurationFile: string, authFile: string): P
     routeRef: nonEmptyString(configurationDocument.routeRef, "Weixin configuration routeRef"),
     peerId: nonEmptyString(configurationDocument.peerId, "Weixin configuration peerId"),
     baseUrl: parseBaseUrl(configurationDocument.baseUrl),
+    cdnBaseUrl: parseBaseUrl(configurationDocument.cdnBaseUrl, "Weixin configuration cdnBaseUrl", "https://novac2c.cdn.weixin.qq.com/c2c"),
     token: nonEmptyString(authDocument.token, "Weixin auth token"),
   };
 }
 
-function toRuntimeInput(message: WeixinRemoteMessage, peerId: string): RuntimeInput | undefined {
-  if (message.from !== peerId || message.messageType !== "user" || message.messageState !== "finished") return undefined;
+async function toRuntimeInput(
+  message: WeixinRemoteMessage,
+  configuration: WeixinConfiguration,
+  remote: WeixinRemote,
+  attachmentStore: AttachmentStore,
+  signal: AbortSignal,
+): Promise<RuntimeInput | undefined> {
+  if (message.from !== configuration.peerId || message.messageType !== "user" || message.messageState !== "finished") return undefined;
   if (!message.messageId) return undefined;
   const text = (message.items ?? [])
     .filter(item => item.type === "text")
     .map(item => item.text?.trim() ?? "")
     .filter(Boolean)
     .join("\n");
-  if (!text) return undefined;
+  const imageItems = (message.items ?? []).filter(item => item.type === "image" && item.image);
+  if (imageItems.length > 1) throw new Error("Weixin first attachment slice accepts one image per message");
+  const downloaded = imageItems[0]?.image
+    ? await remote.downloadImage({
+        cdnBaseUrl: configuration.cdnBaseUrl,
+        image: imageItems[0].image,
+        signal,
+      })
+    : undefined;
+  const attachment = downloaded
+    ? await attachmentStore.put({
+        kind: "image",
+        mediaType: downloaded.mediaType,
+        ...(downloaded.fileName ? { fileName: downloaded.fileName } : {}),
+        content: downloaded.content,
+      })
+    : undefined;
+  if (!text && !attachment) return undefined;
   const occurredAt = message.createTimeMs === undefined ? undefined : new Date(message.createTimeMs);
   if (occurredAt && !Number.isFinite(occurredAt.getTime())) return undefined;
   return {
     source: "weixin",
     sourceId: message.messageId,
     kind: "interaction",
-    payload: { text },
+    payload: {
+      ...(text ? { text } : {}),
+      ...(attachment
+        ? { attachments: [JSON.parse(JSON.stringify(attachment))] }
+        : {}),
+    },
     ...(occurredAt ? { occurredAt: occurredAt.toISOString() } : {}),
   };
 }
 
-function isTextPayload(value: unknown): value is { text: string } {
-  return typeof value === "object" && value !== null
-    && "text" in value && typeof value.text === "string" && value.text.length > 0;
+function parseMessagePayload(value: unknown): { text: string; attachment?: AttachmentReference } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Weixin message Effect requires a structured payload");
+  }
+  const payload = value as Record<string, unknown>;
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
+  const attachments = payload.attachments;
+  if (attachments !== undefined && (!Array.isArray(attachments) || attachments.length !== 1)) {
+    throw new Error("Weixin message Effect accepts one attachment");
+  }
+  const attachment = Array.isArray(attachments)
+    ? parseAttachmentReference(attachments[0], "Weixin outbound Attachment")
+    : undefined;
+  if (!text && !attachment) throw new Error("Weixin message Effect requires text or one attachment");
+  return { text, ...(attachment ? { attachment } : {}) };
 }
 
 async function readJson(file: string, label: string): Promise<unknown> {
@@ -371,18 +477,22 @@ function nonEmptyString(value: unknown, label: string): string {
   return value.trim();
 }
 
-function parseBaseUrl(value: unknown): string {
+function parseBaseUrl(
+  value: unknown,
+  label = "Weixin configuration baseUrl",
+  defaultValue = DEFAULT_BASE_URL,
+): string {
   const source = value === undefined
-    ? DEFAULT_BASE_URL
-    : nonEmptyString(value, "Weixin configuration baseUrl");
+    ? defaultValue
+    : nonEmptyString(value, label);
   let url: URL;
   try {
     url = new URL(source);
   } catch {
-    throw new Error("Weixin configuration baseUrl must be an absolute HTTP URL");
+    throw new Error(`${label} must be an absolute HTTP URL`);
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Weixin configuration baseUrl must be an absolute HTTP URL");
+    throw new Error(`${label} must be an absolute HTTP URL`);
   }
   return url.toString().replace(/\/$/, "");
 }

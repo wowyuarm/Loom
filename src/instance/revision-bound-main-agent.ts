@@ -17,6 +17,7 @@ import type {
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { InstanceLayout } from "./layout.js";
+import type { AttachmentStore } from "../integrations/attachments/index.js";
 
 export interface RevisionBoundMainAgentOptions {
   revisions: ModelRuntimeRevisions;
@@ -24,6 +25,7 @@ export interface RevisionBoundMainAgentOptions {
   agentWorkspace: AgentWorkspace;
   defaultInteractionRoute?: string;
   additionalTools?: ToolDefinition[];
+  attachmentStore: AttachmentStore;
 }
 
 class RevisionBoundMainAgent implements AgentExecution {
@@ -75,6 +77,7 @@ class RevisionBoundMainAgent implements AgentExecution {
         : {}),
       ...(this.options.additionalTools ? { additionalTools: this.options.additionalTools } : {}),
       toolTraceCompactor: compactor,
+      attachmentStore: this.options.attachmentStore,
     });
     return { execution, running: execution.start(request, control) };
   }

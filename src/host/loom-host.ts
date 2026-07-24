@@ -21,6 +21,10 @@ import {
   type WeixinAdapterStatus,
 } from "../integrations/weixin/index.js";
 import type { AcceptedInput, RuntimeInput } from "../runtime/index.js";
+import {
+  openAttachmentStore,
+  type AttachmentStore,
+} from "../integrations/attachments/index.js";
 
 export interface LoomHost {
   start(): void;
@@ -40,7 +44,7 @@ export interface LoomHostStatus {
   };
 }
 
-export type OpenLoomHostOptions = OpenLoomInstanceOptions;
+export type OpenLoomHostOptions = Omit<OpenLoomInstanceOptions, "attachmentStore">;
 
 class DefaultLoomHost implements LoomHost {
   readonly #root: string;
@@ -48,6 +52,7 @@ class DefaultLoomHost implements LoomHost {
   readonly #driver: ProcessDriver;
   readonly #ownership: InstanceRootOwnership;
   readonly #weixin: WeixinAdapter | undefined;
+  readonly #attachmentStore: AttachmentStore;
   #state: LoomHostStatus["state"] = "open";
   #finalInstanceStatus: LoomInstanceStatus | undefined;
   #stopping: Promise<void> | undefined;
@@ -57,12 +62,14 @@ class DefaultLoomHost implements LoomHost {
     instance: LoomInstance;
     driver: ProcessDriver;
     ownership: InstanceRootOwnership;
+    attachmentStore: AttachmentStore;
     weixin?: WeixinAdapter;
   }) {
     this.#root = options.root;
     this.#instance = options.instance;
     this.#driver = options.driver;
     this.#ownership = options.ownership;
+    this.#attachmentStore = options.attachmentStore;
     this.#weixin = options.weixin;
   }
 
@@ -113,7 +120,11 @@ class DefaultLoomHost implements LoomHost {
       try {
         await this.#driver.stop();
       } finally {
-        await this.#weixin?.stop();
+        try {
+          await this.#weixin?.stop();
+        } finally {
+          this.#attachmentStore.close();
+        }
       }
     } finally {
       try {
@@ -129,8 +140,13 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
   const root = path.resolve(options.root);
   const ownership = await acquireInstanceRootOwnership(root);
   let weixin: WeixinAdapter | undefined;
+  let attachmentStore: AttachmentStore | undefined;
   try {
     const layout = resolveInstanceLayout(root);
+    attachmentStore = await openAttachmentStore({
+      root: layout.attachmentStoreRoot,
+      ...(options.now ? { now: options.now } : {}),
+    });
     const configuration = await loadInstanceConfiguration({
       file: layout.configurationFile,
       ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
@@ -139,6 +155,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       configurationFile: layout.weixinConfigurationFile,
       authFile: layout.weixinAuthFile,
       stateFile: layout.weixinStateFile,
+      attachmentStore,
       ...(configuration.defaultInteractionRoute
         ? { expectedRouteRef: configuration.defaultInteractionRoute }
         : {}),
@@ -149,6 +166,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
     const instance = await openLoomInstance({
       ...options,
       root,
+      attachmentStore,
       ...(weixin ? { outboundDelivery: weixin } : {}),
     });
     return new DefaultLoomHost({
@@ -156,10 +174,12 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       instance,
       driver: createProcessDriver({ instance, ...(options.now ? { now: options.now } : {}) }),
       ownership,
+      attachmentStore,
       ...(weixin ? { weixin } : {}),
     });
   } catch (error) {
     await weixin?.stop();
+    attachmentStore?.close();
     ownership.release();
     throw error;
   }

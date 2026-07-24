@@ -3,6 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 
 import type { TurnControl } from "../runtime/index.js";
+import type { AttachmentStore } from "../integrations/attachments/index.js";
 
 export interface MessageTurnDecision {
   sent: number;
@@ -15,20 +16,24 @@ interface MessageToolDetails {
   effectId?: string;
   deliveryStatus?: "pending";
   afterSend?: "end_turn" | "continue";
+  attachmentId?: string;
 }
 
 export function createMessageTool(options: {
   control: TurnControl;
   routeRef: string;
   decision: MessageTurnDecision;
+  attachmentStore?: AttachmentStore;
+  workspaceRoot: string;
 }): ToolDefinition {
   return defineTool({
     name: "message",
     label: "Message",
     description: [
-      "Use message to make text visible to the human through the configured Interaction Route, or to let the current interaction end naturally.",
+      "Use message to make text or one Agent Workspace attachment visible to the human through the configured Interaction Route, or to let the current interaction end naturally.",
       "Assistant output outside this tool is private and is not delivered.",
       "send creates one durable outbound Effect. Tool success means the Harness accepted it; it does not mean Delivery succeeded or the human received it.",
+      "When attachment_path is present, Loom snapshots that Workspace file before accepting the Effect. Later edits cannot change the accepted attachment.",
       "Call message more than once when several separate messages are natural.",
       "send ends the Turn by default. Use after_send=continue when another message, tool action, or further work should follow in the same Turn.",
       "no_reply creates no outbound Effect and ends the Turn. It means the current interaction can naturally stop without forcing another response.",
@@ -43,7 +48,10 @@ export function createMessageTool(options: {
         default: "send",
       })),
       text: Type.Optional(Type.String({
-        description: "Text to make visible to the human. Required and non-blank for send; omitted for no_reply.",
+        description: "Optional text to make visible to the human. send requires non-blank text, attachment_path, or both; omit for no_reply.",
+      })),
+      attachment_path: Type.Optional(Type.String({
+        description: "Optional existing file inside the Agent Workspace. Loom snapshots it before accepting the outbound Effect.",
       })),
       reason: Type.Optional(Type.String({
         description: "Optional private reason for no_reply. The human does not receive it.",
@@ -61,6 +69,7 @@ export function createMessageTool(options: {
       const action = params.action ?? "send";
       if (action === "no_reply") {
         if (params.text?.trim()) throw new Error("message no_reply does not accept text");
+        if (params.attachment_path?.trim()) throw new Error("message no_reply does not accept attachment_path");
         if (params.after_send === "continue") {
           throw new Error("message no_reply cannot continue the Turn");
         }
@@ -76,10 +85,23 @@ export function createMessageTool(options: {
       }
 
       const text = params.text?.trim() ?? "";
-      if (!text) throw new Error("message send requires non-blank text");
+      const attachmentPath = params.attachment_path?.trim() ?? "";
+      if (!text && !attachmentPath) throw new Error("message send requires non-blank text or attachment_path");
+      if (attachmentPath && !options.attachmentStore) {
+        throw new Error("message attachment_path requires an Attachment Store");
+      }
+      const attachment = attachmentPath
+        ? await options.attachmentStore!.snapshotWorkspaceFile({
+            workspaceRoot: options.workspaceRoot,
+            source: attachmentPath,
+          })
+        : undefined;
       const receipt = options.control.prepareEffect({
         kind: "message",
-        payload: { text },
+        payload: {
+          ...(text ? { text } : {}),
+          ...(attachment ? { attachments: [JSON.parse(JSON.stringify(attachment))] } : {}),
+        },
         routeRef: options.routeRef,
       });
       options.decision.sent += 1;
@@ -94,6 +116,7 @@ export function createMessageTool(options: {
           effectId: receipt.effectId,
           deliveryStatus: "pending",
           afterSend,
+          ...(attachment ? { attachmentId: attachment.id } : {}),
         },
         terminate: afterSend === "end_turn",
       };

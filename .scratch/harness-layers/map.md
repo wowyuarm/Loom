@@ -82,6 +82,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [37 — Run a Prepared Instance Host](issues/37-run-a-prepared-instance-host.md)。foreground Host 现在独占一个已准备好的 Instance Root，持有现有 Instance 与 Process Driver，提供 Input ingress、分层状态和 signal graceful stop；Instance 打开不再承担初始化，也不静默吞掉坏配置。
 - Completed: [38 — Back Off a Confirmed Not-sent Delivery](issues/38-back-off-not-sent-delivery.md)。Runtime Store 为 pending Delivery 持久保存下一次可尝试时间；`not_sent` 以一分钟起步、上限一小时的指数退避恢复，重启保持等待，`unknown` 继续停在显式 reconciliation。
 - Completed: [39 — Connect a Text-only Weixin Route](issues/39-connect-a-text-only-weixin-route.md)。单 route、单 peer 的 Weixin Integration 已接入 Host ingress 与 `OutboundDelivery`；cursor/context state、真实 text HTTP、远程 degraded recovery、配置准入和 graceful stop 均已闭合，媒体保持独立后续。
+- Completed: [40 — Define Attachment and Media Semantics](issues/40-define-attachment-and-media-semantics.md)。通用 Attachment 引用、Instance-owned durable Store、模型能力分流、Workspace copy/snapshot、30 日无引用保留及 Weixin 单图入站/单附件出站已闭合；raw bytes 不进入 Runtime、Transcript、Activity 或认知材料。
 
 ## Context Follow-ups
 
@@ -107,7 +108,7 @@ nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首
 
 当前依赖顺序：用第二个虚拟 Individual 做结构验收 -> 用真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械结构问题先修，行为判断不由 faux-provider 测试代替。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 39 已闭合首个正式 text-only Weixin channel。下一步单独建立通用附件/媒体 ticket，先决定跨 channel 的附件 Input/Effect 语义、Workspace 暂存与模型可见边界，再选择 Weixin download/upload 适配；不要把 Weixin 媒体字段直接变成 Harness 合同。
+Current work item: none。Ticket 40 已闭合首个 generic attachment 纵切；voice/ASR、通用文件解析、video、多附件和更广 channel 能力继续后置，下一阶段先回看重构总纲与尚未闭合的首阶段边界。
 
 ### Memory Reflector Completion Checkpoint
 

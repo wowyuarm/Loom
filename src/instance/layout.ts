@@ -10,6 +10,7 @@ export interface InstanceLayout {
   weixinConfigurationFile: string;
   weixinAuthFile: string;
   weixinStateFile: string;
+  attachmentStoreRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
   mainTranscriptDirectory: string;
@@ -33,6 +34,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     weixinConfigurationFile: path.join(weixinRoot, "config.json"),
     weixinAuthFile: path.join(weixinRoot, "auth.json"),
     weixinStateFile: path.join(resolvedRoot, "runtime", "integrations", "weixin.db"),
+    attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
     workspaceRoot: path.join(resolvedRoot, "workspace"),
     runtimeRoot: path.join(resolvedRoot, "runtime"),
     mainTranscriptDirectory: path.join(transcriptRoot, "main"),

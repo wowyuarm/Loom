@@ -29,9 +29,14 @@ import {
   type NmemRecallToolOptions,
   type NmemThreadReconciler,
 } from "../integrations/nmem/index.js";
+import { attachmentReferences } from "../attachments/index.js";
 import { createMainAgentActivityLifecycle } from "../main-agent/activity.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { resolveInstanceLayout, type InstanceLayout } from "./layout.js";
+import {
+  openAttachmentStore,
+  type AttachmentStore,
+} from "../integrations/attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import {
   createRevisionBoundLifeRecorder,
@@ -52,6 +57,7 @@ const MAIN_AGENT_ACTION_TOOLS = [
   "ls",
   "expand_tool_result",
   "nmem_recall",
+  "attachment",
 ] as const;
 
 const DEFAULT_MODEL_RUNTIME_REFRESH_MS = 30 * 1_000;
@@ -88,6 +94,7 @@ export interface OpenLoomInstanceOptions {
   now?: () => Date;
   outboundDelivery?: OutboundDelivery;
   nmem?: NmemRecallToolOptions;
+  attachmentStore?: AttachmentStore;
 }
 
 class AssembledLoomInstance implements LoomInstance {
@@ -96,6 +103,8 @@ class AssembledLoomInstance implements LoomInstance {
     private readonly revisions: ReturnType<typeof openModelRuntimeRevisions>,
     private readonly scheduler: Scheduler,
     private readonly workingMemoryReader: ReturnType<typeof createNmemWorkingMemoryReader>,
+    private readonly attachmentStore: AttachmentStore,
+    private readonly ownsAttachmentStore: boolean,
     private readonly nmem?: {
       threads: NmemThreadReconciler;
       episodes: NmemEpisodeReconciler;
@@ -109,6 +118,7 @@ class AssembledLoomInstance implements LoomInstance {
   async runOnce(observedAt: Date): Promise<LoomInstanceRunResult> {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Loom Instance requires a valid observedAt");
     const result = await this.scheduler.runOnce(observedAt);
+    await this.#reconcileAttachments(observedAt);
     if (result.disposition === "deferred" && result.reason === "agent_work_not_admitted") {
       const nmemNextRunAt = await this.#reconcileNmem();
       return mergeNextRunAt(
@@ -148,6 +158,7 @@ class AssembledLoomInstance implements LoomInstance {
   close(): void {
     this.runtime.close();
     this.workingMemoryReader.close();
+    if (this.ownsAttachmentStore) this.attachmentStore.close();
     this.nmem?.threads.close();
     this.nmem?.episodes.close();
   }
@@ -160,6 +171,19 @@ class AssembledLoomInstance implements LoomInstance {
       this.nmem.threads.status(),
       this.nmem.episodes.status(),
     ]);
+  }
+
+  async #reconcileAttachments(observedAt: Date): Promise<void> {
+    const status = this.runtime.status();
+    const activeAttachmentIds = [
+      ...status.inputs
+        .filter(input => input.status === "pending" || input.status === "active")
+        .flatMap(input => attachmentReferences(input.payload).map(attachment => attachment.id)),
+      ...status.effects
+        .filter(effect => effect.status === "pending" || effect.status === "reconciliation_required")
+        .flatMap(effect => attachmentReferences(effect.payload).map(attachment => attachment.id)),
+    ];
+    await this.attachmentStore.reconcileRetention({ activeAttachmentIds, observedAt });
   }
 }
 
@@ -190,6 +214,11 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     agentWorkspace.loadStableFacts(),
   ]);
   await prepareRuntimeDirectories(layout);
+  const ownsAttachmentStore = !options.attachmentStore;
+  const attachmentStore = options.attachmentStore ?? await openAttachmentStore({
+    root: layout.attachmentStoreRoot,
+    ...(options.now ? { now: options.now } : {}),
+  });
   const recallTool = createNmemRecallTool(options.nmem ?? {});
   const workingMemoryReader = createNmemWorkingMemoryReader({
     stateRoot: layout.runtimeRoot,
@@ -209,6 +238,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     revisions,
     layout,
     agentWorkspace,
+    attachmentStore,
     ...(configuration.defaultInteractionRoute
       ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
       : {}),
@@ -298,7 +328,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     memoryReflection: {
       delayMs: configuration.schedule.memoryReflection.delayMinutes * 60 * 1_000,
     },
-  }), workingMemoryReader, nmem);
+  }), workingMemoryReader, attachmentStore, ownsAttachmentStore, nmem);
 }
 
 async function loadAssemblyConfiguration(

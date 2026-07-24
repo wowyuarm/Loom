@@ -5,9 +5,28 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  redactTranscriptImages,
   verifyPrimaryTranscriptEntry,
   verifyPrimaryTranscriptEvidence,
 } from "../../src/main-agent/transcript.js";
+
+test("omits image pixels when a tool result is prepared for the Primary Transcript", () => {
+  const redacted = redactTranscriptImages({
+    role: "toolResult",
+    toolCallId: "read-image",
+    toolName: "read",
+    content: [{
+      type: "image",
+      data: "raw-image-base64-must-not-persist",
+      mimeType: "image/png",
+    }],
+    isError: false,
+    timestamp: 1,
+  });
+  const serialized = JSON.stringify(redacted);
+  assert.doesNotMatch(serialized, /raw-image-base64-must-not-persist/);
+  assert.match(serialized, /Binary image omitted from the Primary Transcript/);
+});
 
 test("verifies an entry on the selected continuous transcript branch", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));

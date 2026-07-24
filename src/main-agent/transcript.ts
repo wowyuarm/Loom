@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { Temporal } from "@js-temporal/polyfill";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 import type {
   ActivityFreezeRequest,
@@ -515,7 +516,26 @@ export function openPrimaryTranscriptSession(
 ): SessionManager {
   const transcriptFile = primaryTranscriptFile(transcriptDirectory, sourceId);
   mkdirSync(path.dirname(transcriptFile), { recursive: true });
-  return SessionManager.open(transcriptFile, path.dirname(transcriptFile), cwd);
+  const session = SessionManager.open(transcriptFile, path.dirname(transcriptFile), cwd);
+  const appendMessage = session.appendMessage.bind(session);
+  session.appendMessage = message => appendMessage(redactTranscriptImages(message));
+  return session;
+}
+
+export function redactTranscriptImages<T extends AgentMessage>(message: T): T {
+  const content = "content" in message && Array.isArray(message.content)
+    ? message.content as unknown as Array<{ type?: string } & Record<string, unknown>>
+    : undefined;
+  if (!content?.some(block => block.type === "image")) {
+    return structuredClone(message);
+  }
+  return {
+    ...(structuredClone(message) as AgentMessage & Record<string, unknown>),
+    content: content.map(block => block.type === "image" ? {
+      type: "text" as const,
+      text: "[Binary image omitted from the Primary Transcript. Use its Attachment reference or Agent Workspace source to access it again.]",
+    } : structuredClone(block)),
+  } as unknown as T;
 }
 
 export function primaryTranscriptFile(transcriptDirectory: string, sourceId: string): string {

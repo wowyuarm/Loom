@@ -4,6 +4,7 @@ export {
   type WeixinAdapter,
   type WeixinAdapterStatus,
   type WeixinRemote,
+  type WeixinRemoteImage,
   type WeixinRemoteMessage,
   type WeixinRemotePollResult,
   type OpenConfiguredWeixinAdapterOptions,
