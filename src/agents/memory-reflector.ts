@@ -19,6 +19,7 @@ import type { NmemWorkingMemoryReader } from "../integrations/nmem/index.js";
 import type { FrozenActivity } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
+import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
@@ -182,6 +183,7 @@ export interface PiMemoryReflectorOptions {
   workingMemoryReader: NmemWorkingMemoryReader;
   nmemRecallTool: ToolDefinition;
   nextRunId?: () => string;
+  mutationDirectory?: string;
 }
 
 class PiMemoryReflector implements MemoryReflector {
@@ -189,9 +191,23 @@ class PiMemoryReflector implements MemoryReflector {
 
   async reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult> {
     validateRequest(request);
+    const opened = await beginWorkspaceMutation<MemoryReflectionResult>({
+      workspaceRoot: this.options.agentWorkspace.root,
+      journalRoot: this.options.mutationDirectory
+        ?? path.join(this.options.transcriptDirectory, "workspace-mutations"),
+      operationKey: `memory-reflector:${request.reflectionDay}`,
+    });
+    if (opened.state === "completed") return opened.result;
+    const mutation = opened.mutation;
     const runId = this.options.nextRunId?.() ?? randomUUID();
-    const baseline = await loadBaseline(this.options.agentWorkspace.root);
-    await backupMaterials(this.options.backupDirectory, runId, baseline);
+    let baseline: Map<string, string>;
+    try {
+      baseline = await loadBaseline(this.options.agentWorkspace.root);
+      await backupMaterials(this.options.backupDirectory, runId, baseline);
+    } catch (error) {
+      await mutation.rollback();
+      throw error;
+    }
     const activities = new Map(request.activities.map(activity => [activity.segmentId, activity]));
     const readBaselines = new Set<string>();
     const baselineNextOffsets = new Map<string, number>();
@@ -277,7 +293,7 @@ class PiMemoryReflector implements MemoryReflector {
             throw new Error(`Core material ${params.material} was already replaced in this run`);
           }
           const content = validateReplacement(params.material, params.content);
-          await atomicWrite(path.join(this.options.agentWorkspace.root, MATERIAL_PATHS[params.material]), content);
+          await mutation.write(MATERIAL_PATHS[params.material], content);
           changedMaterials.push(params.material);
           return toolResult({
             type: "loom.core-material-replaced",
@@ -295,12 +311,16 @@ class PiMemoryReflector implements MemoryReflector {
       if (changedMaterials.length > 0) {
         if (output !== "UPDATED") throw new Error("Memory Reflector must return UPDATED after replacement");
         await validateCurrentMaterials(this.options.agentWorkspace.root);
-        return { outcome: "updated", runId, changedMaterials };
+        const result: MemoryReflectionResult = { outcome: "updated", runId, changedMaterials };
+        await mutation.complete(result);
+        return result;
       }
       if (output !== "NO_CHANGE") throw new Error("Memory Reflector must return NO_CHANGE when no replacement was made");
-      return { outcome: "no_change", runId, changedMaterials: [] };
+      const result: MemoryReflectionResult = { outcome: "no_change", runId, changedMaterials: [] };
+      await mutation.complete(result);
+      return result;
     } catch (error) {
-      await restoreMaterials(this.options.agentWorkspace.root, baseline);
+      await mutation.rollback();
       throw error;
     }
 
@@ -529,12 +549,6 @@ async function backupMaterials(
     const destination = path.join(runRoot, relativePath);
     await mkdir(path.dirname(destination), { recursive: true });
     await atomicWrite(destination, baseline.get(relativePath)!);
-  }
-}
-
-async function restoreMaterials(root: string, baseline: Map<string, string>): Promise<void> {
-  for (const relativePath of Object.values(MATERIAL_PATHS)) {
-    await atomicWrite(path.join(root, relativePath), baseline.get(relativePath)!);
   }
 }
 

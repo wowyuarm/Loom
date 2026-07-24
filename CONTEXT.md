@@ -58,6 +58,10 @@ _Avoid_: chat history, memory file, runtime store
 Runtime 持久保存的运行事实，用于决定 input、turn、effect、delivery、调度与恢复。
 _Avoid_: workspace, agent memory, transcript
 
+**Workspace Mutation**:
+Runtime Root 中用于保护一次 Cognitive Organ 多文件 Workspace revision 的持久恢复记录。它在写入前保存完整 before-image，在器官验证成功后保存可重放结果，使进程退出后要么恢复旧 revision，要么沿用已完成 revision；它不接管 Main Agent 的普通 Workspace 活动，也不是通用文件事务。
+_Avoid_: runtime store transaction, workspace history, main-agent transaction, filesystem overlay
+
 **Input**:
 Runtime 已持久接受、可以交给主 Agent 处理的一份外部来信或主动机会。它不是 prompt；一次处理失败后是否还能继续，取决于已经发生的事实。
 _Avoid_: message, prompt, queue item

@@ -44,7 +44,9 @@ test("keeps Thread history as references and expands an earlier Turn only on req
     nextThreadRef: () => "thread-garden",
   });
 
-  assert.equal((await first.maintain(request(firstActivity, "turn-1"))).outcome, "no_change");
+  const firstResult = await first.maintain(request(firstActivity, "turn-1"));
+  assert.equal(firstResult.outcome, "no_change");
+  assert.deepEqual(await first.maintain(request(firstActivity, "turn-1")), firstResult);
 
   const secondPi = await createTestPi(root, "thread-history-second");
   secondPi.faux.setResponses([

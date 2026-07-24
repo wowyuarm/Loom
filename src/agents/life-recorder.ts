@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -23,6 +23,7 @@ import type {
 } from "../runtime/index.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
+import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 
 const SYSTEM_PROMPT = `You are the Life Recorder for one Agent Individual. Preserve first-hand records of what happened; do not turn them into long-term analysis.
 
@@ -125,58 +126,24 @@ export interface PiLifeRecorderOptions {
   thinkingLevel?: ThinkingLevel;
   nextRunId?: () => string;
   now?: () => Date;
+  mutationDirectory?: string;
 }
 
 export type LifeRecorder = ActivityRecorder;
-
-interface FileSnapshot {
-  absolutePath: string;
-  previous: Buffer | null;
-}
-
-class WorkspaceWriteJournal {
-  readonly #root: string;
-  readonly #snapshots = new Map<string, FileSnapshot>();
-
-  constructor(root: string) {
-    this.#root = path.resolve(root);
-  }
-
-  async write(relativePath: string, content: string): Promise<void> {
-    const absolutePath = this.#resolve(relativePath);
-    if (!this.#snapshots.has(absolutePath)) {
-      this.#snapshots.set(absolutePath, {
-        absolutePath,
-        previous: await readOptionalBuffer(absolutePath),
-      });
-    }
-    await atomicWrite(absolutePath, content);
-  }
-
-  async rollback(): Promise<void> {
-    for (const snapshot of [...this.#snapshots.values()].reverse()) {
-      if (snapshot.previous === null) {
-        await rm(snapshot.absolutePath, { force: true });
-      } else {
-        await atomicWrite(snapshot.absolutePath, snapshot.previous);
-      }
-    }
-  }
-
-  #resolve(relativePath: string): string {
-    const absolutePath = path.resolve(this.#root, relativePath);
-    if (absolutePath !== this.#root && !absolutePath.startsWith(`${this.#root}${path.sep}`)) {
-      throw new Error("Life Recorder path escapes the Agent Workspace");
-    }
-    return absolutePath;
-  }
-}
 
 class PiLifeRecorder implements LifeRecorder {
   constructor(private readonly options: PiLifeRecorderOptions) {}
 
   async record(activity: FrozenActivity): Promise<LifeRecorderReceipt> {
     validateActivity(activity);
+    const opened = await beginWorkspaceMutation<LifeRecorderReceipt>({
+      workspaceRoot: this.options.agentWorkspace.root,
+      journalRoot: this.options.mutationDirectory
+        ?? path.join(this.options.transcriptDirectory, "workspace-mutations"),
+      operationKey: `life-recorder:${activity.segmentId}`,
+    });
+    if (opened.state === "completed") return opened.result;
+    const mutation = opened.mutation;
     const runId = this.options.nextRunId?.() ?? randomUUID();
     const recordedAt = (this.options.now?.() ?? new Date()).toISOString();
     const dailyPath = `daily/${activity.recordingDay}.md`;
@@ -185,7 +152,6 @@ class PiLifeRecorder implements LifeRecorder {
       this.options.agentWorkspace.loadIdentity(),
       this.options.agentWorkspace.loadDailyNarratives(activity.recordingDay),
     ]);
-    const journal = new WorkspaceWriteJournal(this.options.agentWorkspace.root);
     const readEventIndexes = new Set<number>();
     const eventIndexById = new Map(activity.events.map((event, index) => [event.eventId, index]));
     const recordedOrdinals = new Set<number>();
@@ -233,7 +199,7 @@ class PiLifeRecorder implements LifeRecorder {
           if (readEventIndexes.size !== activity.events.length) {
             throw new Error("All frozen activity events must be read before writing the Daily Narrative");
           }
-          await journal.write(dailyPath, requireNonBlank(params.content, "Daily Narrative"));
+          await mutation.write(dailyPath, requireNonBlank(params.content, "Daily Narrative"));
           dailyUpdated = true;
           return toolResult({ type: "loom.daily-written", version: 1, path: dailyPath });
         },
@@ -290,7 +256,7 @@ class PiLifeRecorder implements LifeRecorder {
           validateIsoTimestamp(params.occurredAt, "episode occurredAt");
           const id = episodeId(activity.segmentId, params.ordinal);
           const episodePath = `episodes/${activity.recordingDay}/${id}.md`;
-          await journal.write(episodePath, formatEpisode({
+          await mutation.write(episodePath, formatEpisode({
             id,
             segmentId: activity.segmentId,
             ordinal: params.ordinal,
@@ -321,7 +287,7 @@ class PiLifeRecorder implements LifeRecorder {
       if (readEventIndexes.size !== activity.events.length) {
         throw new Error("Life Recorder did not read all frozen activity events");
       }
-      return {
+      const receipt: LifeRecorderReceipt = {
         version: 1,
         segmentId: activity.segmentId,
         runId,
@@ -329,8 +295,10 @@ class PiLifeRecorder implements LifeRecorder {
         daily: { status: dailyUpdated ? "updated" : "no_change", path: dailyPath },
         episodes,
       };
+      await mutation.complete(receipt);
+      return receipt;
     } catch (error) {
-      await journal.rollback();
+      await mutation.rollback();
       throw error;
     }
   }
@@ -521,26 +489,6 @@ function formatEpisode(episode: {
   ].join("\n");
 }
 
-async function readOptionalBuffer(file: string): Promise<Buffer | null> {
-  try {
-    return await readFile(file);
-  } catch (error) {
-    if (isMissingFile(error)) return null;
-    throw error;
-  }
-}
-
-async function atomicWrite(file: string, content: string | Buffer): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const temporary = `${file}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, content);
-    await rename(temporary, file);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 function uniqueStrings(values: string[], field: string): string[] {
   const normalized = values.map(value => requireNonBlank(value, field));
   if (new Set(normalized).size !== normalized.length) throw new Error(`${field} contains duplicates`);
@@ -563,8 +511,4 @@ function validateIsoTimestamp(value: string, field: string): void {
     || Number.isNaN(Date.parse(value))) {
     throw new Error(`Invalid ${field}`);
   }
-}
-
-function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

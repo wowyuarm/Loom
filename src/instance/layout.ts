@@ -13,6 +13,7 @@ export interface InstanceLayout {
   attachmentStoreRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
+  workspaceMutationRoot: string;
   mainTranscriptDirectory: string;
   organTranscriptRoot: string;
   backupRoot: string;
@@ -37,6 +38,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
     workspaceRoot: path.join(resolvedRoot, "workspace"),
     runtimeRoot: path.join(resolvedRoot, "runtime"),
+    workspaceMutationRoot: path.join(resolvedRoot, "runtime", "workspace-mutations"),
     mainTranscriptDirectory: path.join(transcriptRoot, "main"),
     organTranscriptRoot: path.join(transcriptRoot, "organs"),
     backupRoot: path.join(resolvedRoot, "backups"),

@@ -109,6 +109,12 @@ test("reflects grounded evidence into protected core material", async () => {
     "Previous long-term memory.\n",
   );
   await access(path.join(root, "transcripts", "reflector-run-1.jsonl"));
+  assert.deepEqual(await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  }), result);
 });
 
 test("accepts a completed reflection after the model recovers from a tool error", async () => {

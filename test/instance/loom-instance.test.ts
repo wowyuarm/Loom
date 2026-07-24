@@ -8,6 +8,7 @@ import test from "node:test";
 import { openLoomInstance } from "../../src/instance/index.js";
 import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
+import { beginWorkspaceMutation } from "../../src/workspace/workspace-mutation.js";
 import type { DeliveryAttemptRequest } from "../../src/runtime/index.js";
 
 test("keeps accepted Input pending while blocked and resumes it after model configuration recovers", async t => {
@@ -152,6 +153,27 @@ test("refuses to open when Instance Configuration is malformed", async () => {
     openLoomInstance({ root, machineTimeZone: "UTC" }),
     /Instance Configuration could not be read/,
   );
+});
+
+test("recovers an incomplete Cognitive Organ Workspace mutation before opening", async () => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const identity = path.join(root, "workspace", "identity.md");
+  const original = await readFile(identity, "utf8");
+  const opened = await beginWorkspaceMutation<{ outcome: string }>({
+    workspaceRoot: path.join(root, "workspace"),
+    journalRoot: path.join(root, "runtime", "workspace-mutations"),
+    operationKey: "memory-reflector:2026-07-23",
+  });
+  assert.equal(opened.state, "active");
+  await opened.mutation.write("identity.md", " \n");
+
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC" });
+  try {
+    assert.equal(await readFile(identity, "utf8"), original);
+  } finally {
+    instance.close();
+  }
 });
 
 test("does not initialize missing Harness-owned Behavior materials while opening", async () => {

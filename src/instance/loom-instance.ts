@@ -32,6 +32,7 @@ import {
 import { attachmentReferences } from "../attachments/index.js";
 import { createMainAgentActivityLifecycle } from "../main-agent/activity.js";
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
+import { recoverWorkspaceMutations } from "../workspace/workspace-mutation.js";
 import { resolveInstanceLayout, type InstanceLayout } from "./layout.js";
 import {
   openAttachmentStore,
@@ -209,11 +210,15 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
   const layout = resolveInstanceLayout(options.root);
   const configuration = await loadAssemblyConfiguration(layout, options.machineTimeZone);
   const agentWorkspace = new AgentWorkspace(layout.workspaceRoot);
+  await prepareRuntimeDirectories(layout);
+  await recoverWorkspaceMutations({
+    workspaceRoot: layout.workspaceRoot,
+    journalRoot: layout.workspaceMutationRoot,
+  });
   await Promise.all([
     agentWorkspace.loadTurnSnapshot("interaction"),
     agentWorkspace.loadStableFacts(),
   ]);
-  await prepareRuntimeDirectories(layout);
   const ownsAttachmentStore = !options.attachmentStore;
   const attachmentStore = options.attachmentStore ?? await openAttachmentStore({
     root: layout.attachmentStoreRoot,

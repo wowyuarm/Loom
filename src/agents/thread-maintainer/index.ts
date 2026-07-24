@@ -18,6 +18,7 @@ import { Type } from "typebox";
 import type { FrozenActivity } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../../workspace/tools.js";
+import { beginWorkspaceTreeMutation } from "../../workspace/workspace-mutation.js";
 import {
   compareReferences,
   type ThreadActivityObservation,
@@ -111,6 +112,12 @@ export interface PiThreadMaintainerOptions {
   loadActivity: (activityId: string) => Promise<FrozenActivity | undefined>;
   nextRunId?: () => string;
   nextThreadRef?: () => string;
+  mutationDirectory?: string;
+}
+
+interface DurableThreadMaintenanceResult {
+  result: ThreadMaintenanceResult;
+  moves: Array<{ source: string; destination: string }>;
 }
 
 class PiThreadMaintainer implements ThreadMaintainer {
@@ -118,15 +125,33 @@ class PiThreadMaintainer implements ThreadMaintainer {
 
   async maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult> {
     validateRequest(request);
-    const runId = this.options.nextRunId?.() ?? randomUUID();
     const threadsRoot = path.join(this.options.agentWorkspace.root, THREADS_PATH);
     await mkdir(threadsRoot, { recursive: true });
-    const [stableFacts, evidenceIndex, transaction] = await Promise.all([
+    const [stableFacts, evidenceIndex] = await Promise.all([
       this.options.agentWorkspace.loadStableFacts(),
       ThreadEvidenceIndex.open(this.options.stateFile, this.options.nextThreadRef),
-      ThreadWorkspaceTransaction.begin(threadsRoot),
     ]);
     const currentReferences = await evidenceIndex.record(request.activity, request.observations);
+    const opened = await beginWorkspaceTreeMutation<DurableThreadMaintenanceResult>({
+      workspaceRoot: this.options.agentWorkspace.root,
+      journalRoot: this.options.mutationDirectory
+        ?? path.join(this.options.transcriptDirectory, "workspace-mutations"),
+      operationKey: `thread-maintainer:${request.activity.segmentId}`,
+      treePath: THREADS_PATH,
+    });
+    if (opened.state === "completed") {
+      await evidenceIndex.applyMoves(opened.result.moves);
+      return opened.result.result;
+    }
+    const mutation = opened.mutation;
+    let transaction: ThreadWorkspaceTransaction;
+    try {
+      transaction = await ThreadWorkspaceTransaction.begin(threadsRoot);
+    } catch (error) {
+      await mutation.rollback();
+      throw error;
+    }
+    const runId = this.options.nextRunId?.() ?? randomUUID();
 
     const requiredReads = new Set(await existingChangedFiles(threadsRoot, request.observations));
     const currentReferenceIds = new Set(currentReferences.map(reference => reference.referenceId));
@@ -286,17 +311,21 @@ class PiThreadMaintainer implements ThreadMaintainer {
         if (output !== "NO_CHANGE") {
           throw new Error("Thread Maintainer must return NO_CHANGE when no structural write was made");
         }
-        return { outcome: "no_change", runId, changedPaths: [] };
+        const result: ThreadMaintenanceResult = { outcome: "no_change", runId, changedPaths: [] };
+        await mutation.complete({ result, moves: [] });
+        return result;
       }
       if (output !== "UPDATED") {
         throw new Error("Thread Maintainer must return UPDATED after structural writes");
       }
       const changedPaths = await transaction.changedPaths();
       if (changedPaths.length === 0) throw new Error("Thread Maintainer reported writes without a Workspace change");
+      const result: ThreadMaintenanceResult = { outcome: "updated", runId, changedPaths };
+      await mutation.complete({ result, moves: [...transaction.moves] });
       await evidenceIndex.applyMoves(transaction.moves);
-      return { outcome: "updated", runId, changedPaths };
+      return result;
     } catch (error) {
-      if (transaction.mutated) await transaction.rollback();
+      await mutation.rollback();
       throw error;
     }
 

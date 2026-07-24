@@ -83,6 +83,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [38 — Back Off a Confirmed Not-sent Delivery](issues/38-back-off-not-sent-delivery.md)。Runtime Store 为 pending Delivery 持久保存下一次可尝试时间；`not_sent` 以一分钟起步、上限一小时的指数退避恢复，重启保持等待，`unknown` 继续停在显式 reconciliation。
 - Completed: [39 — Connect a Text-only Weixin Route](issues/39-connect-a-text-only-weixin-route.md)。单 route、单 peer 的 Weixin Integration 已接入 Host ingress 与 `OutboundDelivery`；cursor/context state、真实 text HTTP、远程 degraded recovery、配置准入和 graceful stop 均已闭合，媒体保持独立后续。
 - Completed: [40 — Define Attachment and Media Semantics](issues/40-define-attachment-and-media-semantics.md)。通用 Attachment 引用、Instance-owned durable Store、模型能力分流、Workspace copy/snapshot、30 日无引用保留及 Weixin 单图入站/单附件出站已闭合；raw bytes 不进入 Runtime、Transcript、Activity 或认知材料。
+- Completed: [41 — Recover Cognitive Workspace Mutations](issues/41-recover-cognitive-workspace-mutations.md)。Life Recorder、Thread Maintainer 与 Memory Reflector 的多文件 revision 现在有 Runtime-owned before-image、Instance-open 恢复和完成结果重放；进程退出不会让 Individual 暴露半套认知材料，也不会在 Runtime 记账缺口中重复调用模型。
 
 ## Context Follow-ups
 
@@ -108,7 +109,7 @@ nmem 范围闭合后的全局审视确认，以下不是未来扩展，而是首
 
 当前依赖顺序：用第二个虚拟 Individual 做结构验收 -> 用真实模型评估主动、沉默、私人工作、关系连续性与表达空间。机械结构问题先修，行为判断不由 faux-provider 测试代替。workspace init、生产迁移和 Git backup 继续后置。
 
-Current work item: none。Ticket 40 已闭合首个 generic attachment 纵切；voice/ASR、通用文件解析、video、多附件和更广 channel 能力继续后置，下一阶段先回看重构总纲与尚未闭合的首阶段边界。
+Current work item: none。Ticket 41 已闭合 Cognitive Organ 多文件 Workspace revision 的进程退出恢复；下一步重新回到首阶段整体审视，不顺势扩到 voice/ASR、通用文件解析、video、多附件或更广 channel 能力。
 
 ### Memory Reflector Completion Checkpoint
 

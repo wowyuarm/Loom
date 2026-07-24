@@ -87,6 +87,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
   assert.match(await readFile(path.join(workspaceRoot, receipt.daily.path), "utf8"), /Alex asked Rowan/);
   assert.match(await readFile(path.join(workspaceRoot, receipt.episodes[0]!.path), "utf8"), /segment-1/);
   assert.match(await readFile(path.join(workspaceRoot, receipt.episodes[0]!.path), "utf8"), /event-input-1/);
+  assert.deepEqual(await recorder.record(activity()), receipt);
 });
 
 test("allows no change when Daily and Episodes do not exist", async () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 interface WorkspaceFileSnapshot {
@@ -8,7 +8,6 @@ interface WorkspaceFileSnapshot {
 }
 
 interface ThreadWorkspaceSnapshot {
-  directories: string[];
   files: Map<string, WorkspaceFileSnapshot>;
 }
 
@@ -64,27 +63,10 @@ export class ThreadWorkspaceTransaction {
   async changedPaths(): Promise<string[]> {
     return diff(this.before, await snapshot(this.root));
   }
-
-  async rollback(): Promise<void> {
-    await rm(this.root, { recursive: true, force: true });
-    await mkdir(this.root, { recursive: true });
-    for (const directory of [...this.before.directories]
-      .sort((left, right) => left.split("/").length - right.split("/").length)) {
-      await mkdir(path.join(this.root, directory), { recursive: true });
-    }
-    for (const [relative, file] of this.before.files) {
-      const target = path.join(this.root, relative);
-      await mkdir(path.dirname(target), { recursive: true });
-      await writeFile(target, file.content);
-      await chmod(target, file.mode);
-    }
-    this.#mutated = false;
-    this.moves.length = 0;
-  }
 }
 
 async function snapshot(root: string): Promise<ThreadWorkspaceSnapshot> {
-  const result: ThreadWorkspaceSnapshot = { directories: [], files: new Map() };
+  const result: ThreadWorkspaceSnapshot = { files: new Map() };
   async function visit(directory: string, relativeDirectory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
@@ -92,7 +74,6 @@ async function snapshot(root: string): Promise<ThreadWorkspaceSnapshot> {
       const target = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) throw new Error(`Thread Workspace cannot contain symbolic link ${relative}`);
       if (entry.isDirectory()) {
-        result.directories.push(relative);
         await visit(target, relative);
         continue;
       }
