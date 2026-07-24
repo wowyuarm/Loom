@@ -7,6 +7,10 @@ export {
   type OpenLoomInstanceOptions,
 } from "./loom-instance.js";
 export {
+  initializeLoomInstance,
+  type InitializeLoomInstanceResult,
+} from "./initialization.js";
+export {
   createProcessDriver,
   type ProcessDriver,
   type ProcessDriverOptions,

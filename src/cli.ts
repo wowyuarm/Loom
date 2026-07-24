@@ -3,11 +3,17 @@
 import process from "node:process";
 
 import { openLoomHost } from "./host/index.js";
+import { initializeLoomInstance } from "./instance/index.js";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  if (command !== "run") throw new Error("Usage: loom run --root <instance-root>");
-  const root = readRequiredFlag(args, "--root");
+  if (command !== "init" && command !== "run") throw new Error(usage());
+  const root = readRequiredFlag(args, "--root", command);
+  if (command === "init") {
+    const result = await initializeLoomInstance({ root });
+    console.log(JSON.stringify({ event: "instance.initialized", ...result }));
+    return;
+  }
   const host = await openLoomHost({ root });
   const termination = waitForTerminationSignal();
   try {
@@ -24,15 +30,24 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-function readRequiredFlag(args: string[], name: string): string {
+function readRequiredFlag(args: string[], name: string, command: "init" | "run"): string {
   const index = args.indexOf(name);
   const value = index >= 0 ? args[index + 1] : undefined;
   if (!value || value.startsWith("--")) {
-    throw new Error(`Usage: loom run ${name} <instance-root>`);
+    throw new Error(usage(command));
   }
   const remaining = args.filter((_, candidate) => candidate !== index && candidate !== index + 1);
   if (remaining.length > 0) throw new Error(`Unknown argument: ${remaining[0]}`);
   return value;
+}
+
+function usage(command?: "init" | "run"): string {
+  if (command) return `Usage: loom ${command} --root <instance-root>`;
+  return [
+    "Usage:",
+    "  loom init --root <instance-root>",
+    "  loom run --root <instance-root>",
+  ].join("\n");
 }
 
 function waitForTerminationSignal(): {
