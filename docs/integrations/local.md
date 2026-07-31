@@ -32,6 +32,17 @@ loom history
 CLI 默认使用 `~/.loom`。测试、临时 Instance 或其他明确部署位置可以通过
 `--root <instance-root>` 覆盖。
 
+在 Loom 尚未发布为正式 package 的开发期，本机命令通过仓库 build 安装：
+
+```bash
+cd /home/yu/projects/Loom
+npm run build
+npm link
+```
+
+`loom` 随后指向这个仓库的 `dist/src/cli.js`。源码更新后必须先通过验证并重新
+build，运行中的 Host 仍需正常重启；当前不把开发 checkout 伪装成版本化发布包。
+
 Local 使用 `runtime/integrations/local.sock`。CLI 是客户端，不会直接打开
 Runtime Store，也不保存自己的 inbox。`history` 从 Runtime 的 human Input、
 message Effect 和 confirmed Delivery 重建 Interaction View，因此未来从 Weixin

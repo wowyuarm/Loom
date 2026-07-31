@@ -112,7 +112,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-Current work item: none。Ticket 44 已闭合默认 Instance Root；下一步是在 `~/.loom` 准备 HaL 材料和真实模型配置并开始持续验收，不再补另一个抽象入口。
+Current work item: none。[45 — Deploy the First Local Instance](issues/45-deploy-the-first-local-instance.md) 已完成：linked CLI、独立 HaL 材料、DeepSeek Flash、Local 与真实 Host 启停均已验证，nmem / Weixin 保持关闭且没有写入模拟人类来信。下一步由禹发出第一条真实 Input，并进入持续行为观察。
 
 ### Memory Reflector Completion Checkpoint
 
