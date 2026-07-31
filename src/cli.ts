@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { homedir } from "node:os";
+import path from "node:path";
 import process from "node:process";
 
 import { openLoomHost } from "./host/index.js";
@@ -16,7 +18,7 @@ async function main(argv: string[]): Promise<void> {
   if (command !== "init" && command !== "run" && command !== "chat" && command !== "history") {
     throw new Error(usage());
   }
-  const root = readRequiredFlag(args, "--root", command);
+  const root = readRoot(args, command);
   if (command === "init") {
     const result = await initializeLoomInstance({ root });
     console.log(JSON.stringify({ event: "instance.initialized", ...result }));
@@ -63,8 +65,10 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-function readRequiredFlag(args: string[], name: string, command: "init" | "run" | "chat" | "history"): string {
+function readRoot(args: string[], command: "init" | "run" | "chat" | "history"): string {
+  const name = "--root";
   const index = args.indexOf(name);
+  if (index < 0) return path.join(homedir(), ".loom");
   const value = index >= 0 ? args[index + 1] : undefined;
   if (!value || value.startsWith("--")) {
     throw new Error(usage(command));
@@ -76,18 +80,21 @@ function readRequiredFlag(args: string[], name: string, command: "init" | "run" 
 
 function remainingArguments(args: string[], flag: string): string[] {
   const index = args.indexOf(flag);
+  if (index < 0) return [...args];
   return args.filter((_, candidate) => candidate !== index && candidate !== index + 1);
 }
 
 function usage(command?: "init" | "run" | "chat" | "history"): string {
-  if (command === "chat") return "Usage: loom chat --root <instance-root> <text>";
-  if (command) return `Usage: loom ${command} --root <instance-root>`;
+  if (command === "chat") return "Usage: loom chat [--root <instance-root>] <text>";
+  if (command) return `Usage: loom ${command} [--root <instance-root>]`;
   return [
     "Usage:",
-    "  loom init --root <instance-root>",
-    "  loom run --root <instance-root>",
-    "  loom chat --root <instance-root> <text>",
-    "  loom history --root <instance-root>",
+    "  loom init [--root <instance-root>]",
+    "  loom run [--root <instance-root>]",
+    "  loom chat [--root <instance-root>] <text>",
+    "  loom history [--root <instance-root>]",
+    "",
+    "The default Instance Root is ~/.loom.",
   ].join("\n");
 }
 

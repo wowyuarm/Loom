@@ -19,15 +19,18 @@ interaction:
 启动唯一的 Instance Host：
 
 ```bash
-loom run --root ~/.loom
+loom run
 ```
 
 另一个终端通过 Host 交互或查看最近的统一互动记录：
 
 ```bash
-loom chat --root ~/.loom "你好"
-loom history --root ~/.loom
+loom chat "你好"
+loom history
 ```
+
+CLI 默认使用 `~/.loom`。测试、临时 Instance 或其他明确部署位置可以通过
+`--root <instance-root>` 覆盖。
 
 Local 使用 `runtime/integrations/local.sock`。CLI 是客户端，不会直接打开
 Runtime Store，也不保存自己的 inbox。`history` 从 Runtime 的 human Input、

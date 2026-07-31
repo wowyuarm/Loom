@@ -10,13 +10,14 @@ import test from "node:test";
 
 import { initializeLoomInstance } from "../../src/instance/index.js";
 
-test("initializes an Instance scaffold through the foreground CLI", async () => {
+test("initializes the default ~/.loom Instance through the foreground CLI", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-"));
   const root = path.join(parent, ".loom");
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
 
-  const child = spawn(process.execPath, [cli, "init", "--root", root], {
+  const child = spawn(process.execPath, [cli, "init"], {
     stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, HOME: parent },
   });
   child.stdin.end();
   let stdout = "";
@@ -80,11 +81,14 @@ test("runs one prepared Instance until a termination signal requests graceful st
 test("chats through the running Local channel and rebuilds history in another client", async t => {
   const provider = await startMessageProvider("hello through Loom");
   t.after(() => provider.close());
-  const root = await preparedInstanceRoot();
+  const home = await mkdtemp(path.join(tmpdir(), "loom-cli-home-"));
+  const root = await preparedInstanceRoot(path.join(home, ".loom"));
   await writeModelConfiguration(root, provider.baseUrl);
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
-  const host = spawn(process.execPath, [cli, "run", "--root", root], {
+  const env = { ...process.env, HOME: home };
+  const host = spawn(process.execPath, [cli, "run"], {
     stdio: ["pipe", "pipe", "pipe"],
+    env,
   });
   host.stdin.end();
   let hostStdout = "";
@@ -96,11 +100,11 @@ test("chats through the running Local channel and rebuilds history in another cl
   });
   await waitForOutput(host, () => hostStdout.includes('"event":"host.started"'), () => hostStderr);
 
-  const chat = await runCli(cli, ["chat", "--root", root, "hello from the human"]);
+  const chat = await runCli(cli, ["chat", "hello from the human"], env);
   assert.equal(chat.code, 0, chat.stderr);
   assert.equal(chat.stdout.trim(), "hello through Loom");
 
-  const history = await runCli(cli, ["history", "--root", root]);
+  const history = await runCli(cli, ["history"], env);
   assert.equal(history.code, 0, history.stderr);
   assert.match(history.stdout, /human \[local\]: hello from the human/);
   assert.match(history.stdout, /individual \[local\]: hello through Loom/);
@@ -111,10 +115,10 @@ test("chats through the running Local channel and rebuilds history in another cl
   assert.equal(code, 0, hostStderr);
 });
 
-async function preparedInstanceRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-cli-"));
-  const workspace = path.join(root, "workspace");
-  await initializeLoomInstance({ root });
+async function preparedInstanceRoot(root?: string): Promise<string> {
+  const instanceRoot = root ?? await mkdtemp(path.join(tmpdir(), "loom-cli-"));
+  const workspace = path.join(instanceRoot, "workspace");
+  await initializeLoomInstance({ root: instanceRoot });
   await mkdir(workspace, { recursive: true });
   await Promise.all([
     writeFile(path.join(workspace, "facts.json"), JSON.stringify({
@@ -126,7 +130,7 @@ async function preparedInstanceRoot(): Promise<string> {
     writeFile(path.join(workspace, "memory.md"), "No durable memories yet.\n", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "Nothing is currently foregrounded.\n", "utf8"),
   ]);
-  return root;
+  return instanceRoot;
 }
 
 async function writeModelConfiguration(root: string, baseUrl: string): Promise<void> {
@@ -217,8 +221,15 @@ async function startMessageProvider(text: string): Promise<{ baseUrl: string; cl
   };
 }
 
-async function runCli(cli: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, [cli, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+async function runCli(
+  cli: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [cli, ...args], {
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(env ? { env } : {}),
+  });
   child.stdin.end();
   let stdout = "";
   let stderr = "";
