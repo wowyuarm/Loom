@@ -58,6 +58,14 @@ _Avoid_: chat history, memory file, runtime store
 Runtime 持久保存的运行事实，用于决定 input、turn、effect、delivery、调度与恢复。
 _Avoid_: workspace, agent memory, transcript
 
+**Interaction View**:
+从 Runtime Store 的人类互动 Input、主 Agent 的 message Effect 与 confirmed Delivery 重建出的实例级只读视图。它用于本地客户端和未来 channel 展示共同的互动连续性，不是第二份事实源，也不包含 thinking、工具轨迹或未确认的输出。
+_Avoid_: local inbox, channel history, transcript, memory
+
+**Local Interaction Channel**:
+随 Loom 内置的本机 interaction channel。它负责 Unix socket 传输和本地 Delivery 确认；它不拥有聊天历史、关系材料或 Agent Workspace，也不把本地客户端变成新的 Runtime owner。
+_Avoid_: local inbox, CLI runtime, private chat store
+
 **Workspace Mutation**:
 Runtime Root 中用于保护一次 Cognitive Organ 多文件 Workspace revision 的持久恢复记录。它在写入前保存完整 before-image，在器官验证成功后保存可重放结果，使进程退出后要么恢复旧 revision，要么沿用已完成 revision；它不接管 Main Agent 的普通 Workspace 活动，也不是通用文件事务。
 _Avoid_: runtime store transaction, workspace history, main-agent transaction, filesystem overlay
@@ -91,7 +99,7 @@ Runtime Store 对 Primary Agent Transcript 中已存在执行证据的可验证�
 _Avoid_: transcript content, summary, runtime state
 
 **Instance Configuration**:
-描述一个 Runtime Instance 如何装配，以及使用哪些时间政策、模型策略与 Integration 引用的配置材料。它不承载 Individual 材料、凭据内容或动态运行事实。
+描述一个 Runtime Instance 如何装配，以及使用哪些时间政策、模型策略、启用的 Integration 与默认 route 引用的配置材料。包内存在某个 Integration 实现，不表示每个 Instance 都会使用它；只有 Instance Configuration 明确启用时才装配、连接并向 Agent 暴露其能力。它不承载 Individual 材料、凭据内容或动态运行事实。
 _Avoid_: persona configuration, workspace material, runtime state
 
 **Interaction Route**:
@@ -103,7 +111,7 @@ _Avoid_: channel, recipient, endpoint, delivery
 _Avoid_: provider abstraction, model health, mutable session model
 
 **Integration**:
-Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。它为 Harness 提供能力，不定义 Individual 的身份或关系。
+Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。Integration 实现可以随 Harness 一起提供，但默认不属于任何 Instance；Instance Configuration 明确启用后才建立其生命周期、route、工具或 evidence。它为 Harness 提供能力，不定义 Individual 的身份或关系。
 _Avoid_: individual capability, relationship material, executor abstraction
 
 **Attachment**:

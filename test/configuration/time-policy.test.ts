@@ -98,6 +98,31 @@ test("loads the default Interaction Route as a trimmed opaque reference", async 
   assert.equal(configuration.defaultInteractionRoute, "primary-route");
 });
 
+test("requires explicit Integration enablement and keeps Integrations disabled by default", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-integration-configuration-"));
+  const file = path.join(root, "instance.yaml");
+  await writeFile(file, [
+    "version: 1",
+    "integrations:",
+    "  local:",
+    "    enabled: true",
+    "  weixin:",
+    "    enabled: false",
+    "  nmem:",
+    "    enabled: true",
+    "",
+  ].join("\n"), "utf8");
+
+  const configured = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
+  const defaults = await loadInstanceConfiguration({
+    file: path.join(root, "missing.yaml"),
+    machineTimeZone: "UTC",
+  });
+
+  assert.deepEqual(configured.integrations, { local: true, weixin: false, nmem: true });
+  assert.deepEqual(defaults.integrations, { local: false, weixin: false, nmem: false });
+});
+
 test("loads the proactive Pulse schedule with Harness defaults and explicit overrides", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-schedule-configuration-"));
   const file = path.join(root, "instance.yaml");
@@ -228,6 +253,11 @@ test("rejects invalid Instance time configuration before Runtime starts", async 
       name: "unknown interaction field",
       source: "version: 1\ninteraction:\n  channel: private\n",
       error: /unknown fields: channel/,
+    },
+    {
+      name: "invalid Integration enablement",
+      source: "version: 1\nintegrations:\n  local:\n    enabled: yes\n",
+      error: /integrations\.local\.enabled must be a boolean/,
     },
     {
       name: "invalid Pulse cadence",

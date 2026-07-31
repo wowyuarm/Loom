@@ -129,8 +129,8 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
 
 class RevisionBoundMemoryReflection implements MemoryReflection {
   constructor(private readonly options: RevisionBoundOrganOptions & {
-    workingMemoryReader: NmemWorkingMemoryReader;
-    nmemRecallTool: ToolDefinition;
+    workingMemoryReader?: NmemWorkingMemoryReader;
+    nmemRecallTool?: ToolDefinition;
   }) {}
 
   async reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult> {
@@ -144,8 +144,8 @@ class RevisionBoundMemoryReflection implements MemoryReflection {
       modelRuntime: selection.modelRuntime,
       model: selection.model,
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
-      workingMemoryReader: this.options.workingMemoryReader,
-      nmemRecallTool: this.options.nmemRecallTool,
+      ...(this.options.workingMemoryReader ? { workingMemoryReader: this.options.workingMemoryReader } : {}),
+      ...(this.options.nmemRecallTool ? { nmemRecallTool: this.options.nmemRecallTool } : {}),
     });
     return reflector.reflect(request);
   }
@@ -185,8 +185,8 @@ export function createRevisionBoundAttentionMaintenance(
 
 export function createRevisionBoundMemoryReflection(
   options: RevisionBoundOrganOptions & {
-    workingMemoryReader: NmemWorkingMemoryReader;
-    nmemRecallTool: ToolDefinition;
+    workingMemoryReader?: NmemWorkingMemoryReader;
+    nmemRecallTool?: ToolDefinition;
   },
 ): MemoryReflection {
   return new RevisionBoundMemoryReflection(options);

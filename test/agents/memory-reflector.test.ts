@@ -618,6 +618,52 @@ test("rolls back replacement when the final model outcome contradicts its writes
   assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), "Previous long-term memory.\n");
 });
 
+test("omits nmem tools and guidance when the Integration is not enabled", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-local-only-"));
+  const workspaceRoot = await createReflectorWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-local-only");
+  faux.setResponses([
+    context => {
+      assert.doesNotMatch(context.systemPrompt ?? "", /nmem/i);
+      assert.doesNotMatch(userPrompt(context.messages), /nmem/i);
+      assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "grep",
+        "ls",
+        "read",
+        "read_reflection_activity",
+        "replace_core_material",
+      ]);
+      return baselineReadResponses()[0]!;
+    },
+    ...baselineReadResponses().slice(1),
+    fauxAssistantMessage(
+      fauxToolCall("read_reflection_activity", {
+        activityId: "segment-reflection-1",
+        offset: 0,
+      }, { id: "read-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("NO_CHANGE"),
+  ]);
+  const reflector = await createPiMemoryReflector({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    backupDirectory: path.join(root, "backups"),
+    modelRuntime,
+    model,
+  });
+
+  const result = await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  });
+
+  assert.equal(result.outcome, "no_change");
+});
+
 function activity(): FrozenActivity {
   return {
     version: 1,

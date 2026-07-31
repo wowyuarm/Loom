@@ -4,10 +4,15 @@ Loom 当前支持一个 Runtime Instance 配置一个 Weixin route 和一个固�
 
 ## Files
 
-`configuration/instance.yaml` 的 route 必须与 Weixin 配置一致：
+`configuration/instance.yaml` 必须显式启用 Weixin，且 route 与 Weixin 配置一致：
 
 ```yaml
 version: 1
+integrations:
+  local:
+    enabled: false
+  weixin:
+    enabled: true
 interaction:
   defaultRoute: primary-route
 ```
@@ -34,7 +39,7 @@ interaction:
 }
 ```
 
-两个文件同时缺失表示未启用 Weixin。只存在一个文件、JSON 无效、字段不完整或 route 不一致时，Host 会拒绝打开。
+`integrations.weixin.enabled: false` 表示未启用，Host 不读取或连接 Weixin。显式启用后，两个文件必须同时存在；只存在一个文件、JSON 无效、字段不完整或 route 不一致时，Host 会拒绝打开。
 
 动态 cursor、peer context token、最近成功 poll 和远程错误保存在 `runtime/integrations/weixin.db`。附件原始内容和 retention 状态保存在 `runtime/integrations/attachments/`。不要手工编辑这些文件或只复制其中一部分来替代正常 Instance 备份。
 

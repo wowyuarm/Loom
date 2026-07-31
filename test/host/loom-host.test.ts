@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 
 import { openLoomHost } from "../../src/host/index.js";
+import { readLocalInteractionHistory } from "../../src/integrations/local/index.js";
+import { resolveInstanceLayout } from "../../src/instance/layout.js";
 import { openRuntime, type AgentExecution } from "../../src/runtime/index.js";
 
 test("holds exclusive live ownership of one prepared Instance Root", async t => {
@@ -13,7 +15,7 @@ test("holds exclusive live ownership of one prepared Instance Root", async t => 
   const first = await openLoomHost({ root, machineTimeZone: "UTC" });
   t.after(() => first.stop());
 
-  first.start();
+  await first.start();
   await eventually(() => first.status().driver.state === "waiting");
   assert.equal(first.status().state, "running");
   assert.equal(first.status().instance.models.state, "blocked");
@@ -46,7 +48,7 @@ test("accepts channel Input only through a running Host", async t => {
     /cannot accept Input while open/,
   );
 
-  host.start();
+  await host.start();
   const accepted = await host.acceptInput({
     source: "test-channel",
     sourceId: "host-input",
@@ -73,6 +75,46 @@ test("releases Instance Root ownership when Instance opening fails", async () =>
   await recovered.stop();
 });
 
+test("starts an explicitly enabled Local channel over the Instance Interaction View", async t => {
+  const root = await preparedInstanceRoot();
+  const configurationRoot = path.join(root, "configuration");
+  await mkdir(configurationRoot, { recursive: true });
+  await writeFile(path.join(configurationRoot, "instance.yaml"), [
+    "version: 1",
+    "integrations:",
+    "  local:",
+    "    enabled: true",
+    "interaction:",
+    "  defaultRoute: local",
+    "",
+  ].join("\n"), "utf8");
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+
+  const accepted = await host.acceptInput({
+    source: "local",
+    sourceId: "host-local-1",
+    kind: "interaction",
+    payload: { text: "hello through the local route" },
+  });
+  const history = await readLocalInteractionHistory({
+    socketPath: resolveInstanceLayout(root).localSocketPath,
+  });
+
+  assert.equal(accepted.disposition, "accepted");
+  assert.deepEqual(history.entries.map(entry => ({
+    actor: entry.actor,
+    source: entry.source,
+    content: entry.content,
+  })), [{
+    actor: "human",
+    source: "local",
+    content: { text: "hello through the local route" },
+  }]);
+  assert.equal(host.status().integrations?.local?.state, "listening");
+});
+
 test("rejects an incomplete Weixin configuration before opening the Host", async () => {
   const root = await preparedInstanceRoot();
   await configureWeixin(root, "https://weixin.invalid");
@@ -87,6 +129,27 @@ test("rejects an incomplete Weixin configuration before opening the Host", async
   await writeFile(authFile, JSON.stringify({ version: 1, token: "restored-token" }), "utf8");
   const recovered = await openLoomHost({ root, machineTimeZone: "UTC" });
   await recovered.stop();
+});
+
+test("does not inspect Weixin files while the Integration is disabled", async () => {
+  const root = await preparedInstanceRoot();
+  const configurationRoot = path.join(root, "configuration");
+  const weixinRoot = path.join(configurationRoot, "integrations", "weixin");
+  await mkdir(weixinRoot, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(configurationRoot, "instance.yaml"), [
+      "version: 1",
+      "integrations:",
+      "  weixin:",
+      "    enabled: false",
+      "",
+    ].join("\n"), "utf8"),
+    writeFile(path.join(weixinRoot, "config.json"), "not active configuration", "utf8"),
+  ]);
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  assert.equal(host.status().integrations, undefined);
+  await host.stop();
 });
 
 test("runs one configured Weixin route through Host ingress and graceful stop", async t => {
@@ -128,7 +191,7 @@ test("runs one configured Weixin route through Host ingress and graceful stop", 
   await configureWeixin(root, `http://127.0.0.1:${address.port}`);
   const host = await openLoomHost({ root, machineTimeZone: "UTC" });
   t.after(() => host.stop());
-  host.start();
+  await host.start();
 
   await eventually(() => host.status().instance.runtime.inputs.length === 1);
   assert.deepEqual(host.status().instance.runtime.inputs[0], {
@@ -139,11 +202,11 @@ test("runs one configured Weixin route through Host ingress and graceful stop", 
     payload: { text: "hello through Host" },
     status: "pending",
   });
-  assert.equal(host.status().integrations?.weixin.state, "connected");
+  assert.equal(host.status().integrations?.weixin?.state, "connected");
 
   await host.stop();
   assert.equal(host.status().state, "stopped");
-  assert.equal(host.status().integrations?.weixin.state, "stopped");
+  assert.equal(host.status().integrations?.weixin?.state, "stopped");
   assert.equal(stopNotifications, 1);
 });
 
@@ -166,12 +229,12 @@ test("keeps the Host running while the configured Weixin route is degraded", asy
   await configureWeixin(root, `http://127.0.0.1:${address.port}`);
   const host = await openLoomHost({ root, machineTimeZone: "UTC" });
   t.after(() => host.stop());
-  host.start();
+  await host.start();
 
-  await eventually(() => host.status().integrations?.weixin.state === "degraded");
+  await eventually(() => host.status().integrations?.weixin?.state === "degraded");
   assert.equal(host.status().state, "running");
   assert.notEqual(host.status().driver.state, "stopped");
-  assert.match(host.status().integrations?.weixin.lastError ?? "", /HTTP 503/);
+  assert.match(host.status().integrations?.weixin?.lastError ?? "", /HTTP 503/);
 });
 
 test("delivers a persisted outbound Effect through the configured Weixin route", async t => {
@@ -226,7 +289,7 @@ test("delivers a persisted outbound Effect through the configured Weixin route",
 
   const host = await openLoomHost({ root, machineTimeZone: "UTC" });
   t.after(() => host.stop());
-  host.start();
+  await host.start();
   await eventually(() => host.status().instance.runtime.effects[0]?.status === "completed");
 
   assert.deepEqual(sentMessages, [{
@@ -298,6 +361,9 @@ async function configureWeixin(root: string, baseUrl: string): Promise<void> {
   await Promise.all([
     writeFile(path.join(configurationRoot, "instance.yaml"), [
       "version: 1",
+      "integrations:",
+      "  weixin:",
+      "    enabled: true",
       "interaction:",
       "  defaultRoute: primary-route",
       "",

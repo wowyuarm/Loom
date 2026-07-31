@@ -226,7 +226,6 @@ test("runs one Main Agent Turn through the assembled Instance", async t => {
     "find",
     "grep",
     "ls",
-    "nmem_recall",
     "read",
     "write",
   ]);
@@ -621,7 +620,7 @@ test("reconciles nmem Thread and Episode projections after local Activity work",
   await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
     intervalMinutes: 60,
     quietIntervalMinutes: 90,
-  });
+  }, undefined, true);
   let now = new Date("2026-07-22T10:00:00.000Z");
   const instance = await openLoomInstance({
     root,
@@ -637,6 +636,7 @@ test("reconciles nmem Thread and Episode projections after local Activity work",
     payload: { text: "keep the useful distinction" },
   });
   await instance.runOnce(now);
+  assert.ok(toolNames(provider.bodies()[0]!).includes("nmem_recall"));
 
   const frozen = instance.status().runtime.activeSegment;
   assert.ok(frozen);
@@ -675,7 +675,7 @@ test("keeps nmem projection failure-soft and resumes it after restart backoff", 
   await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
     intervalMinutes: 60,
     quietIntervalMinutes: 90,
-  });
+  }, undefined, true);
   let now = new Date("2026-07-22T12:00:00.000Z");
   const first = await openLoomInstance({
     root,
@@ -1049,10 +1049,16 @@ async function writeModelConfiguration(
     "attention-maintainer" | "thread-maintainer" | "memory-reflector",
     "high" | "max"
   >>,
+  nmemEnabled = false,
 ): Promise<void> {
   const configurationRoot = path.join(root, "configuration");
   await writeFile(path.join(configurationRoot, "instance.yaml"), [
     "version: 1",
+    ...(nmemEnabled ? [
+      "integrations:",
+      "  nmem:",
+      "    enabled: true",
+    ] : []),
     ...(defaultRoute ? ["interaction:", `  defaultRoute: ${defaultRoute}`] : []),
     ...(schedule ? [
       "schedule:",

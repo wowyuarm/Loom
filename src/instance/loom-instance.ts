@@ -11,8 +11,11 @@ import {
   createScheduler,
   openRuntime,
   type AcceptedInput,
+  type InteractionViewOptions,
+  type InteractionViewPage,
   type Runtime,
   type RuntimeInput,
+  type RuntimeInputOutcome,
   type OutboundDelivery,
   type RuntimeStatus,
   type Scheduler,
@@ -57,7 +60,6 @@ const MAIN_AGENT_ACTION_TOOLS = [
   "find",
   "ls",
   "expand_tool_result",
-  "nmem_recall",
   "attachment",
 ] as const;
 
@@ -83,6 +85,8 @@ export type LoomInstanceOpportunityResult =
 
 export interface LoomInstance {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
+  interactionView(options?: InteractionViewOptions): InteractionViewPage;
+  inputOutcome(inputId: string): RuntimeInputOutcome;
   runOnce(observedAt: Date): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
@@ -103,7 +107,7 @@ class AssembledLoomInstance implements LoomInstance {
     private readonly runtime: Runtime,
     private readonly revisions: ReturnType<typeof openModelRuntimeRevisions>,
     private readonly scheduler: Scheduler,
-    private readonly workingMemoryReader: ReturnType<typeof createNmemWorkingMemoryReader>,
+    private readonly workingMemoryReader: ReturnType<typeof createNmemWorkingMemoryReader> | undefined,
     private readonly attachmentStore: AttachmentStore,
     private readonly ownsAttachmentStore: boolean,
     private readonly nmem?: {
@@ -114,6 +118,14 @@ class AssembledLoomInstance implements LoomInstance {
 
   acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
     return this.runtime.acceptInput(input);
+  }
+
+  interactionView(options?: InteractionViewOptions): InteractionViewPage {
+    return this.runtime.interactionView(options);
+  }
+
+  inputOutcome(inputId: string): RuntimeInputOutcome {
+    return this.runtime.inputOutcome(inputId);
   }
 
   async runOnce(observedAt: Date): Promise<LoomInstanceRunResult> {
@@ -158,7 +170,7 @@ class AssembledLoomInstance implements LoomInstance {
 
   close(): void {
     this.runtime.close();
-    this.workingMemoryReader.close();
+    this.workingMemoryReader?.close();
     if (this.ownsAttachmentStore) this.attachmentStore.close();
     this.nmem?.threads.close();
     this.nmem?.episodes.close();
@@ -209,6 +221,12 @@ function mergeNextRunAt(
 export async function openLoomInstance(options: OpenLoomInstanceOptions): Promise<LoomInstance> {
   const layout = resolveInstanceLayout(options.root);
   const configuration = await loadAssemblyConfiguration(layout, options.machineTimeZone);
+  const nmemEnabled = Boolean(options.nmem?.endpoint);
+  if (configuration.integrations.nmem !== nmemEnabled) {
+    throw new Error(configuration.integrations.nmem
+      ? "Enabled nmem requires explicit connection configuration"
+      : "nmem connection was provided while the Integration is disabled");
+  }
   const agentWorkspace = new AgentWorkspace(layout.workspaceRoot);
   await prepareRuntimeDirectories(layout);
   await recoverWorkspaceMutations({
@@ -224,12 +242,12 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     root: layout.attachmentStoreRoot,
     ...(options.now ? { now: options.now } : {}),
   });
-  const recallTool = createNmemRecallTool(options.nmem ?? {});
-  const workingMemoryReader = createNmemWorkingMemoryReader({
+  const recallTool = nmemEnabled ? createNmemRecallTool(options.nmem ?? {}) : undefined;
+  const workingMemoryReader = nmemEnabled ? createNmemWorkingMemoryReader({
     stateRoot: layout.runtimeRoot,
     ...(options.nmem ?? {}),
     ...(options.now ? { now: options.now } : {}),
-  });
+  }) : undefined;
   const revisions = openModelRuntimeRevisions({
     configurationFile: layout.configurationFile,
     authPath: layout.piAuthFile,
@@ -247,7 +265,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     ...(configuration.defaultInteractionRoute
       ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
       : {}),
-    additionalTools: [recallTool],
+    ...(recallTool ? { additionalTools: [recallTool] } : {}),
   });
   const orientation = createRevisionBoundOrientation({
     revisions,
@@ -257,6 +275,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       skills: await loadWorkspaceSkillIndex(layout.workspaceRoot),
       mainAgentTools: [
         ...MAIN_AGENT_ACTION_TOOLS,
+        ...(recallTool ? ["nmem_recall" as const] : []),
         ...(configuration.defaultInteractionRoute ? ["message"] : []),
       ],
       evidenceSources: options.nmem?.endpoint ? ["nmem"] : [],
@@ -293,8 +312,8 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       revisions,
       layout,
       agentWorkspace,
-      workingMemoryReader,
-      nmemRecallTool: recallTool,
+      ...(workingMemoryReader ? { workingMemoryReader } : {}),
+      ...(recallTool ? { nmemRecallTool: recallTool } : {}),
     }),
     threadMaintenance,
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),

@@ -304,6 +304,32 @@ export interface RuntimeInputStatus {
   status: "pending" | "active" | "consumed" | "blocked";
 }
 
+export interface InteractionViewEntry {
+  id: string;
+  at: string;
+  actor: "human" | "individual";
+  source: string;
+  inputIds: string[];
+  content: JsonValue;
+}
+
+export interface InteractionViewOptions {
+  after?: string;
+  limit?: number;
+}
+
+export interface InteractionViewPage {
+  entries: InteractionViewEntry[];
+  cursor?: string;
+  hasMore: boolean;
+}
+
+export type RuntimeInputOutcome =
+  | { state: "pending" }
+  | { state: "completed"; outcome: "completed" | "no_reply" }
+  | { state: "failed"; reason: string }
+  | { state: "blocked"; reason: string };
+
 export interface RuntimeTurnStatus {
   id: string;
   status: "running" | "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
@@ -532,6 +558,8 @@ export interface Runtime {
   advance(options?: AdvanceOptions): Promise<AdvanceResult>;
   closeActivity(options?: CloseActivityOptions): Promise<CloseActivityResult>;
   frozenActivity(activityId: string): FrozenActivity | undefined;
+  interactionView(options?: InteractionViewOptions): InteractionViewPage;
+  inputOutcome(inputId: string): RuntimeInputOutcome;
   status(): RuntimeStatus;
   close(): void;
 }

@@ -179,6 +179,8 @@ test("retries transient busy results without polling other deferred work", async
 function fakeInstance(overrides: Partial<LoomInstance>): LoomInstance {
   return {
     acceptInput: async () => ({ disposition: "accepted", inputId: "input" }),
+    interactionView: () => ({ entries: [], hasMore: false }),
+    inputOutcome: () => ({ state: "pending" }),
     runOnce: async (): Promise<LoomInstanceRunResult> => ({ disposition: "idle" }),
     formOpportunity: async () => ({ disposition: "busy" }),
     status: () => { throw new Error("status is not used by process driver tests"); },

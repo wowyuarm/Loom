@@ -85,6 +85,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [40 — Define Attachment and Media Semantics](issues/40-define-attachment-and-media-semantics.md)。通用 Attachment 引用、Instance-owned durable Store、模型能力分流、Workspace copy/snapshot、30 日无引用保留及 Weixin 单图入站/单附件出站已闭合；raw bytes 不进入 Runtime、Transcript、Activity 或认知材料。
 - Completed: [41 — Recover Cognitive Workspace Mutations](issues/41-recover-cognitive-workspace-mutations.md)。Life Recorder、Thread Maintainer 与 Memory Reflector 的多文件 revision 现在有 Runtime-owned before-image、Instance-open 恢复和完成结果重放；进程退出不会让 Individual 暴露半套认知材料，也不会在 Runtime 记账缺口中重复调用模型。
 - Completed: [42 — Initialize an Instance Root](issues/42-initialize-an-instance-root.md)。公开 initialization Interface 与 `loom init` 现在建立 Harness-owned Behavior、最小配置和 Agent Workspace 外的 Individual material templates；重跑不覆盖、symlink 不越界，现有严格 Host contract 不变。
+- Completed: [43 — Run a Local Interaction Channel](issues/43-run-a-local-interaction-channel.md)。`loom init` 显式启用内置 Local route；`loom run` 持有 Unix socket，`loom chat/history` 只作为客户端读写由 Runtime 事实重建的统一 Interaction View。Integration 缺省关闭、显式装配，disabled nmem 不再暴露 tool/evidence。
 
 ## Context Follow-ups
 
@@ -106,11 +107,11 @@ nmem 范围闭合后的全局审视现已完成：
 
 1. Runtime、Main Agent、Context、Agent Workspace、Cognitive Organs、Scheduler、nmem 与恢复纵切已经连通。
 2. HaL 已作为第二个 Individual 完成真实模型验收；结构问题已修复，后续 prompt 品味属于持续观察，不再是首阶段 blocker。
-3. foreground Host、Weixin text/image/attachment 纵切与最小 Instance initialization 已闭合真实启动路径；其余 Integration 继续随真实消费者进入，不预建通用 loader。
+3. foreground Host、Weixin text/image/attachment、最小 Instance initialization 与默认 Local interaction channel 已闭合真实启动路径；其余 Integration 继续随真实消费者进入，不预建通用 loader。
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-Current work item: none。Ticket 42 已闭合最小 Instance initialization；下一张票必须来自具体部署或迁移需求，而不是继续横向补功能。
+Current work item: none。Ticket 43 已闭合本机入口、统一 Interaction View 与显式 Integration enablement；下一步是在 `~/.loom` 准备 HaL 材料和真实模型配置并开始持续验收，不再补另一个抽象入口。
 
 ### Memory Reflector Completion Checkpoint
 

@@ -16,19 +16,31 @@ import {
 } from "../instance/index.js";
 import { resolveInstanceLayout } from "../instance/layout.js";
 import {
+  LOCAL_INTERACTION_ROUTE,
+  openLocalInteractionChannel,
+  type LocalInteractionChannel,
+  type LocalInteractionChannelStatus,
+} from "../integrations/local/index.js";
+import {
   openConfiguredWeixinAdapter,
   type WeixinAdapter,
   type WeixinAdapterStatus,
 } from "../integrations/weixin/index.js";
-import type { AcceptedInput, RuntimeInput } from "../runtime/index.js";
+import type {
+  AcceptedInput,
+  InteractionViewOptions,
+  InteractionViewPage,
+  RuntimeInput,
+} from "../runtime/index.js";
 import {
   openAttachmentStore,
   type AttachmentStore,
 } from "../integrations/attachments/index.js";
 
 export interface LoomHost {
-  start(): void;
+  start(): Promise<void>;
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
+  interactionView(options?: InteractionViewOptions): InteractionViewPage;
   wake(): void;
   status(): LoomHostStatus;
   stop(): Promise<void>;
@@ -40,7 +52,8 @@ export interface LoomHostStatus {
   driver: ProcessDriverStatus;
   instance: LoomInstanceStatus;
   integrations?: {
-    weixin: WeixinAdapterStatus;
+    local?: LocalInteractionChannelStatus;
+    weixin?: WeixinAdapterStatus;
   };
 }
 
@@ -51,6 +64,7 @@ class DefaultLoomHost implements LoomHost {
   readonly #instance: LoomInstance;
   readonly #driver: ProcessDriver;
   readonly #ownership: InstanceRootOwnership;
+  readonly #local: LocalInteractionChannel | undefined;
   readonly #weixin: WeixinAdapter | undefined;
   readonly #attachmentStore: AttachmentStore;
   #state: LoomHostStatus["state"] = "open";
@@ -63,6 +77,7 @@ class DefaultLoomHost implements LoomHost {
     driver: ProcessDriver;
     ownership: InstanceRootOwnership;
     attachmentStore: AttachmentStore;
+    local?: LocalInteractionChannel;
     weixin?: WeixinAdapter;
   }) {
     this.#root = options.root;
@@ -70,16 +85,27 @@ class DefaultLoomHost implements LoomHost {
     this.#driver = options.driver;
     this.#ownership = options.ownership;
     this.#attachmentStore = options.attachmentStore;
+    this.#local = options.local;
     this.#weixin = options.weixin;
   }
 
-  start(): void {
+  async start(): Promise<void> {
     if (this.#state !== "open") {
       throw new Error(`Loom Host cannot start from state ${this.#state}`);
     }
     this.#driver.start();
     this.#state = "running";
-    this.#weixin?.start(input => this.acceptInput(input));
+    try {
+      await this.#local?.start({
+        acceptInput: input => this.acceptInput(input),
+        interactionView: options => this.#instance.interactionView(options),
+        inputOutcome: inputId => this.#instance.inputOutcome(inputId),
+      });
+      this.#weixin?.start(input => this.acceptInput(input));
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
   }
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -87,6 +113,11 @@ class DefaultLoomHost implements LoomHost {
       throw new Error(`Loom Host cannot accept Input while ${this.#state}`);
     }
     return this.#driver.acceptInput(input);
+  }
+
+  interactionView(options?: InteractionViewOptions): InteractionViewPage {
+    if (this.#state === "stopped") throw new Error("Loom Host cannot read interactions while stopped");
+    return this.#instance.interactionView(options);
   }
 
   wake(): void {
@@ -102,7 +133,12 @@ class DefaultLoomHost implements LoomHost {
       state: this.#state,
       driver: this.#driver.status(),
       instance: this.#finalInstanceStatus ?? this.#instance.status(),
-      ...(this.#weixin ? { integrations: { weixin: this.#weixin.status() } } : {}),
+      ...(this.#local || this.#weixin ? {
+        integrations: {
+          ...(this.#local ? { local: this.#local.status() } : {}),
+          ...(this.#weixin ? { weixin: this.#weixin.status() } : {}),
+        },
+      } : {}),
     };
   }
 
@@ -121,9 +157,13 @@ class DefaultLoomHost implements LoomHost {
         await this.#driver.stop();
       } finally {
         try {
-          await this.#weixin?.stop();
+          await this.#local?.stop();
         } finally {
-          this.#attachmentStore.close();
+          try {
+            await this.#weixin?.stop();
+          } finally {
+            this.#attachmentStore.close();
+          }
         }
       }
     } finally {
@@ -139,6 +179,7 @@ class DefaultLoomHost implements LoomHost {
 export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHost> {
   const root = path.resolve(options.root);
   const ownership = await acquireInstanceRootOwnership(root);
+  let local: LocalInteractionChannel | undefined;
   let weixin: WeixinAdapter | undefined;
   let attachmentStore: AttachmentStore | undefined;
   try {
@@ -151,23 +192,39 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       file: layout.configurationFile,
       ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
     });
-    weixin = await openConfiguredWeixinAdapter({
-      configurationFile: layout.weixinConfigurationFile,
-      authFile: layout.weixinAuthFile,
-      stateFile: layout.weixinStateFile,
-      attachmentStore,
-      ...(configuration.defaultInteractionRoute
-        ? { expectedRouteRef: configuration.defaultInteractionRoute }
-        : {}),
-    });
-    if (weixin && options.outboundDelivery) {
-      throw new Error("Loom Host cannot combine configured Weixin with another OutboundDelivery");
+    if (configuration.integrations.local && configuration.integrations.weixin) {
+      throw new Error("Loom Host currently accepts one enabled interaction channel");
     }
+    if (configuration.integrations.local) {
+      if (configuration.defaultInteractionRoute !== LOCAL_INTERACTION_ROUTE) {
+        throw new Error(`Local Interaction Channel requires interaction.defaultRoute: ${LOCAL_INTERACTION_ROUTE}`);
+      }
+      local = openLocalInteractionChannel({ socketPath: layout.localSocketPath });
+    }
+    if (configuration.integrations.weixin) {
+      if (!configuration.defaultInteractionRoute) {
+        throw new Error("Enabled Weixin requires interaction.defaultRoute");
+      }
+      weixin = await openConfiguredWeixinAdapter({
+        configurationFile: layout.weixinConfigurationFile,
+        authFile: layout.weixinAuthFile,
+        stateFile: layout.weixinStateFile,
+        attachmentStore,
+        expectedRouteRef: configuration.defaultInteractionRoute,
+      });
+      if (!weixin) throw new Error("Enabled Weixin requires both config.json and auth.json");
+    }
+    if ((local || weixin) && options.outboundDelivery) {
+      throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
+    }
+    const { outboundDelivery, ...instanceOptions } = options;
     const instance = await openLoomInstance({
-      ...options,
+      ...instanceOptions,
       root,
       attachmentStore,
-      ...(weixin ? { outboundDelivery: weixin } : {}),
+      ...(local || weixin || outboundDelivery
+        ? { outboundDelivery: local ?? weixin ?? outboundDelivery }
+        : {}),
     });
     return new DefaultLoomHost({
       root,
@@ -175,9 +232,11 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       driver: createProcessDriver({ instance, ...(options.now ? { now: options.now } : {}) }),
       ownership,
       attachmentStore,
+      ...(local ? { local } : {}),
       ...(weixin ? { weixin } : {}),
     });
   } catch (error) {
+    await local?.stop();
     await weixin?.stop();
     attachmentStore?.close();
     ownership.release();

@@ -38,7 +38,19 @@ test("creates an Instance scaffold without inventing Individual material", async
     await readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
     /Background time belongs to the Agent Individual/,
   );
-  assert.equal(await readFile(path.join(root, "configuration", "instance.yaml"), "utf8"), "version: 1\n");
+  assert.equal(await readFile(path.join(root, "configuration", "instance.yaml"), "utf8"), [
+    "version: 1",
+    "integrations:",
+    "  local:",
+    "    enabled: true",
+    "  weixin:",
+    "    enabled: false",
+    "  nmem:",
+    "    enabled: false",
+    "interaction:",
+    "  defaultRoute: local",
+    "",
+  ].join("\n"));
   assert.equal((await stat(path.join(root, "configuration", "pi"))).isDirectory(), true);
   assert.match(await readFile(path.join(root, "templates", "workspace", "identity.md"), "utf8"), /initial self-understanding/);
   await assert.rejects(access(path.join(root, "workspace", "identity.md")));

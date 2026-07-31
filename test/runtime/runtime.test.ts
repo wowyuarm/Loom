@@ -313,6 +313,64 @@ function recorder(recorded: string[], failFirst = false): ActivityRecorder {
   };
 }
 
+test("rebuilds channel-neutral interaction history from confirmed Runtime facts", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interactions-"));
+  const now = new Date("2026-07-19T10:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectThenCompleteExecution,
+    outboundDelivery: {
+      deliver: async request => ({ status: "delivered", remoteId: `local:${request.effectId}` }),
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  const accepted = await runtime.acceptInput({
+    source: "weixin",
+    sourceId: "remote-1",
+    kind: "interaction",
+    payload: { text: "hello from another channel" },
+    occurredAt: "2026-07-19T09:59:00.000Z",
+  });
+  assert.equal(accepted.disposition, "accepted");
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+
+  const beforeDelivery = runtime.interactionView();
+  assert.deepEqual(beforeDelivery.entries.map(entry => ({
+    actor: entry.actor,
+    source: entry.source,
+    inputIds: entry.inputIds,
+    content: entry.content,
+  })), [{
+    actor: "human",
+    source: "weixin",
+    inputIds: [accepted.inputId],
+    content: { text: "hello from another channel" },
+  }]);
+  assert.ok(beforeDelivery.cursor);
+  assert.deepEqual(runtime.inputOutcome(accepted.inputId), { state: "pending" });
+
+  assert.deepEqual(await runtime.advance(), { disposition: "delivery_completed" });
+  const afterDelivery = runtime.interactionView({ after: beforeDelivery.cursor });
+  assert.deepEqual(afterDelivery.entries.map(entry => ({
+    actor: entry.actor,
+    source: entry.source,
+    inputIds: entry.inputIds,
+    content: entry.content,
+  })), [{
+    actor: "individual",
+    source: "default",
+    inputIds: [accepted.inputId],
+    content: { text: "hello from the Agent" },
+  }]);
+  assert.equal(afterDelivery.hasMore, false);
+  assert.deepEqual(runtime.inputOutcome(accepted.inputId), {
+    state: "completed",
+    outcome: "completed",
+  });
+});
+
 test("continues interaction from the successor state while recording is pending", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-activity-"));
   const execution = new ObservedCompletingExecution();

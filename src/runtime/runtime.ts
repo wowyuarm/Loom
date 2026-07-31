@@ -27,6 +27,8 @@ import type {
   ExecutionResult,
   FormOpportunityResult,
   InputKind,
+  InteractionViewOptions,
+  InteractionViewPage,
   FrozenActivity,
   LifeRecorderReceipt,
   Orientation,
@@ -38,6 +40,7 @@ import type {
   RuntimeDeliveryStatus,
   RuntimeEffectStatus,
   RuntimeInput,
+  RuntimeInputOutcome,
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
@@ -742,6 +745,131 @@ class SqliteRuntime implements Runtime {
       this.#stopHeartbeat();
       if (this.#closingActivityId === segment.id) this.#closingActivityId = undefined;
     }
+  }
+
+  interactionView(options: InteractionViewOptions = {}): InteractionViewPage {
+    const limit = options.limit ?? 100;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new Error("Interaction View limit must be an integer from 1 to 500");
+    }
+    const after = options.after === undefined ? 0 : parseInteractionCursor(options.after);
+    const rows = this.#database.prepare(`
+      WITH interaction_entries AS (
+        SELECT transitions.sequence,
+               'human' AS actor,
+               'input:' || inputs.id AS entry_id,
+               inputs.occurred_at AS entry_at,
+               inputs.source AS entry_source,
+               inputs.id AS input_id,
+               NULL AS turn_id,
+               inputs.payload_json AS content_json
+        FROM transitions
+        JOIN inputs ON inputs.id = transitions.entity_id
+        WHERE transitions.entity_type = 'input'
+          AND transitions.from_state IS NULL
+          AND transitions.to_state = 'pending'
+          AND inputs.kind = 'interaction'
+
+        UNION ALL
+
+        SELECT transitions.sequence,
+               'individual' AS actor,
+               'effect:' || effects.id AS entry_id,
+               delivery_attempts.ended_at AS entry_at,
+               COALESCE(effects.route_ref, 'unknown') AS entry_source,
+               NULL AS input_id,
+               effects.turn_id AS turn_id,
+               effects.payload_json AS content_json
+        FROM transitions
+        JOIN delivery_attempts ON delivery_attempts.id = transitions.entity_id
+        JOIN effects ON effects.id = delivery_attempts.effect_id
+        WHERE transitions.entity_type = 'delivery'
+          AND transitions.to_state = 'delivered'
+          AND delivery_attempts.status = 'delivered'
+          AND effects.kind = 'message'
+      )
+      SELECT sequence, actor, entry_id, entry_at, entry_source, input_id, turn_id, content_json
+      FROM interaction_entries
+      WHERE sequence > ?
+      ORDER BY sequence
+      LIMIT ?
+    `).all(after, limit + 1) as unknown as Array<{
+      sequence: number;
+      actor: "human" | "individual";
+      entry_id: string;
+      entry_at: string;
+      entry_source: string;
+      input_id: string | null;
+      turn_id: string | null;
+      content_json: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const inputIdsByTurn = this.#database.prepare(`
+      SELECT input_id
+      FROM turn_inputs
+      WHERE turn_id = ? AND inclusion_status = 'included'
+      ORDER BY position
+    `);
+    const entries = selected.map(row => ({
+      id: row.entry_id,
+      at: row.entry_at,
+      actor: row.actor,
+      source: row.entry_source,
+      inputIds: row.input_id
+        ? [row.input_id]
+        : (inputIdsByTurn.all(row.turn_id) as unknown as Array<{ input_id: string }>)
+          .map(input => input.input_id),
+      content: JSON.parse(row.content_json) as JsonValue,
+    }));
+    const cursor = selected.at(-1)?.sequence;
+    return {
+      entries,
+      ...(cursor !== undefined
+        ? { cursor: formatInteractionCursor(cursor) }
+        : options.after !== undefined ? { cursor: options.after } : {}),
+      hasMore,
+    };
+  }
+
+  inputOutcome(inputId: string): RuntimeInputOutcome {
+    const input = this.#database.prepare(`
+      SELECT status FROM inputs WHERE id = ?
+    `).get(inputId) as unknown as { status: RuntimeInputStatus["status"] } | undefined;
+    if (!input) throw new Error(`Runtime Input ${inputId} does not exist`);
+    if (input.status === "pending" || input.status === "active") return { state: "pending" };
+    if (input.status === "blocked") return { state: "blocked", reason: "input_blocked" };
+
+    const turn = this.#database.prepare(`
+      SELECT turns.id, turns.status, turns.outcome, turns.error, turn_inputs.position
+      FROM turn_inputs
+      JOIN turns ON turns.id = turn_inputs.turn_id
+      WHERE turn_inputs.input_id = ? AND turn_inputs.inclusion_status = 'included'
+      ORDER BY turns.started_at DESC, turns.id DESC
+      LIMIT 1
+    `).get(inputId) as unknown as {
+      id: string;
+      status: RuntimeTurnStatus["status"];
+      outcome: "completed" | "no_reply" | null;
+      error: string | null;
+      position: number;
+    } | undefined;
+    if (!turn || turn.status === "running") return { state: "pending" };
+    if (turn.status !== "completed" || !turn.outcome) {
+      return { state: "failed", reason: turn.error ?? `turn_${turn.status}` };
+    }
+    const effects = this.#database.prepare(`
+      SELECT status FROM effects
+      WHERE turn_id = ? AND input_position >= ?
+    `).all(turn.id, turn.position) as unknown as Array<{ status: RuntimeEffectStatus["status"] }>;
+    if (effects.some(effect => effect.status === "pending")) return { state: "pending" };
+    if (effects.some(effect => effect.status === "reconciliation_required")) {
+      return { state: "blocked", reason: "delivery_reconciliation_required" };
+    }
+    if (effects.some(effect => effect.status === "abandoned")) {
+      return { state: "failed", reason: "effect_abandoned" };
+    }
+    return { state: "completed", outcome: turn.outcome };
   }
 
   status(): RuntimeStatus {
@@ -3121,6 +3249,19 @@ function reflectionSlice(
     events: activity.events.filter(event => turnIds.has(event.turnId)),
     turns: activity.turns.filter(turn => turnIds.has(turn.turnId)),
   };
+}
+
+function formatInteractionCursor(sequence: number): string {
+  return `v1:${sequence}`;
+}
+
+function parseInteractionCursor(cursor: string): number {
+  const match = /^v1:(\d+)$/.exec(cursor);
+  const sequence = match ? Number(match[1]) : Number.NaN;
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw new Error("Interaction View cursor is invalid");
+  }
+  return sequence;
 }
 
 export function openRuntime(options: RuntimeOptions): Runtime {

@@ -3,6 +3,7 @@ export {
   DEFAULT_SCHEDULE,
   MODEL_ROLES,
   type InstanceConfiguration,
+  type IntegrationConfiguration,
   type AttentionMaintenanceConfiguration,
   type MemoryReflectionConfiguration,
   type LoadInstanceConfigurationOptions,

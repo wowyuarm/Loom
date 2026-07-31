@@ -9,8 +9,15 @@ export interface InstanceConfiguration {
   version: 1;
   timePolicy: TimePolicy;
   schedule: ScheduleConfiguration;
+  integrations: IntegrationConfiguration;
   modelPolicy?: ModelPolicy;
   defaultInteractionRoute?: string;
+}
+
+export interface IntegrationConfiguration {
+  local: boolean;
+  weixin: boolean;
+  nmem: boolean;
 }
 
 export interface ScheduleConfiguration {
@@ -93,7 +100,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models", "interaction", "schedule"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction", "integrations", "schedule"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -109,6 +116,7 @@ export async function loadInstanceConfiguration(
   const modelPolicy = document.models === undefined
     ? undefined
     : parseModelPolicy(document.models);
+  const integrations = parseIntegrations(document.integrations);
   const defaultInteractionRoute = parseInteraction(document.interaction);
   const schedule = parseSchedule(document.schedule);
   return {
@@ -118,6 +126,7 @@ export async function loadInstanceConfiguration(
       ...(time.logicalDayStart !== undefined ? { logicalDayStart: time.logicalDayStart } : {}),
     }),
     schedule,
+    integrations,
     ...(modelPolicy ? { modelPolicy } : {}),
     ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
   };
@@ -131,6 +140,32 @@ function parseInteraction(value: unknown): string | undefined {
     throw new Error("Instance Configuration interaction.defaultRoute must be a non-empty string");
   }
   return value.defaultRoute.trim();
+}
+
+function parseIntegrations(value: unknown): IntegrationConfiguration {
+  if (value === undefined) return defaultIntegrations();
+  if (!isObject(value)) throw new Error("Instance Configuration integrations must be an object");
+  assertOnlyKeys(value, ["local", "weixin", "nmem"], "Instance Configuration integrations");
+  return Object.freeze({
+    local: parseIntegrationEnabled(value.local, "integrations.local"),
+    weixin: parseIntegrationEnabled(value.weixin, "integrations.weixin"),
+    nmem: parseIntegrationEnabled(value.nmem, "integrations.nmem"),
+  });
+}
+
+function parseIntegrationEnabled(value: unknown, label: string): boolean {
+  if (value === undefined) return false;
+  if (!isObject(value)) throw new Error(`Instance Configuration ${label} must be an object`);
+  assertOnlyKeys(value, ["enabled"], `Instance Configuration ${label}`);
+  if (value.enabled === undefined) return false;
+  if (typeof value.enabled !== "boolean") {
+    throw new Error(`Instance Configuration ${label}.enabled must be a boolean`);
+  }
+  return value.enabled;
+}
+
+function defaultIntegrations(): IntegrationConfiguration {
+  return Object.freeze({ local: false, weixin: false, nmem: false });
 }
 
 function parseSchedule(value: unknown): ScheduleConfiguration {
@@ -279,6 +314,7 @@ function defaultConfiguration(machineTimeZone: string): InstanceConfiguration {
     version: 1,
     timePolicy: createTimePolicy({ timeZone: machineTimeZone }),
     schedule: DEFAULT_SCHEDULE,
+    integrations: defaultIntegrations(),
   };
 }
 

@@ -1,0 +1,42 @@
+# Local Interaction Channel
+
+Local 是 Loom 内置的本机 interaction channel。`loom init` 会在新 Instance
+Configuration 中明确启用它，并把 `local` 设为默认 Interaction Route。
+
+```yaml
+version: 1
+integrations:
+  local:
+    enabled: true
+  weixin:
+    enabled: false
+  nmem:
+    enabled: false
+interaction:
+  defaultRoute: local
+```
+
+启动唯一的 Instance Host：
+
+```bash
+loom run --root ~/.loom
+```
+
+另一个终端通过 Host 交互或查看最近的统一互动记录：
+
+```bash
+loom chat --root ~/.loom "你好"
+loom history --root ~/.loom
+```
+
+Local 使用 `runtime/integrations/local.sock`。CLI 是客户端，不会直接打开
+Runtime Store，也不保存自己的 inbox。`history` 从 Runtime 的 human Input、
+message Effect 和 confirmed Delivery 重建 Interaction View，因此未来从 Weixin
+切换到 Local 时仍属于同一个 Runtime Instance、Context 和 Agent Workspace 演化。
+
+Local Delivery 的确认含义是 message Effect 已经可以从这个持久视图重新读取，
+不是某个终端进程当时正在显示它。thinking、工具轨迹、内部维护和未确认投递的
+输出不进入 Interaction View。
+
+当前一个 Instance 只启用一个 interaction channel。Local 与 Weixin 同时启用会
+阻止 Host 打开；多 route 选择和 fan-out 不属于当前本机部署。

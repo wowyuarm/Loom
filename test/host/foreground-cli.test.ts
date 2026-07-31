@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,6 +77,40 @@ test("runs one prepared Instance until a termination signal requests graceful st
   assert.match(stdout, /"event":"host\.stopped"/);
 });
 
+test("chats through the running Local channel and rebuilds history in another client", async t => {
+  const provider = await startMessageProvider("hello through Loom");
+  t.after(() => provider.close());
+  const root = await preparedInstanceRoot();
+  await writeModelConfiguration(root, provider.baseUrl);
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const host = spawn(process.execPath, [cli, "run", "--root", root], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  host.stdin.end();
+  let hostStdout = "";
+  let hostStderr = "";
+  host.stdout.on("data", chunk => { hostStdout += String(chunk); });
+  host.stderr.on("data", chunk => { hostStderr += String(chunk); });
+  t.after(() => {
+    if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL");
+  });
+  await waitForOutput(host, () => hostStdout.includes('"event":"host.started"'), () => hostStderr);
+
+  const chat = await runCli(cli, ["chat", "--root", root, "hello from the human"]);
+  assert.equal(chat.code, 0, chat.stderr);
+  assert.equal(chat.stdout.trim(), "hello through Loom");
+
+  const history = await runCli(cli, ["history", "--root", root]);
+  assert.equal(history.code, 0, history.stderr);
+  assert.match(history.stdout, /human \[local\]: hello from the human/);
+  assert.match(history.stdout, /individual \[local\]: hello through Loom/);
+
+  const exited = once(host, "exit");
+  host.kill("SIGTERM");
+  const [code] = await exited;
+  assert.equal(code, 0, hostStderr);
+});
+
 async function preparedInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cli-"));
   const workspace = path.join(root, "workspace");
@@ -92,6 +127,105 @@ async function preparedInstanceRoot(): Promise<string> {
     writeFile(path.join(workspace, "attention.md"), "Nothing is currently foregrounded.\n", "utf8"),
   ]);
   return root;
+}
+
+async function writeModelConfiguration(root: string, baseUrl: string): Promise<void> {
+  const configuration = path.join(root, "configuration");
+  await writeFile(path.join(configuration, "instance.yaml"), [
+    "version: 1",
+    "integrations:",
+    "  local:",
+    "    enabled: true",
+    "  weixin:",
+    "    enabled: false",
+    "  nmem:",
+    "    enabled: false",
+    "interaction:",
+    "  defaultRoute: local",
+    "models:",
+    "  default:",
+    "    - provider: local-test",
+    "      model: local-model",
+    "      thinkingLevel: medium",
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(path.join(configuration, "pi", "models.json"), JSON.stringify({
+    providers: {
+      "local-test": {
+        name: "Local Test",
+        baseUrl,
+        apiKey: "test-key",
+        api: "openai-completions",
+        models: [{
+          id: "local-model",
+          name: "Local Model",
+          reasoning: true,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 262_144,
+          maxTokens: 16_384,
+        }],
+      },
+    },
+  }), "utf8");
+}
+
+async function startMessageProvider(text: string): Promise<{ baseUrl: string; close(): void }> {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(200, { "content-type": "text/event-stream", connection: "keep-alive" });
+      response.write(`data: ${JSON.stringify({
+        id: "completion-1",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "local-model",
+        choices: [{
+          index: 0,
+          delta: {
+            role: "assistant",
+            tool_calls: [{
+              index: 0,
+              id: "call-message",
+              type: "function",
+              function: { name: "message", arguments: JSON.stringify({ action: "send", text }) },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })}\n\n`);
+      response.write(`data: ${JSON.stringify({
+        id: "completion-1",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "local-model",
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+      })}\n\n`);
+      response.end("data: [DONE]\n\n");
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    close: () => {
+      server.closeAllConnections();
+      server.close();
+    },
+  };
+}
+
+async function runCli(cli: string, args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [cli, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  child.stdin.end();
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", chunk => { stdout += String(chunk); });
+  child.stderr.on("data", chunk => { stderr += String(chunk); });
+  const [code] = await once(child, "exit");
+  return { code: code as number | null, stdout, stderr };
 }
 
 async function waitForOutput(

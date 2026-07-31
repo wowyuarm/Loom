@@ -23,7 +23,17 @@ const REQUIRED_INDIVIDUAL_MATERIALS: InitializeLoomInstanceResult["requiredIndiv
 ];
 
 const SCAFFOLD_FILES = new Map<string, string>([
-  ["configuration/instance.yaml", "version: 1\n"],
+  ["configuration/instance.yaml", `version: 1
+integrations:
+  local:
+    enabled: true
+  weixin:
+    enabled: false
+  nmem:
+    enabled: false
+interaction:
+  defaultRoute: local
+`],
   ["templates/workspace/attention.md", `# Current Attention
 
 [Describe only what the Agent Individual should naturally carry into its first turns. An explicit empty beginning is valid.]
