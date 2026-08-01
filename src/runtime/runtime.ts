@@ -59,6 +59,11 @@ import type {
   TranscriptAnchor,
   VerifiedToolActivity,
 } from "./types.js";
+import {
+  emitOperationalEvent,
+  type OperationalEvent,
+  type OperationalEventObserver,
+} from "../operational-events.js";
 
 interface InputRow {
   id: string;
@@ -210,6 +215,8 @@ class SqliteRuntime implements Runtime {
   readonly #nextId: () => string;
   readonly #ownerId: string;
   readonly #leaseDurationMs: number;
+  readonly #observe: OperationalEventObserver | undefined;
+  #pendingOperationalEvents: OperationalEvent[] | undefined;
   #active: ActiveExecution | undefined;
   #activeDeliveryId: string | undefined;
   #closingActivityId: string | undefined;
@@ -236,6 +243,7 @@ class SqliteRuntime implements Runtime {
     this.#nextId = options.nextId ?? randomUUID;
     this.#ownerId = options.ownerId ?? randomUUID();
     this.#leaseDurationMs = options.leaseDurationMs ?? 30_000;
+    this.#observe = options.observe;
     initializeRuntimeSchema(this.#database);
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
@@ -3146,6 +3154,20 @@ class SqliteRuntime implements Runtime {
         entity_type, entity_id, from_state, to_state, reason, occurred_at, fencing_token
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(entityType, entityId, fromState, toState, reason, occurredAt.toISOString(), fencingToken);
+    const event: OperationalEvent = {
+      event: "runtime.transition",
+      at: occurredAt.toISOString(),
+      entityType,
+      entityId,
+      fromState,
+      toState,
+      reason,
+    };
+    if (this.#pendingOperationalEvents) {
+      this.#pendingOperationalEvents.push(event);
+    } else {
+      emitOperationalEvent(this.#observe, event);
+    }
   }
 
   #startHeartbeat(
@@ -3193,13 +3215,19 @@ class SqliteRuntime implements Runtime {
   }
 
   #transaction<T>(work: () => T): T {
+    if (this.#pendingOperationalEvents) throw new Error("Runtime transactions cannot be nested");
     this.#database.exec("BEGIN IMMEDIATE");
+    this.#pendingOperationalEvents = [];
     try {
       const result = work();
       this.#database.exec("COMMIT");
+      const events = this.#pendingOperationalEvents;
+      this.#pendingOperationalEvents = undefined;
+      for (const event of events) emitOperationalEvent(this.#observe, event);
       return result;
     } catch (error) {
       this.#database.exec("ROLLBACK");
+      this.#pendingOperationalEvents = undefined;
       throw error;
     }
   }

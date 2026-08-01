@@ -11,6 +11,11 @@ import {
   type ModelPolicy,
   type ModelRole,
 } from "./instance.js";
+import {
+  emitOperationalEvent,
+  operationalTimestamp,
+  type OperationalEventObserver,
+} from "../operational-events.js";
 
 export type ModelRevisionFailureKind =
   | "instance_configuration"
@@ -73,6 +78,7 @@ export interface OpenModelRuntimeRevisionsOptions {
   modelsStorePath: string;
   machineTimeZone?: string;
   now?: () => Date;
+  observe?: OperationalEventObserver;
 }
 
 class RevisionFailure extends Error {
@@ -176,6 +182,12 @@ class PiModelRuntimeRevisions implements ModelRuntimeRevisions {
           revisionId: revision.id,
           activatedAt,
         });
+        emitOperationalEvent(this.options.observe, {
+          event: "model.runtime",
+          at: operationalTimestamp(this.options.now),
+          state: "active",
+          revisionId: revision.id,
+        });
         return this.#status;
       } catch (error) {
         const settledFingerprint = await sourceFingerprint(this.options);
@@ -232,6 +244,13 @@ class PiModelRuntimeRevisions implements ModelRuntimeRevisions {
         failure: recordedFailure,
       });
     }
+    emitOperationalEvent(this.options.observe, {
+      event: "model.runtime",
+      at: operationalTimestamp(this.options.now),
+      state: this.#status.state,
+      ...("revisionId" in this.#status ? { revisionId: this.#status.revisionId } : {}),
+      failureKind: recordedFailure.kind,
+    });
     return this.#status;
   }
 

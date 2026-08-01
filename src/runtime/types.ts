@@ -452,6 +452,7 @@ export interface RuntimeOptions {
   nextId?: () => string;
   ownerId?: string;
   leaseDurationMs?: number;
+  observe?: import("../operational-events.js").OperationalEventObserver;
 }
 
 export interface AdvanceOptions {

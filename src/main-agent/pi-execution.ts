@@ -58,6 +58,11 @@ import { loadDailyContext } from "./daily-context.js";
 import { attachmentReferences, type AttachmentReference } from "../attachments/index.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 import { createAttachmentTool } from "./attachment.js";
+import {
+  emitOperationalEvent,
+  operationalTimestamp,
+  type OperationalEventObserver,
+} from "../operational-events.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
@@ -93,6 +98,7 @@ export interface PiAgentExecutionOptions {
   contextBudget?: Partial<ContextBudget>;
   toolTraceCompactor?: ToolTraceCompactor;
   attachmentStore?: AttachmentStore;
+  observe?: OperationalEventObserver;
 }
 
 export interface PiSkillSources {
@@ -237,6 +243,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly attachmentStore: AttachmentStore | undefined,
     private readonly supportsNativeImages: boolean,
     private readonly ordinaryToolNames: Set<string>,
+    private readonly observe: OperationalEventObserver | undefined,
   ) {}
 
   start(request: TurnRequest, control: TurnControl): PiRunningExecution {
@@ -360,6 +367,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         toolActivityExtension(
           lifecycle.control(request.turnId),
           this.ordinaryToolNames,
+          this.observe,
         ),
         lifecycle,
         sessionManager,
@@ -610,6 +618,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       ...(options.additionalTools ?? []).map(tool => tool.name),
       ...(options.attachmentStore ? ["attachment"] : []),
     ]),
+    options.observe,
   );
 }
 
@@ -655,22 +664,39 @@ function compareText(left: string, right: string): number {
 function toolActivityExtension(
   control: TurnControl,
   ordinaryToolNames: Set<string>,
+  observe: OperationalEventObserver | undefined,
 ): InlineExtension {
-  const calls = new Map<string, { toolName: string; args: JsonValue }>();
+  const calls = new Map<string, { toolName: string; args?: JsonValue; startedAt: number }>();
   return {
     name: "loom-tool-activity",
     factory: pi => {
       pi.on("tool_execution_start", event => {
-        if (!ordinaryToolNames.has(event.toolName)) return;
         calls.set(event.toolCallId, {
           toolName: event.toolName,
-          args: serializeValue(event.args),
+          startedAt: performance.now(),
+          ...(ordinaryToolNames.has(event.toolName) ? { args: serializeValue(event.args) } : {}),
         });
+        emitOperationalEvent(observe, {
+          event: "agent.tool.started",
+          at: operationalTimestamp(),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+        });
+        if (!ordinaryToolNames.has(event.toolName)) return;
       });
       pi.on("tool_execution_end", event => {
         const call = calls.get(event.toolCallId);
         calls.delete(event.toolCallId);
-        if (!call || event.isError || event.toolName !== call.toolName) return;
+        if (!call) return;
+        emitOperationalEvent(observe, {
+          event: "agent.tool.completed",
+          at: operationalTimestamp(),
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          durationMs: Math.round(Math.max(0, performance.now() - call.startedAt)),
+          status: event.isError || event.toolName !== call.toolName ? "error" : "ok",
+        });
+        if (event.isError || event.toolName !== call.toolName || call.args === undefined) return;
         control.recordToolActivity({
           toolCallId: event.toolCallId,
           toolName: event.toolName,

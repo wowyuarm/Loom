@@ -12,6 +12,11 @@ import {
   sendLocalChat,
 } from "./integrations/local/index.js";
 import type { InteractionViewEntry } from "./runtime/index.js";
+import {
+  operationalTimestamp,
+  type OperationalEvent,
+  type OperationalEventObserver,
+} from "./operational-events.js";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
@@ -49,20 +54,45 @@ async function main(argv: string[]): Promise<void> {
     }
     return;
   }
-  const host = await openLoomHost({ root });
+  const observe: OperationalEventObserver = event => writeOperationalEvent(event);
+  const host = await openLoomHost({ root, observe });
   const termination = waitForTerminationSignal();
   try {
     await host.start();
-    console.log(JSON.stringify({ event: "host.started", root: host.status().root }));
+    const runningStatus = host.status();
+    observe({
+      event: "host.started",
+      at: operationalTimestamp(),
+      root: runningStatus.root,
+    });
+    for (const integration of ["local", "weixin"] as const) {
+      const status = runningStatus.integrations?.[integration];
+      if (!status) continue;
+      observe({
+        event: "integration.state",
+        at: operationalTimestamp(),
+        integration,
+        state: status.state,
+      });
+    }
     const signal = await termination.promise;
     await host.stop();
-    console.log(JSON.stringify({ event: "host.stopped", root: host.status().root, signal }));
+    observe({
+      event: "host.stopped",
+      at: operationalTimestamp(),
+      root: host.status().root,
+      signal,
+    });
   } catch (error) {
     await host.stop();
     throw error;
   } finally {
     termination.dispose();
   }
+}
+
+function writeOperationalEvent(event: OperationalEvent): void {
+  console.log(JSON.stringify(event));
 }
 
 function readRoot(args: string[], command: "init" | "run" | "chat" | "history"): string {

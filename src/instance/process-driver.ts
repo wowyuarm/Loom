@@ -1,5 +1,11 @@
 import type { AcceptedInput, RuntimeInput } from "../runtime/index.js";
 import type { LoomInstance, LoomInstanceRunResult } from "./loom-instance.js";
+import {
+  emitOperationalEvent,
+  operationalErrorType,
+  operationalTimestamp,
+  type OperationalEventObserver,
+} from "../operational-events.js";
 
 const DEFAULT_PROCESS_ERROR_RETRY_MS = 30 * 1_000;
 const DEFAULT_PROCESS_BUSY_RETRY_MS = 1_000;
@@ -13,6 +19,7 @@ export interface ProcessDriverOptions {
   instance: LoomInstance;
   now?: () => Date;
   wait?: ProcessDriverWait;
+  observe?: OperationalEventObserver;
 }
 
 export interface ProcessDriver {
@@ -40,6 +47,7 @@ class DefaultProcessDriver implements ProcessDriver {
   readonly #instance: LoomInstance;
   readonly #now: () => Date;
   readonly #wait: ProcessDriverWait;
+  readonly #observe: OperationalEventObserver | undefined;
   #running: Promise<void> | undefined;
   #waitController: AbortController | undefined;
   #wakeVersion = 0;
@@ -53,6 +61,7 @@ class DefaultProcessDriver implements ProcessDriver {
     this.#instance = options.instance;
     this.#now = options.now ?? (() => new Date());
     this.#wait = options.wait ?? waitUntil;
+    this.#observe = options.observe;
   }
 
   start(): void {
@@ -108,14 +117,34 @@ class DefaultProcessDriver implements ProcessDriver {
       while (!this.#stopRequested) {
         const wakeVersion = this.#wakeVersion;
         const observedAt = this.#now();
+        const startedAt = performance.now();
+        emitOperationalEvent(this.#observe, {
+          event: "driver.run.started",
+          at: observedAt.toISOString(),
+          observedAt: observedAt.toISOString(),
+        });
         this.#state = "running";
         this.#nextRunAt = undefined;
         let result: LoomInstanceRunResult;
         try {
           result = await this.#instance.runOnce(observedAt);
+          emitOperationalEvent(this.#observe, {
+            event: "driver.run.completed",
+            at: operationalTimestamp(this.#now),
+            observedAt: observedAt.toISOString(),
+            durationMs: Math.round(Math.max(0, performance.now() - startedAt)),
+            disposition: result.disposition,
+          });
           this.#lastRun = { observedAt: observedAt.toISOString(), result };
           this.#lastError = undefined;
         } catch (error) {
+          emitOperationalEvent(this.#observe, {
+            event: "driver.run.failed",
+            at: operationalTimestamp(this.#now),
+            observedAt: observedAt.toISOString(),
+            durationMs: Math.round(Math.max(0, performance.now() - startedAt)),
+            errorType: operationalErrorType(error),
+          });
           const nextRunAt = new Date(observedAt.getTime() + DEFAULT_PROCESS_ERROR_RETRY_MS);
           this.#lastError = {
             occurredAt: observedAt.toISOString(),

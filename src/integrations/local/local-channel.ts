@@ -18,7 +18,6 @@ import type {
 export const LOCAL_INTERACTION_ROUTE = "local";
 
 const DEFAULT_WAIT_INTERVAL_MS = 50;
-const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
 const MAX_REQUEST_BYTES = 64 * 1024;
 
 export interface LocalInteractionChannelStatus {
@@ -42,7 +41,7 @@ export interface LocalInteractionChannel extends OutboundDelivery {
 export interface OpenLocalInteractionChannelOptions {
   socketPath: string;
   waitIntervalMs?: number;
-  waitTimeoutMs?: number;
+  waitTimeoutMs?: number | null;
 }
 
 type LocalRequest =
@@ -63,7 +62,7 @@ type LocalResponse =
 class DefaultLocalInteractionChannel implements LocalInteractionChannel {
   readonly #socketPath: string;
   readonly #waitIntervalMs: number;
-  readonly #waitTimeoutMs: number;
+  readonly #waitTimeoutMs: number | null;
   readonly #sockets = new Set<Socket>();
   #server: Server | undefined;
   #handlers: LocalInteractionChannelHandlers | undefined;
@@ -73,7 +72,9 @@ class DefaultLocalInteractionChannel implements LocalInteractionChannel {
   constructor(options: OpenLocalInteractionChannelOptions) {
     this.#socketPath = path.resolve(options.socketPath);
     this.#waitIntervalMs = positiveDuration(options.waitIntervalMs ?? DEFAULT_WAIT_INTERVAL_MS, "waitIntervalMs");
-    this.#waitTimeoutMs = positiveDuration(options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS, "waitTimeoutMs");
+    this.#waitTimeoutMs = options.waitTimeoutMs === null || options.waitTimeoutMs === undefined
+      ? null
+      : positiveDuration(options.waitTimeoutMs, "waitTimeoutMs");
   }
 
   async start(handlers: LocalInteractionChannelHandlers): Promise<void> {
@@ -191,7 +192,8 @@ class DefaultLocalInteractionChannel implements LocalInteractionChannel {
         kind: "interaction",
         payload: { text: request.text },
       });
-      const outcome = await this.#waitForOutcome(handlers, accepted.inputId);
+      const outcome = await this.#waitForOutcome(handlers, accepted.inputId, socket);
+      if (!outcome) return;
       const entries = readAfter(handlers.interactionView, cursor)
         .filter(entry => entry.actor === "individual" && entry.inputIds.includes(accepted.inputId));
       writeResponse(socket, { ok: true, type: "chat", inputId: accepted.inputId, outcome, entries });
@@ -203,12 +205,16 @@ class DefaultLocalInteractionChannel implements LocalInteractionChannel {
   async #waitForOutcome(
     handlers: LocalInteractionChannelHandlers,
     inputId: string,
-  ): Promise<Exclude<RuntimeInputOutcome, { state: "pending" }>> {
-    const deadline = Date.now() + this.#waitTimeoutMs;
+    socket: Socket,
+  ): Promise<Exclude<RuntimeInputOutcome, { state: "pending" }> | undefined> {
+    const deadline = this.#waitTimeoutMs === null ? undefined : Date.now() + this.#waitTimeoutMs;
     while (true) {
+      if (socket.destroyed) return undefined;
       const outcome = handlers.inputOutcome(inputId);
       if (outcome.state !== "pending") return outcome;
-      if (Date.now() >= deadline) throw new Error("Timed out waiting for the local Input to finish");
+      if (deadline !== undefined && Date.now() >= deadline) {
+        throw new Error("Timed out waiting for the local Input to finish");
+      }
       await new Promise<void>(resolve => setTimeout(resolve, this.#waitIntervalMs));
     }
   }

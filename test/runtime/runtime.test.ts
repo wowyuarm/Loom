@@ -21,6 +21,7 @@ import {
   type TurnControl,
   type TurnRequest,
 } from "../../src/runtime/index.js";
+import type { OperationalEvent } from "../../src/operational-events.js";
 
 interface TestExecutionState {
   generation: number;
@@ -641,7 +642,13 @@ test("recovers an interrupted Activity close without losing the active segment",
 
 test("accepts a source input exactly once", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
-  const runtime = openRuntime({ root });
+  const events: OperationalEvent[] = [];
+  const runtime = openRuntime({
+    root,
+    now: () => new Date("2026-07-31T14:01:46.543Z"),
+    nextId: () => "input-1",
+    observe: event => events.push(event),
+  });
   t.after(() => runtime.close());
 
   const first = await runtime.acceptInput({
@@ -669,6 +676,15 @@ test("accepts a source input exactly once", async t => {
       status: "pending",
     },
   ]);
+  assert.deepEqual(events, [{
+    event: "runtime.transition",
+    at: "2026-07-31T14:01:46.543Z",
+    entityType: "input",
+    entityId: "input-1",
+    fromState: null,
+    toState: "pending",
+    reason: "accepted",
+  }]);
 });
 
 test("completes one pending input through a main Agent Turn", async t => {

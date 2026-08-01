@@ -7,6 +7,39 @@ import {
   type LoomInstanceRunResult,
 } from "../../src/instance/index.js";
 import type { RuntimeInput } from "../../src/runtime/index.js";
+import type { OperationalEvent } from "../../src/operational-events.js";
+
+test("reports each Instance run without exposing run contents", async t => {
+  const events: OperationalEvent[] = [];
+  const driver = createProcessDriver({
+    instance: fakeInstance({
+      runOnce: async () => ({ disposition: "idle" }),
+    }),
+    now: () => new Date("2026-07-31T14:01:46.543Z"),
+    wait: abortedWait,
+    observe: event => events.push(event),
+  });
+  t.after(() => driver.stop());
+
+  driver.start();
+  await eventually(() => events.some(event => event.event === "driver.run.completed"));
+
+  assert.deepEqual(events.map(event => event.event), [
+    "driver.run.started",
+    "driver.run.completed",
+  ]);
+  assert.deepEqual(events[0], {
+    event: "driver.run.started",
+    at: "2026-07-31T14:01:46.543Z",
+    observedAt: "2026-07-31T14:01:46.543Z",
+  });
+  const completed = events[1];
+  assert.equal(completed?.event, "driver.run.completed");
+  if (completed?.event !== "driver.run.completed") return;
+  assert.equal(completed.disposition, "idle");
+  assert.ok(completed.durationMs >= 0);
+  assert.doesNotMatch(JSON.stringify(completed), /Input|Effect|payload|content/);
+});
 
 test("wakes a waiting Instance immediately after accepting new Input", async () => {
   const inputs: RuntimeInput[] = [];
@@ -120,6 +153,7 @@ test("waits for the active runOnce before closing on stop", async () => {
 
 test("keeps an unexpected run failure visible and schedules process recovery", async t => {
   const waits: Array<Date | undefined> = [];
+  const events: OperationalEvent[] = [];
   let runs = 0;
   const driver = createProcessDriver({
     instance: fakeInstance({
@@ -134,6 +168,7 @@ test("keeps an unexpected run failure visible and schedules process recovery", a
       waits.push(until);
       await aborted(signal);
     },
+    observe: event => events.push(event),
   });
   t.after(() => driver.stop());
 
@@ -148,6 +183,9 @@ test("keeps an unexpected run failure visible and schedules process recovery", a
       message: "provider connection failed",
     },
   });
+  const failure = events.find(event => event.event === "driver.run.failed");
+  assert.equal(failure?.event, "driver.run.failed");
+  assert.doesNotMatch(JSON.stringify(failure), /provider connection failed/);
 
   driver.wake();
   await eventually(() => runs === 2 && waits.length === 2);

@@ -33,18 +33,14 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
     root,
     createdFiles: [
       "configuration/instance.yaml",
-      "templates/workspace/attention.md",
-      "templates/workspace/facts.json",
-      "templates/workspace/identity.md",
-      "templates/workspace/memory.md",
       "workspace/behavior/background.md",
       "workspace/behavior/interaction.md",
     ],
     requiredIndividualMaterials: [
-      { path: "workspace/facts.json", template: "templates/workspace/facts.json" },
-      { path: "workspace/identity.md", template: "templates/workspace/identity.md" },
-      { path: "workspace/memory.md", template: "templates/workspace/memory.md" },
-      { path: "workspace/attention.md", template: "templates/workspace/attention.md" },
+      { path: "workspace/facts.json" },
+      { path: "workspace/identity.md" },
+      { path: "workspace/memory.md" },
+      { path: "workspace/attention.md" },
     ],
   });
   assert.match(
@@ -76,6 +72,10 @@ test("runs one prepared Instance until a termination signal requests graceful st
   assert.equal(code, 0, stderr);
   assert.equal(signal, null);
   assert.match(stdout, /"event":"host\.stopped"/);
+  assert.match(stdout, /"event":"model\.runtime"/);
+  assert.match(stdout, /"event":"integration\.state"/);
+  assert.match(stdout, /"event":"driver\.run\.started"/);
+  assert.match(stdout, /"event":"driver\.run\.completed"/);
 });
 
 test("chats through the running Local channel and rebuilds history in another client", async t => {
@@ -103,6 +103,24 @@ test("chats through the running Local channel and rebuilds history in another cl
   const chat = await runCli(cli, ["chat", "hello from the human"], env);
   assert.equal(chat.code, 0, chat.stderr);
   assert.equal(chat.stdout.trim(), "hello through Loom");
+
+  await waitForOutput(
+    host,
+    () => hostStdout.includes('"event":"agent.tool.completed"'),
+    () => hostStderr,
+  );
+  for (const event of [
+    "model.runtime",
+    "integration.state",
+    "runtime.transition",
+    "driver.run.started",
+    "driver.run.completed",
+    "agent.tool.started",
+    "agent.tool.completed",
+  ]) {
+    assert.match(hostStdout, new RegExp(`"event":"${event.replaceAll(".", "\\.")}"`));
+  }
+  assert.doesNotMatch(hostStdout, /hello from the human|hello through Loom/);
 
   const history = await runCli(cli, ["history"], env);
   assert.equal(history.code, 0, history.stderr);

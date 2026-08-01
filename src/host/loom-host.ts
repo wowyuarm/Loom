@@ -229,7 +229,11 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
     return new DefaultLoomHost({
       root,
       instance,
-      driver: createProcessDriver({ instance, ...(options.now ? { now: options.now } : {}) }),
+      driver: createProcessDriver({
+        instance,
+        ...(options.now ? { now: options.now } : {}),
+        ...(options.observe ? { observe: options.observe } : {}),
+      }),
       ownership,
       attachmentStore,
       ...(local ? { local } : {}),

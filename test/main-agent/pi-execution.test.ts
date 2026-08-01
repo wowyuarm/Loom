@@ -19,6 +19,7 @@ import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 import type { EffectRequest, JsonValue } from "../../src/runtime/index.js";
+import type { OperationalEvent } from "../../src/operational-events.js";
 
 function contextWindow(result: { executionState: JsonValue }) {
   const window = parseContextWindowState(result.executionState);
@@ -1130,6 +1131,7 @@ test("records a successful ordinary tool before the provider can continue", asyn
     fauxAssistantMessage("tool completed"),
   ]);
   const recorded: unknown[] = [];
+  const events: OperationalEvent[] = [];
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent-config"),
@@ -1137,6 +1139,7 @@ test("records a successful ordinary tool before the provider can continue", asyn
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
+    observe: event => events.push(event),
   });
   t.after(() => execution.close());
 
@@ -1158,6 +1161,29 @@ test("records a successful ordinary tool before the provider can continue", asyn
       content: [{ type: "text", text: "current attention" }],
     },
   }]);
+  assert.deepEqual(events.map(event => event.event), [
+    "agent.tool.started",
+    "agent.tool.completed",
+  ]);
+  assert.deepEqual(events.map(event => event.event === "agent.tool.started"
+    ? { event: event.event, toolCallId: event.toolCallId, toolName: event.toolName }
+    : event.event === "agent.tool.completed"
+      ? {
+          event: event.event,
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          status: event.status,
+        }
+      : event), [
+    { event: "agent.tool.started", toolCallId: "read-attention", toolName: "read" },
+    {
+      event: "agent.tool.completed",
+      toolCallId: "read-attention",
+      toolName: "read",
+      status: "ok",
+    },
+  ]);
+  assert.doesNotMatch(JSON.stringify(events), /attention\.md|current attention/);
 });
 
 test("omits image pixels from ordinary tool activity persisted by Runtime", async t => {

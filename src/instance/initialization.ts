@@ -11,15 +11,14 @@ export interface InitializeLoomInstanceResult {
   createdFiles: string[];
   requiredIndividualMaterials: Array<{
     path: string;
-    template: string;
   }>;
 }
 
 const REQUIRED_INDIVIDUAL_MATERIALS: InitializeLoomInstanceResult["requiredIndividualMaterials"] = [
-  { path: "workspace/facts.json", template: "templates/workspace/facts.json" },
-  { path: "workspace/identity.md", template: "templates/workspace/identity.md" },
-  { path: "workspace/memory.md", template: "templates/workspace/memory.md" },
-  { path: "workspace/attention.md", template: "templates/workspace/attention.md" },
+  { path: "workspace/facts.json" },
+  { path: "workspace/identity.md" },
+  { path: "workspace/memory.md" },
+  { path: "workspace/attention.md" },
 ];
 
 const SCAFFOLD_FILES = new Map<string, string>([
@@ -33,23 +32,6 @@ integrations:
     enabled: false
 interaction:
   defaultRoute: local
-`],
-  ["templates/workspace/attention.md", `# Current Attention
-
-[Describe only what the Agent Individual should naturally carry into its first turns. An explicit empty beginning is valid.]
-`],
-  ["templates/workspace/facts.json", `${JSON.stringify({
-    version: 1,
-    individual: { name: "REPLACE_WITH_INDIVIDUAL_NAME", languages: [] },
-    human: { name: "REPLACE_WITH_HUMAN_NAME", languages: [] },
-  }, null, 2)}\n`],
-  ["templates/workspace/identity.md", `# Identity
-
-[Describe the Agent Individual's initial self-understanding in the language it will use. Do not invent shared history.]
-`],
-  ["templates/workspace/memory.md", `# Long-term Memory
-
-[Record only durable history that already exists. A new relationship may begin with no shared memories.]
 `],
   ["workspace/behavior/background.md", DEFAULT_BACKGROUND_BEHAVIOR],
   ["workspace/behavior/interaction.md", DEFAULT_INTERACTION_BEHAVIOR],

@@ -42,6 +42,7 @@ import {
   type AttachmentStore,
 } from "../integrations/attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
+import type { OperationalEventObserver } from "../operational-events.js";
 import {
   createRevisionBoundLifeRecorder,
   createRevisionBoundAttentionMaintenance,
@@ -100,6 +101,7 @@ export interface OpenLoomInstanceOptions {
   outboundDelivery?: OutboundDelivery;
   nmem?: NmemRecallToolOptions;
   attachmentStore?: AttachmentStore;
+  observe?: OperationalEventObserver;
 }
 
 class AssembledLoomInstance implements LoomInstance {
@@ -255,6 +257,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     modelsStorePath: layout.piModelsStoreFile,
     ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.observe ? { observe: options.observe } : {}),
   });
   await revisions.refresh();
   const execution = createRevisionBoundMainAgent({
@@ -262,6 +265,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     layout,
     agentWorkspace,
     attachmentStore,
+    ...(options.observe ? { observe: options.observe } : {}),
     ...(configuration.defaultInteractionRoute
       ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
       : {}),
@@ -318,6 +322,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     threadMaintenance,
     ...(options.outboundDelivery ? { outboundDelivery: options.outboundDelivery } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.observe ? { observe: options.observe } : {}),
   });
   const nmem = options.nmem?.endpoint ? {
     threads: createNmemThreadReconciler({

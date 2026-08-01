@@ -84,9 +84,11 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [39 — Connect a Text-only Weixin Route](issues/39-connect-a-text-only-weixin-route.md)。单 route、单 peer 的 Weixin Integration 已接入 Host ingress 与 `OutboundDelivery`；cursor/context state、真实 text HTTP、远程 degraded recovery、配置准入和 graceful stop 均已闭合，媒体保持独立后续。
 - Completed: [40 — Define Attachment and Media Semantics](issues/40-define-attachment-and-media-semantics.md)。通用 Attachment 引用、Instance-owned durable Store、模型能力分流、Workspace copy/snapshot、30 日无引用保留及 Weixin 单图入站/单附件出站已闭合；raw bytes 不进入 Runtime、Transcript、Activity 或认知材料。
 - Completed: [41 — Recover Cognitive Workspace Mutations](issues/41-recover-cognitive-workspace-mutations.md)。Life Recorder、Thread Maintainer 与 Memory Reflector 的多文件 revision 现在有 Runtime-owned before-image、Instance-open 恢复和完成结果重放；进程退出不会让 Individual 暴露半套认知材料，也不会在 Runtime 记账缺口中重复调用模型。
-- Completed: [42 — Initialize an Instance Root](issues/42-initialize-an-instance-root.md)。公开 initialization Interface 与 `loom init` 现在建立 Harness-owned Behavior、最小配置和 Agent Workspace 外的 Individual material templates；重跑不覆盖、symlink 不越界，现有严格 Host contract 不变。
+- Completed: [42 — Initialize an Instance Root](issues/42-initialize-an-instance-root.md)。公开 initialization Interface 与 `loom init` 建立 Harness-owned Behavior 和最小配置，报告但不生成 Individual-owned active materials；重跑不覆盖、symlink 不越界，现有严格 Host contract 不变。Ticket 46 后续移除了没有消费者的 initializer templates。
 - Completed: [43 — Run a Local Interaction Channel](issues/43-run-a-local-interaction-channel.md)。`loom init` 显式启用内置 Local route；`loom run` 持有 Unix socket，`loom chat/history` 只作为客户端读写由 Runtime 事实重建的统一 Interaction View。Integration 缺省关闭、显式装配，disabled nmem 不再暴露 tool/evidence。
 - Completed: [44 — Default CLI to the User Instance Root](issues/44-default-cli-instance-root.md)。CLI 在未指定 `--root` 时使用 `~/.loom`；显式 root 仍用于测试、临时 Instance 和其他明确部署位置。
+- Completed: [45 — Deploy the First Local Instance](issues/45-deploy-the-first-local-instance.md)。linked CLI、独立 HaL 材料、DeepSeek Flash、Local 与真实 Host 启停均已验证，nmem / Weixin 保持关闭且没有写入模拟人类来信。
+- Completed: [46 — Correct First-use Operations](issues/46-correct-first-use-operations.md)。Local 默认无限等待、安全 operational JSONL、无模板初始化及 linked CLI build 权限已闭合；真实 `~/.loom` 上一条约 13 分 49 秒的 Local Input 正常完成，没有重现旧的 120 秒假超时。
 
 ## Context Follow-ups
 
@@ -112,7 +114,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-Current work item: none。[45 — Deploy the First Local Instance](issues/45-deploy-the-first-local-instance.md) 已完成：linked CLI、独立 HaL 材料、DeepSeek Flash、Local 与真实 Host 启停均已验证，nmem / Weixin 保持关闭且没有写入模拟人类来信。下一步由禹发出第一条真实 Input，并进入持续行为观察。
+Current work item: none。[46 — Correct First-use Operations](issues/46-correct-first-use-operations.md) 已完成实现、完整测试和真实 HaL Instance 验收。下一项工作从持续运行中暴露的具体问题进入，不因本次闭合扩建通用运维或诊断体系。
 
 ### Memory Reflector Completion Checkpoint
 
