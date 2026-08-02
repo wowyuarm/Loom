@@ -134,6 +134,10 @@ Ticket 51 已记录 Loom 的 Operator Agent 原则和多 Individual VPS 运维�
 依据文档与实际环境完成。一个 Individual 对应一个 Unix account、Instance Root 和 Host service；
 共享源码不意味着共享运行权限。
 
+Ticket 52 已将 HaL 迁移到 VPS 上独立的 `loom-hal` Instance：服务通过 systemd 持续运行，
+Local 已启用，Weixin 与 nmem 保持关闭。迁移使用了已核验的完整 Instance Root，而不是重建
+历史；临时传输材料已清理，原有半成品目录保留为回退点。
+
 ### Memory Reflector Completion Checkpoint
 
 - Xi 的有效职责不是每日摘要，而是把跨时间 evidence 慎重写回 Identity、Long-term Memory 与两份 Behavior Material，并在最高证据门槛下允许 Identity 演化；Current Attention 与 Harness System Guidance 均不归它维护。
