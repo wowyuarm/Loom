@@ -16,6 +16,14 @@ Loom 是独立项目。Xi 可以在某个新问题确实需要历史生产经验
 
 恢复旧工作时，以 `.scratch/harness-layers/map.md` 的当前阶段和工作项为准；涉及既有决定时做一次定向 memory 搜索。同一段工作不反复搜索，也不从闭合 ticket 的历史来源重新推导当前设计。
 
+## Engineering Rules
+
+- 代码应自包含地说明模块职责、关键约束和可观察行为：优先依靠清晰结构、命名、类型、接口、错误与测试；注释只说明代码无法表达的理由。
+- 文档不重复实现过程，但保留术语、取舍、导航、外部接入约束、运维说明和当前工作入口。
+- 一个 commit 对应一个闭合且有实质内容的工作单元，通常是一张完成的 ticket 或一个已收束的研究结论，而不是一个文件或一小段文档变化。该单元形成的决策记录、实现、测试和必要文档应一起评估并同批提交；讨论中的状态、零散笔记和中间文档先留在工作区。纯研究只有在得出可复用结论时才单独提交。
+- 不预先搭建空架构或为假想需求引入层级。新依赖、运行配置和目录结构必须随第一个实际使用它的模块进入，并说明其必要性。
+- 新代码必须有与风险相称的实际验证；没有运行代码时，不伪造测试或命令。
+
 ## Repository Structure
 
 ```text
@@ -76,10 +84,20 @@ CLI 默认 Instance Root 是 `~/.loom`。开发期 `npm run build && npm link` �
 
 ## Workflow and Documentation
 
-- 一个 commit 对应一个闭合、有实质内容的工作单元。相关决定、实现、测试和必要文档一起评估；不做按文件切分的零散提交。
 - 工程工作记录在 `.scratch/`。状态和文件约定见 [issue tracker](docs/agents/issue-tracker.md) 与 [triage labels](docs/agents/triage-labels.md)。
 - 术语或长期边界真的改变时更新 `CONTEXT.md`；只有理由不明显且难以逆转的取舍才新增 ADR。
 - 碰到新问题时先以 Loom 的当前 map 和代码为准。闭合 ticket 中的 Xi source reference 是历史证据，保留即可，不要批量维护或要求本机存在 Xi。
+
+## Skill Workflow
+
+Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也不要为了使用 skill 预建 map、spec、ticket 或空架构。
+
+1. 延续 Loom 工作时，先按本文件、`CONTEXT.md`、当前 map 和 active ticket 恢复阶段；涉及既有决定时用 `search-memory` 做一次定向搜索，同一段工作不要反复搜索。
+2. 只有确实需要历史生产经验时才回读 Xi 代码或运行证据，并使用 Xi 的 `runtime` skill；Xi 只是只读 source reference，不是 Loom 的入口或验收标准。
+3. 需要确定 Module 的 Interface 或 seam 时使用 `codebase-design`。优先让复杂度留在深 Module 内，只为真实变化点建立 Adapter；测试穿过同一个 Interface，不直接测试内部 Store 或 SQL。
+4. 术语或长期边界真正确定时使用 `domain-modeling`：立即更新 `CONTEXT.md`；只有决定难以反转、理由不明显且确有取舍时才写 ADR。
+5. 实现已确认的行为时使用 `tdd`。先由现有 ticket 或已确认决定确定测试 seam，再按“一条失败测试 -> 最小实现 -> 下一条行为”推进，不先横向写完所有测试或骨架。
+6. 完成一个实质工作单元后，运行真实验证，检查代码、ticket、薄文档是否一致，再一起 commit。形成长期有用的新状态或教训时使用 `distill-memory`，写入前先搜索并优先更新已有记忆；commit、路径清单和详细状态留在项目文档。
 
 ## Cognitive Organ Prompts
 
