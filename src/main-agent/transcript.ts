@@ -183,6 +183,7 @@ function projectActivityEntries(request: {
     }
     if (message.role === "assistant") {
       if (!currentTurnId) throw new Error(`Transcript assistant entry ${entry.id} has no owning Turn`);
+      if (isInterruptedAssistantAttempt(message)) continue;
       if (!Array.isArray(message.content)) continue;
       for (let blockIndex = 0; blockIndex < message.content.length; blockIndex += 1) {
         const block = message.content[blockIndex];
@@ -400,6 +401,7 @@ function assertCompleteToolInteractions(branch: TranscriptEntry[], transcriptFil
     if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
     const message = entry.message as Record<string, unknown>;
     if (message.role === "assistant" && Array.isArray(message.content)) {
+      if (isInterruptedAssistantAttempt(message)) continue;
       for (const block of message.content) {
         if (!block || typeof block !== "object") continue;
         const content = block as Record<string, unknown>;
@@ -492,7 +494,7 @@ function toolCallsOnBranch(
   for (const entry of branch) {
     if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") continue;
     const message = entry.message as Record<string, unknown>;
-    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+    if (message.role !== "assistant" || isInterruptedAssistantAttempt(message) || !Array.isArray(message.content)) continue;
     for (const block of message.content) {
       if (!block || typeof block !== "object") continue;
       const content = block as Record<string, unknown>;
@@ -507,6 +509,10 @@ function toolCallsOnBranch(
     }
   }
   return calls;
+}
+
+function isInterruptedAssistantAttempt(message: Record<string, unknown>): boolean {
+  return message.stopReason === "error" || message.stopReason === "aborted";
 }
 
 export function openPrimaryTranscriptSession(

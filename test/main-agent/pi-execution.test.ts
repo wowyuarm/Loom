@@ -1821,6 +1821,76 @@ test("continues across days from committed Context after a failed new-day branch
   assert.deepEqual(contextWindow(recovered).transcriptAnchor, recovered.transcriptAnchor);
 });
 
+test("commits a retried Turn without carrying its interrupted tool call into later Context", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-retried-tool-call-"));
+  const transcriptDirectory = path.join(root, "transcript");
+  const agentDir = path.join(root, "agent");
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({
+    retry: { baseDelayMs: 1 },
+  }), "utf8");
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "interrupted query" }, { id: "interrupted-call" }), {
+      stopReason: "error",
+      errorMessage: "terminated",
+    }),
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "retried query" }, { id: "retried-call" }), {
+      stopReason: "toolUse",
+    }),
+    fauxAssistantMessage("retry completed"),
+    context => {
+      const text = context.messages.map(message => JSON.stringify(message)).join("\n");
+      assert.doesNotMatch(text, /interrupted query|interrupted-call/);
+      assert.match(text, /retried query|found:retried query|retry completed/);
+      return fauxAssistantMessage("later turn completed");
+    },
+  ]);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Return a deterministic test value.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `found:${params.query}` }],
+      details: {},
+    }),
+  });
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir,
+    transcriptDirectory,
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    additionalTools: [lookup],
+  });
+  t.after(() => execution.close());
+
+  const first = await execution.start({
+    turnId: "turn-retried",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-retried", "use the lookup")],
+  }, noEffectControl()).result;
+
+  assert.equal(faux.state.callCount, 3);
+  assert.doesNotMatch(JSON.stringify(contextWindow(first).committedTrace), /interrupted query|interrupted-call/);
+  const transcript = await readFile(path.join(transcriptDirectory, "2026-07-19", "agent.jsonl"), "utf8");
+  assert.match(transcript, /interrupted query|interrupted-call/);
+  assert.match(transcript, /"stopReason":"error"/);
+
+  const second = await execution.start({
+    turnId: "turn-after-retry",
+    leaseToken: 2,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-after-retry", "continue")],
+    executionState: first.executionState,
+  }, noEffectControl()).result;
+
+  assert.equal(second.outcome, "completed");
+});
+
 test("refreshes Turn-live material while keeping the window-frozen seed", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-context-materials-"));
   const transcriptDirectory = path.join(root, "transcript");

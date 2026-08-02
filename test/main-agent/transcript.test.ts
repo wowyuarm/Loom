@@ -75,3 +75,54 @@ test("rejects Turn evidence with an incomplete tool interaction", async () => {
     inputs: [{ inputId: "input-1", annotationEntryId: "annotation-1" }],
   }), /incomplete tool interaction/);
 });
+
+test("accepts completed evidence after an aborted assistant attempt with an unexecuted tool call", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-18", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
+  await writeFile(transcriptFile, [
+    JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: "2026-07-18T00:00:00.000Z", cwd: root }),
+    JSON.stringify({ type: "custom", customType: "loom.input.v1", data: { inputId: "input-1" }, id: "annotation-1", parentId: null, timestamp: "2026-07-18T00:00:01.000Z" }),
+    JSON.stringify({ type: "message", id: "user-1", parentId: "annotation-1", timestamp: "2026-07-18T00:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 } }),
+    JSON.stringify({ type: "message", id: "interrupted-1", parentId: "user-1", timestamp: "2026-07-18T00:00:03.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "call-interrupted", name: "read", arguments: { path: "note.md" } }], stopReason: "aborted", timestamp: 2 } }),
+    JSON.stringify({ type: "message", id: "assistant-retry", parentId: "interrupted-1", timestamp: "2026-07-18T00:00:04.000Z", message: { role: "assistant", content: [{ type: "text", text: "retry completed" }], timestamp: 3 } }),
+    "",
+  ].join("\n"), "utf8");
+
+  const evidence = await verifyPrimaryTranscriptEvidence({
+    transcriptDirectory,
+    sourceId: "2026-07-18",
+    sessionId: "session-1",
+    inputs: [{ inputId: "input-1", annotationEntryId: "annotation-1" }],
+  });
+
+  assert.deepEqual(evidence.transcriptAnchor, {
+    sourceId: "2026-07-18",
+    sessionId: "session-1",
+    entryId: "assistant-retry",
+  });
+});
+
+test("rejects a tool result that follows an interrupted assistant attempt", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-transcript-"));
+  const transcriptDirectory = path.join(root, "transcripts");
+  const transcriptFile = path.join(transcriptDirectory, "2026-07-18", "agent.jsonl");
+  await mkdir(path.dirname(transcriptFile), { recursive: true });
+  await writeFile(transcriptFile, [
+    JSON.stringify({ type: "session", version: 3, id: "session-1", timestamp: "2026-07-18T00:00:00.000Z", cwd: root }),
+    JSON.stringify({ type: "custom", customType: "loom.input.v1", data: { inputId: "input-1" }, id: "annotation-1", parentId: null, timestamp: "2026-07-18T00:00:01.000Z" }),
+    JSON.stringify({ type: "message", id: "user-1", parentId: "annotation-1", timestamp: "2026-07-18T00:00:02.000Z", message: { role: "user", content: [{ type: "text", text: "hello" }], timestamp: 1 } }),
+    JSON.stringify({ type: "message", id: "interrupted-1", parentId: "user-1", timestamp: "2026-07-18T00:00:03.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "call-interrupted", name: "read", arguments: { path: "note.md" } }], stopReason: "error", timestamp: 2 } }),
+    JSON.stringify({ type: "message", id: "result-1", parentId: "interrupted-1", timestamp: "2026-07-18T00:00:04.000Z", message: { role: "toolResult", toolCallId: "call-interrupted", toolName: "read", content: [{ type: "text", text: "unexpected" }], isError: false, timestamp: 3 } }),
+    JSON.stringify({ type: "message", id: "assistant-retry", parentId: "result-1", timestamp: "2026-07-18T00:00:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "retry completed" }], timestamp: 4 } }),
+    "",
+  ].join("\n"), "utf8");
+
+  await assert.rejects(verifyPrimaryTranscriptEvidence({
+    transcriptDirectory,
+    sourceId: "2026-07-18",
+    sessionId: "session-1",
+    inputs: [{ inputId: "input-1", annotationEntryId: "annotation-1" }],
+  }), /tool result without call/);
+});

@@ -144,6 +144,22 @@ test("keeps a Harness message correction out of Frozen Activity Input", async ()
   assert.match(JSON.stringify(activity.events), /visible reply/);
 });
 
+test("omits a retried interrupted assistant attempt from Frozen Activity evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-interrupted-attempt-"));
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcriptWithInterruptedAttempt(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+    nextWindowId: () => "window-2",
+  });
+
+  const { activity } = await lifecycle.freeze(request());
+
+  const evidence = JSON.stringify(activity.events);
+  assert.doesNotMatch(evidence, /interrupted attempt|interrupted-call/);
+  assert.match(evidence, /I will inspect it|call-1|Plan contents/);
+});
+
 test("freezes one Activity from committed Turns across daily transcripts", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-cross-day-"));
   const transcriptDirectory = path.join(root, "transcripts");
@@ -728,6 +744,34 @@ function transcriptWithInternalPrompt(root: string): string {
       },
     },
   );
+  return `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
+}
+
+function transcriptWithInterruptedAttempt(root: string): string {
+  const records = transcript(root)
+    .trimEnd()
+    .split("\n")
+    .map(line => JSON.parse(line) as Record<string, unknown>);
+  const retriedCall = records.find(record => record.id === "assistant-tool");
+  assert.ok(retriedCall);
+  retriedCall.parentId = "interrupted-assistant";
+  const retriedCallIndex = records.indexOf(retriedCall);
+  records.splice(retriedCallIndex, 0, {
+    type: "message",
+    id: "interrupted-assistant",
+    parentId: "user-1",
+    timestamp: "2026-07-19T10:00:01.500Z",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "interrupted attempt" },
+        { type: "toolCall", id: "interrupted-call", name: "read", arguments: { path: "never-read.md" } },
+      ],
+      stopReason: "error",
+      errorMessage: "terminated",
+      timestamp: 2.5,
+    },
+  });
   return `${records.map(record => JSON.stringify(record)).join("\n")}\n`;
 }
 

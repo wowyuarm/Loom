@@ -90,6 +90,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [45 — Deploy the First Local Instance](issues/45-deploy-the-first-local-instance.md)。linked CLI、独立 HaL 材料、DeepSeek Flash、Local 与真实 Host 启停均已验证，nmem / Weixin 保持关闭且没有写入模拟人类来信。
 - Completed: [46 — Correct First-use Operations](issues/46-correct-first-use-operations.md)。Local 默认无限等待、安全 operational JSONL、无模板初始化及 linked CLI build 权限已闭合；真实 `~/.loom` 上一条约 13 分 49 秒的 Local Input 正常完成，没有重现旧的 120 秒假超时。
 - Completed: [49 — Explain an unavailable Local Host](issues/49-explain-unavailable-local-host.md)。`loom chat/history` 在 Host 未运行或残留 socket 时给出可行动提示，不越过 Host 的 socket 所有权。
+- Completed: [48 — terminated model call leaves an orphaned tool call](issues/48-terminated-model-call-leaves-orphaned-tool-call.md)。中断 assistant attempt 保留在原始 transcript 作诊断，但不再被解释为已派发的 tool interaction 或 Frozen Activity；自动重试成功的 Turn 不会因旧半截 toolCall 误记 failed，正常未完成调用仍严格拒绝。
 
 ## Context Follow-ups
 
@@ -115,7 +116,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-Current work item: [48 — terminated model call leaves an orphaned tool call](issues/48-terminated-model-call-leaves-orphaned-tool-call.md)。它已由真实 HaL 运行确认，下一轮应按 ticket 的现有证据收束其 transcript 终态语义；不要把 provider route 切换误当作该 Harness bug 的修复。
+当前没有待实施的 Loom ticket。继续观察 HaL 的真实互动、主动与沉默、认知材料演化、长模型调用和重启连续性；出现稳定的 Harness 问题后再建一张范围明确的 ticket，不把 provider route、Local client 或运维能力混成一个工作单元。
 
 ### Memory Reflector Completion Checkpoint
 
