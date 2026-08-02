@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { createTimePolicy } from "../../src/configuration/index.js";
 import type {
@@ -539,6 +540,150 @@ test("discards an Orientation result when human Input wins the idle race", async
     sourceId: input.sourceId,
     kind: input.kind,
   })), [{ source: "test-channel", sourceId: "human-1", kind: "interaction" }]);
+});
+
+test("lets human Input supersede a still-running Opportunity Pulse", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-human-precedence-"));
+  const orientationStarted = deferred<void>();
+  const orientationFinished = deferred<{
+    outcome: "opportunity";
+    runId: string;
+    narrative: string;
+    whyNow: string;
+    evidence: string[];
+  }>();
+  const turnKinds: string[] = [];
+  const runtime = openRuntime({
+    root,
+    orientation: {
+      async form() {
+        orientationStarted.resolve();
+        return orientationFinished.promise;
+      },
+    },
+    execution: {
+      start(request, control) {
+        turnKinds.push(request.inputs[0]!.kind);
+        control.prepareExecutionState(request.executionState ?? { branch: "prepared" });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.resolve(executionResult(request, { branch: "human-complete" })),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  t.after(() => runtime.close());
+
+  const initial = await runtime.runOpportunityPulse({
+    observedAt: new Date("2026-07-20T06:30:00.000Z"),
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 1_000,
+    agentWork: "allow",
+  });
+  assert.deepEqual(initial, {
+    disposition: "waiting",
+    nextRunAt: "2026-07-20T06:30:00.001Z",
+  });
+  const forming = runtime.runOpportunityPulse({
+    observedAt: new Date("2026-07-20T06:30:00.001Z"),
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 1_000,
+    agentWork: "allow",
+  });
+  await orientationStarted.promise;
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "human-during-orientation",
+    kind: "interaction",
+    payload: { text: "I arrived while you were looking around." },
+  });
+
+  try {
+    assert.deepEqual(await Promise.race([
+      forming,
+      delay(100).then(() => "still-running" as const),
+    ]), { disposition: "stale" });
+    assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+    assert.deepEqual(turnKinds, ["interaction"]);
+  } finally {
+    orientationFinished.resolve({
+      outcome: "opportunity",
+      runId: "late-orientation",
+      narrative: "This no longer belongs ahead of the human Input.",
+      whyNow: "It was formed before the new interaction.",
+      evidence: ["recent activity"],
+    });
+    await forming;
+  }
+
+  await delay(0);
+  assert.deepEqual(runtime.status().inputs.map(input => ({
+    source: input.source,
+    sourceId: input.sourceId,
+    kind: input.kind,
+  })), [{
+    source: "test-channel",
+    sourceId: "human-during-orientation",
+    kind: "interaction",
+  }]);
+});
+
+test("drops an unclaimed Opportunity when a human Input arrives", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-pending-human-precedence-"));
+  const turnKinds: string[] = [];
+  const runtime = openRuntime({
+    root,
+    orientation: {
+      async form() {
+        return {
+          outcome: "opportunity",
+          runId: "unclaimed-orientation",
+          narrative: "A possible private opening.",
+          whyNow: "A line remains open.",
+          evidence: ["threads/private.md"],
+        };
+      },
+    },
+    execution: {
+      start(request, control) {
+        turnKinds.push(request.inputs[0]!.kind);
+        control.prepareExecutionState(request.executionState ?? { branch: "prepared" });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.resolve(executionResult(request, { branch: "human-complete" })),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  t.after(() => runtime.close());
+
+  assert.equal((await runtime.formOpportunity()).disposition, "accepted");
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "human-after-opportunity",
+    kind: "interaction",
+    payload: { text: "I am here now." },
+  });
+
+  assert.deepEqual(runtime.status().inputs.map(input => ({
+    source: input.source,
+    sourceId: input.sourceId,
+    kind: input.kind,
+    status: input.status,
+  })), [{
+    source: "test-channel",
+    sourceId: "human-after-opportunity",
+    kind: "interaction",
+    status: "pending",
+  }]);
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.deepEqual(turnKinds, ["interaction"]);
 });
 
 function executionResult(request: TurnRequest, executionState: JsonValue) {

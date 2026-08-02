@@ -91,6 +91,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [46 — Correct First-use Operations](issues/46-correct-first-use-operations.md)。Local 默认无限等待、安全 operational JSONL、无模板初始化及 linked CLI build 权限已闭合；真实 `~/.loom` 上一条约 13 分 49 秒的 Local Input 正常完成，没有重现旧的 120 秒假超时。
 - Completed: [49 — Explain an unavailable Local Host](issues/49-explain-unavailable-local-host.md)。`loom chat/history` 在 Host 未运行或残留 socket 时给出可行动提示，不越过 Host 的 socket 所有权。
 - Completed: [48 — terminated model call leaves an orphaned tool call](issues/48-terminated-model-call-leaves-orphaned-tool-call.md)。中断 assistant attempt 保留在原始 transcript 作诊断，但不再被解释为已派发的 tool interaction 或 Frozen Activity；自动重试成功的 Turn 不会因旧半截 toolCall 误记 failed，正常未完成调用仍严格拒绝。
+- Completed: [50 — Let human Input supersede a running Orientation](issues/50-prioritize-human-input-over-orientation.md)。人类来信会立即使只读 Orientation 失去 Opportunity admission 资格，并在同一事务移除尚未被 Main Agent claim 的 Opportunity；Pulse 无需等待旧模型调用结束即可继续处理来信，其他有写入或外部效果的生命周期仍保持串行。
 
 ## Context Follow-ups
 

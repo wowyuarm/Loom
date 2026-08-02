@@ -545,7 +545,7 @@ export type RunOpportunityPulseResult =
   | { disposition: "accepted"; inputId: string; runId: string; nextRunAt: string }
   | { disposition: "none"; runId: string; nextRunAt: string }
   | { disposition: "busy" }
-  | { disposition: "stale"; runId: string }
+  | { disposition: "stale"; runId?: string }
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; nextRunAt: string; error: string };
 

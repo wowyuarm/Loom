@@ -17,6 +17,7 @@ import type {
   MemoryReflection,
   MemoryReflectionResult,
   AgentExecution,
+  OrientationResult,
   CloseActivityOptions,
   CloseActivityResult,
   DeliveryAttemptRequest,
@@ -200,6 +201,10 @@ interface ActiveExecution {
   steeringTail: Promise<void>;
 }
 
+interface ActiveOrientation {
+  supersede(): void;
+}
+
 class SqliteRuntime implements Runtime {
   readonly #database: DatabaseSync;
   readonly #execution: AgentExecution | undefined;
@@ -225,6 +230,7 @@ class SqliteRuntime implements Runtime {
   #attentionMaintenanceRunning = false;
   #memoryReflectionRunning = false;
   #opportunityRunning = false;
+  #activeOrientation: ActiveOrientation | undefined;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RuntimeOptions) {
@@ -276,7 +282,10 @@ class SqliteRuntime implements Runtime {
         now.toISOString(),
       );
       if (result.changes === 1) {
-        if (input.kind === "interaction") this.#cancelPendingAfterChat(now, "new_human_input");
+        if (input.kind === "interaction") {
+          this.#cancelPendingAfterChat(now, "new_human_input");
+          this.#discardUnclaimedOpportunities(now);
+        }
         this.#recordTransition("input", id, null, "pending", "accepted", now, null);
         return { disposition: "accepted", inputId: id } as const;
       }
@@ -287,6 +296,7 @@ class SqliteRuntime implements Runtime {
 
     if (accepted.disposition === "accepted") {
       const accepted = { disposition: "accepted", inputId: id } as const;
+      if (input.kind === "interaction") this.#activeOrientation?.supersede();
       const active = this.#active;
       if (active && !active.finishing) {
         const steering = active.steeringTail.then(async () => {
@@ -393,7 +403,7 @@ class SqliteRuntime implements Runtime {
 
     const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
     try {
-      const result = await this.#formOpportunityAt(options.observedAt, nextRunAt);
+      const result = await this.#formOpportunityAt(options.observedAt, nextRunAt, true);
       if (result.disposition === "accepted") return { ...result, nextRunAt };
       if (result.disposition === "none") return { ...result, nextRunAt };
       return result;
@@ -408,19 +418,54 @@ class SqliteRuntime implements Runtime {
   async #formOpportunityAt(
     observedAt: Date,
     completedPulseNextRunAt?: string,
-  ): Promise<FormOpportunityResult> {
+  ): Promise<FormOpportunityResult>;
+  async #formOpportunityAt(
+    observedAt: Date,
+    completedPulseNextRunAt: string | undefined,
+    returnOnSupersede: true,
+  ): Promise<FormOpportunityResult | { disposition: "stale" }>;
+  async #formOpportunityAt(
+    observedAt: Date,
+    completedPulseNextRunAt?: string,
+    returnOnSupersede = false,
+  ): Promise<FormOpportunityResult | { disposition: "stale" }> {
     if (!this.#orientation) throw new Error("Runtime has no Orientation adapter");
     if (this.#opportunityRunning) return { disposition: "busy" };
     const snapshot = this.#opportunitySnapshot(observedAt);
     if (!snapshot) return { disposition: "busy" };
 
+    let supersededByInput = false;
+    let supersede!: () => void;
+    const superseded = new Promise<"superseded">(resolve => {
+      supersede = () => {
+        supersededByInput = true;
+        resolve("superseded");
+      };
+    });
+    const orientation: ActiveOrientation = { supersede };
     this.#opportunityRunning = true;
-    let result;
+    this.#activeOrientation = orientation;
+    const completion = Promise.resolve().then(() => this.#orientation!.form(snapshot.request));
+    void completion.finally(() => {
+      if (this.#activeOrientation === orientation) {
+        this.#activeOrientation = undefined;
+        this.#opportunityRunning = false;
+      }
+    }).catch(() => {});
+    let result: OrientationResult | "superseded";
     try {
-      result = await this.#orientation.form(snapshot.request);
-    } finally {
-      this.#opportunityRunning = false;
+      result = returnOnSupersede
+        ? await Promise.race([completion, superseded])
+        : await completion;
+    } catch (error) {
+      if (this.#activeOrientation === orientation) {
+        this.#activeOrientation = undefined;
+        this.#opportunityRunning = false;
+      }
+      throw error;
     }
+    if (result === "superseded") return { disposition: "stale" };
+    if (supersededByInput) return { disposition: "stale", runId: result.runId };
     if (result.outcome === "none") {
       if (completedPulseNextRunAt) {
         this.#completePulse(observedAt, completedPulseNextRunAt, "orientation_none");
@@ -1433,6 +1478,30 @@ class SqliteRuntime implements Runtime {
 
   #hasPendingInput(): boolean {
     return Boolean(this.#database.prepare("SELECT 1 FROM inputs WHERE status = 'pending' LIMIT 1").get());
+  }
+
+  #discardUnclaimedOpportunities(discardedAt: Date): void {
+    const opportunities = this.#database.prepare(`
+      SELECT id FROM inputs
+      WHERE kind = 'opportunity' AND status = 'pending'
+        AND NOT EXISTS (SELECT 1 FROM turn_inputs WHERE turn_inputs.input_id = inputs.id)
+    `).all() as unknown as Array<{ id: string }>;
+    for (const opportunity of opportunities) {
+      const removed = this.#database.prepare(`
+        DELETE FROM inputs WHERE id = ? AND kind = 'opportunity' AND status = 'pending'
+          AND NOT EXISTS (SELECT 1 FROM turn_inputs WHERE turn_inputs.input_id = inputs.id)
+      `).run(opportunity.id);
+      if (removed.changes !== 1) continue;
+      this.#recordTransition(
+        "input",
+        opportunity.id,
+        "pending",
+        "discarded",
+        "human_input_precedes_opportunity",
+        discardedAt,
+        null,
+      );
+    }
   }
 
   #hasPendingActivityRecording(): boolean {
