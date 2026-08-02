@@ -89,6 +89,7 @@ Skills 只有一套发现与加载机制，来源只表示维护权；tools 是 
 - Completed: [44 — Default CLI to the User Instance Root](issues/44-default-cli-instance-root.md)。CLI 在未指定 `--root` 时使用 `~/.loom`；显式 root 仍用于测试、临时 Instance 和其他明确部署位置。
 - Completed: [45 — Deploy the First Local Instance](issues/45-deploy-the-first-local-instance.md)。linked CLI、独立 HaL 材料、DeepSeek Flash、Local 与真实 Host 启停均已验证，nmem / Weixin 保持关闭且没有写入模拟人类来信。
 - Completed: [46 — Correct First-use Operations](issues/46-correct-first-use-operations.md)。Local 默认无限等待、安全 operational JSONL、无模板初始化及 linked CLI build 权限已闭合；真实 `~/.loom` 上一条约 13 分 49 秒的 Local Input 正常完成，没有重现旧的 120 秒假超时。
+- Completed: [49 — Explain an unavailable Local Host](issues/49-explain-unavailable-local-host.md)。`loom chat/history` 在 Host 未运行或残留 socket 时给出可行动提示，不越过 Host 的 socket 所有权。
 
 ## Context Follow-ups
 
@@ -114,7 +115,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-Current work item: none。[46 — Correct First-use Operations](issues/46-correct-first-use-operations.md) 已完成实现、完整测试和真实 HaL Instance 验收。下一项工作从持续运行中暴露的具体问题进入，不因本次闭合扩建通用运维或诊断体系。
+Current work item: [48 — terminated model call leaves an orphaned tool call](issues/48-terminated-model-call-leaves-orphaned-tool-call.md)。它已由真实 HaL 运行确认，下一轮应按 ticket 的现有证据收束其 transcript 终态语义；不要把 provider route 切换误当作该 Harness bug 的修复。
 
 ### Memory Reflector Completion Checkpoint
 

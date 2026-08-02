@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp } from "node:fs/promises";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -158,6 +158,21 @@ test("stops waiting when a Local client disconnects", async t => {
   await delay(10);
 
   assert.equal(polls, pollsAfterDisconnect);
+});
+
+test("explains when the Local Host is unavailable instead of exposing a socket error", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-local-unavailable-"));
+  const socketPath = path.join(root, "local.sock");
+  await writeFile(socketPath, "stale socket placeholder", "utf8");
+
+  await assert.rejects(
+    readLocalInteractionHistory({ socketPath }),
+    /Loom Host is not running; start it with `loom run` before using Local chat or history/,
+  );
+  await assert.rejects(
+    sendLocalChat({ socketPath, text: "hello" }),
+    /Loom Host is not running; start it with `loom run` before using Local chat or history/,
+  );
 });
 
 function interactionPage(

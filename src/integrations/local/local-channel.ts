@@ -266,7 +266,7 @@ async function localRequest(socketPath: string, request: LocalRequest): Promise<
       if (settled) return;
       settled = true;
       socket.destroy();
-      reject(error);
+      reject(localConnectionError(error));
     };
     socket.once("error", fail);
     socket.once("close", () => {
@@ -359,4 +359,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function localConnectionError(error: unknown): unknown {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  if (code === "ECONNREFUSED" || code === "ENOENT") {
+    return new Error("Loom Host is not running; start it with `loom run` before using Local chat or history");
+  }
+  return error;
 }
