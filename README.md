@@ -121,3 +121,4 @@ Loom 的文档保持薄：稳定术语落在 CONTEXT.md，难以逆转的取舍�
 - [.scratch/harness-layers/map.md](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作与下一步
 - [docs/agents/](docs/agents/) — 工程任务约定
 - [docs/integrations/](docs/integrations/) — Local 与 Weixin 接入
+- [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 由用户授权的操作 agent 部署、初始化和维护实例

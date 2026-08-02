@@ -117,7 +117,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-当前没有待实施的 Loom ticket。继续观察 HaL 的真实互动、主动与沉默、认知材料演化、长模型调用和重启连续性；出现稳定的 Harness 问题后再建一张范围明确的 ticket，不把 provider route、Local client 或运维能力混成一个工作单元。
+当前没有待实施的 Loom code ticket。继续观察 HaL 的真实互动、主动与沉默、认知材料演化、长模型调用和重启连续性；出现稳定的 Harness 问题后再建一张范围明确的 ticket，不把 provider route、Local client 或运维能力混成一个工作单元。
 
 ## Independent Development
 
@@ -128,6 +128,11 @@ ticket 作为唯一协作入口。Xi 的源码、运行经验和 source ticket �
 当前独立实例阶段的已知事项是：HaL 使用 Local 和已验证的模型 route 继续接受真实观察；
 nmem 与 Weixin 按实例配置保持关闭，何时启用由未来的单独需求决定；完整实例备份与恢复
 演练尚未形成 Loom ticket。它们都是 Loom 自己的运行决策，不是回到 Xi 的理由。
+
+Ticket 51 已记录 Loom 的 Operator Agent 原则和多 Individual VPS 运维边界：Harness 只提供
+可组合的 Instance 原语；部署、Individual 初始化和 Integration 选择由经用户授权的操作 agent
+依据文档与实际环境完成。一个 Individual 对应一个 Unix account、Instance Root 和 Host service；
+共享源码不意味着共享运行权限。
 
 ### Memory Reflector Completion Checkpoint
 

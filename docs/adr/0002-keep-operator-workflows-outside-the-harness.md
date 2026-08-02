@@ -1,0 +1,3 @@
+# Keep operator workflows outside the Harness
+
+Loom provides small, repeatable primitives for an Instance: initialization, configuration loading, Host execution and explicitly enabled Integrations. It does not encode deployment, OS-account creation, Individual design, credential collection or Integration choices into a wizard, `deploy` command, control plane or persona generator. A user-authorized Operator Agent combines the documented primitives after it understands the user, Individual and target machine; `init` may create Harness-owned prerequisites, but never authors Identity, Stable Facts, Long-term Memory, Current Attention or relationship content.

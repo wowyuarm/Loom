@@ -113,3 +113,4 @@ Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也�
 - [Harness layers map](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作和下一步
 - [ADR](docs/adr/) — 长期取舍
 - [Integration docs](docs/integrations/) — Local 与 Weixin
+- [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 实例初始化、VPS 部署与多 Individual 运维

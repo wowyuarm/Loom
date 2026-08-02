@@ -24,6 +24,10 @@ _Avoid_: shared runtime, multi-agent host, tenant
 一个 Runtime Instance 的单一物理根目录。Loom 默认使用隐藏目录 `.loom/`，但该根目录本身不等于 Agent Workspace。
 _Avoid_: workspace root, shared state directory
 
+**Operator Agent**:
+经用户授权、在 Loom 之外结合文档、实际主机和用户决定来准备、部署或维护 Runtime Instance 的人或 agent。它不是 Agent Individual、Cognitive Organ、Host 或 Harness 的常驻能力。
+_Avoid_: deployment controller, setup wizard, Harness agent
+
 ## Boundaries
 
 **Runtime**:
