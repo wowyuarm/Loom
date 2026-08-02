@@ -119,6 +119,16 @@ nmem 范围闭合后的全局审视现已完成：
 
 当前没有待实施的 Loom ticket。继续观察 HaL 的真实互动、主动与沉默、认知材料演化、长模型调用和重启连续性；出现稳定的 Harness 问题后再建一张范围明确的 ticket，不把 provider route、Local client 或运维能力混成一个工作单元。
 
+## Independent Development
+
+自 2026-08-02 起，Loom 以本仓库的 `AGENTS.md`、`CONTEXT.md`、本 map、ADR 和当前
+ticket 作为唯一协作入口。Xi 的源码、运行经验和 source ticket 是可选的历史参考，
+不再决定 Loom 的实现、测试、文档或验收，也不需要为 Loom 的后续工作维护 Xi 文档。
+
+当前独立实例阶段的已知事项是：HaL 使用 Local 和已验证的模型 route 继续接受真实观察；
+nmem 与 Weixin 按实例配置保持关闭，何时启用由未来的单独需求决定；完整实例备份与恢复
+演练尚未形成 Loom ticket。它们都是 Loom 自己的运行决策，不是回到 Xi 的理由。
+
 ### Memory Reflector Completion Checkpoint
 
 - Xi 的有效职责不是每日摘要，而是把跨时间 evidence 慎重写回 Identity、Long-term Memory 与两份 Behavior Material，并在最高证据门槛下允许 Identity 演化；Current Attention 与 Harness System Guidance 均不归它维护。

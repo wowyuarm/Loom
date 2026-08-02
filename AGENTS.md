@@ -1,60 +1,97 @@
 # Loom Repository Guidelines
 
-## Project
+## Project Overview
 
-Loom 是一个 Agent Harness，不承载多个 Agent Individual。每个 Runtime Instance 只承载一个 Individual；Harness 提供长期存在的条件，Individual 形成自己的身份、关系和判断。
+Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只承载一个 Agent Individual；Harness 提供连续性、恢复、Workspace 和行动条件，不内置 Individual 的身份、关系或判断。
+
+Loom 是独立项目。Xi 可以在某个新问题确实需要历史生产经验时作为只读参考，但不是 Loom 的入口、依赖、实现说明或验收标准。
 
 ## Read First
 
-开始工程工作时依次阅读：
+开始工程工作时，依次阅读：
 
-1. `AGENTS.md`
-2. `CONTEXT.md`
-3. 与任务有关的 `docs/adr/`
-4. 对应 `.scratch/` 中的 map、spec 或 ticket（存在时）
+1. `CONTEXT.md`
+2. 与任务有关的 `docs/adr/`
+3. 对应 `.scratch/` 中的 map、spec 或 active ticket（存在时）
 
-## Engineering Rules
+恢复旧工作时，以 `.scratch/harness-layers/map.md` 的当前阶段和工作项为准；涉及既有决定时做一次定向 memory 搜索。同一段工作不反复搜索，也不从闭合 ticket 的历史来源重新推导当前设计。
 
-- 代码应自包含地说明模块职责、关键约束和可观察行为：优先依靠清晰结构、命名、类型、接口、错误与测试；注释只说明代码无法表达的理由。
-- 文档不重复实现过程，但保留术语、取舍、导航、外部接入约束、运维说明和当前工作入口。
-- 一个 commit 对应一个闭合且有实质内容的工作单元，通常是一张完成的 ticket 或一个已收束的研究结论，而不是一个文件或一小段文档变化。该单元形成的决策记录、实现、测试和必要文档应一起评估并同批提交；讨论中的状态、零散笔记和中间文档先留在工作区。纯研究只有在得出可复用结论时才单独提交。
-- 新依赖、运行配置和目录结构必须随第一个实际使用它的模块进入，并说明其必要性。
-- 新代码必须有与风险相称的实际验证；没有运行代码时，不伪造测试或命令。
+## Repository Structure
 
-## Skill Workflow
+```text
+src/
+  runtime/          Input、时间、Turn、Effect、Delivery、恢复和调度
+  main-agent/       Pi 执行、Context、Transcript、message 和工具轨迹
+  agents/           Loom 内置的 Cognitive Organs
+  workspace/        Agent Workspace 的访问与器官写入恢复
+  instance/          Instance 装配、布局、Process Driver 与初始化
+  host/             单 Instance 的 live owner
+  integrations/     Local、Weixin、nmem 和附件 Adapter
+  configuration/    Instance 配置、时间和模型 revision
+test/               与 src/ 对应的 Node test 覆盖
+docs/               ADR、工程约定和接入说明
+.scratch/           当前工程协作的 map、spec 与 ticket
+```
 
-Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也不要为了使用 skill 预建 map、spec、ticket 或空架构。
+`README.md` 面向使用和部署；`CONTEXT.md` 定义稳定术语；ADR 只记录难以逆转的取舍。代码、测试和 ticket 应解释具体实现，不另写过程型文档。
 
-1. 延续 Loom 工作时，先按 Xi 的 `docs/loom-reconstruction-guide.md` 恢复阶段和 source entry；涉及既有决定时用 `search-memory` 做一次定向搜索，同一段工作不要反复搜索。
-2. 回读 Xi 代码或运行证据时使用 Xi 的 `runtime` skill，把 Xi 当作只读 source reference；先确认现有事实，再决定 Loom 取舍。
-3. 需要确定 Module 的 Interface 或 seam 时使用 `codebase-design`。优先让复杂度留在深 Module 内，只为真实变化点建立 Adapter；测试穿过同一个 Interface，不直接测试内部 Store 或 SQL。
-4. 术语或长期边界真正确定时使用 `domain-modeling`：立即更新 `CONTEXT.md`；只有决定难以反转、理由不明显且确有取舍时才写 ADR。
-5. 实现已确认的行为时使用 `tdd`。先由现有 ticket 或已确认决定确定测试 seam，再按“一条失败测试 -> 最小实现 -> 下一条行为”推进，不先横向写完所有测试或骨架。
-6. 完成一个实质工作单元后，运行真实验证，检查代码、ticket、薄文档是否一致，再一起 commit。形成长期有用的新状态或教训时使用 `distill-memory`，写入前先搜索并优先更新已有记忆；commit、路径清单和详细状态留在项目文档。
+## Build and Development Commands
+
+需要 Node `>=24.15.0`。
+
+```bash
+npm run typecheck
+npm test
+npm run build
+
+node dist/src/cli.js init [--root <instance-root>]
+node dist/src/cli.js run [--root <instance-root>]
+node dist/src/cli.js chat [--root <instance-root>] <text>
+node dist/src/cli.js history [--root <instance-root>]
+```
+
+CLI 默认 Instance Root 是 `~/.loom`。开发期 `npm run build && npm link` 后可使用 `loom` 命令；重新 build 后，已运行的 Host 仍要正常重启才能使用新产物。
+
+## Code and Architecture
+
+- TypeScript 使用严格 NodeNext 配置；保留本地 ESM import 的 `.js` 后缀。
+- Runtime 持有唯一的 Runtime Store，并编排 Input、Turn、Effect、Delivery、调度和恢复。
+- Main Agent 负责 Pi 执行、Context 和 Primary Agent Transcript；Cognitive Organs 是 Harness 内置、版本化的专职能力。
+- Agent Workspace 属于 Individual；Runtime Store、Transcript、Instance Configuration 和附件原始内容各自保持所有权，不把它们混成同一份状态。
+- Integration 默认关闭，只有 Instance Configuration 显式启用才装配、连接或向 Agent 暴露能力。不要预建通用 plugin loader、job runner、控制面或多 Instance Host。
+- `message` 先形成持久 Effect，Delivery 只投递该 Effect；不能通过重新跑 Input 或模型调用来重试外部行动。
+
+## Testing
+
+- 修改代码后先跑与风险相称的测试；完成一个工作单元时跑 `npm run typecheck` 和 `npm test`。
+- 测试通过公开接口观察行为，不检查私有 SQLite 状态或 prompt 字符串。
+- 模型能力、语言和写作品味用真实实例观察，不用 faux provider 测试伪造质量结论。
+- 不把生产或个人 Instance Root 当测试目录；使用测试创建的临时 root。
+
+## Configuration and Secrets
+
+- `configuration/pi/auth.json`、Weixin `auth.json`、`.env*` 和 Instance Root `.loom/` 都是私有运行材料，不能提交、复制进 ticket、测试输出或文档。
+- `loom init` 只创建 Harness-owned scaffold；Individual-owned `facts.json`、Identity、Memory 和 Attention 必须由实例提供，不能由 Harness 代写。
+- 运行配置的启用状态由 `configuration/instance.yaml` 决定；不要因为包里已有 Integration 实现就假定它可用。
+
+## Workflow and Documentation
+
+- 一个 commit 对应一个闭合、有实质内容的工作单元。相关决定、实现、测试和必要文档一起评估；不做按文件切分的零散提交。
+- 工程工作记录在 `.scratch/`。状态和文件约定见 [issue tracker](docs/agents/issue-tracker.md) 与 [triage labels](docs/agents/triage-labels.md)。
+- 术语或长期边界真的改变时更新 `CONTEXT.md`；只有理由不明显且难以逆转的取舍才新增 ADR。
+- 碰到新问题时先以 Loom 的当前 map 和代码为准。闭合 ticket 中的 Xi source reference 是历史证据，保留即可，不要批量维护或要求本机存在 Xi。
 
 ## Cognitive Organ Prompts
 
-- Cognitive Organ 的 system prompt、tool description 和首轮 run context 都是 Harness 版本化的行为设计。改动这些模型可见语义前，先对照 source implementation 中已经验证的职责、判断方法和失败经验，与用户确认需要保留、泛化或删除的部分。
-- 通用化不等于压短。保留器官完成职责所需的工作方法、质量边界和有效示例；删除的应是具体 Individual 的姓名、关系称谓、固定路径、固定时区和偶然 Integration 前提。
-- system prompt 定义角色、方法、判断和输出质量；首轮 user message 提供本次运行的证据与 Workspace 索引；tool description 说明每个动作的实际效果和字段语义。不要让三者互相重复，也不要用工具 schema 代替工作方法。
-- faux provider 测试只验证最终 Context、工具面、读写保护和持久化等机械合同。语言跟随、叙事质量和判断质量属于真实模型评估，不用 prompt 字符串断言或脚本输出冒充。
+- system prompt、tool description 和首轮 run context 都是 Harness 版本化的行为设计。改动模型可见语义前，先确认职责、判断方法、工具效果和失败边界。
+- system prompt 定义角色和质量；首轮 user message 提供本次 evidence 与 Workspace 索引；tool description 说明动作效果和字段语义。三者不要重复。
+- 通用化不等于压短：保留器官完成职责所需的方法与例子，去掉的只是具体 Individual 的姓名、关系称谓、路径、时区和偶然 Integration 前提。
+- prompt 的机械合同由 faux provider 覆盖；语言跟随、叙事质量和判断质量由真实模型观察决定。
 
-## Git
+## Further Reading
 
-- 使用简短英语 Conventional Commit message。
-- 默认只提交当前工作产生的文件，不把无关改动混入提交。
-- 不重写或回退其他人的工作。
-
-## Agent skills
-
-### Issue tracker
-
-工程需求、方案和任务使用仓库内 `.scratch/` 的本地 Markdown 文件。见 `docs/agents/issue-tracker.md`。
-
-### Triage labels
-
-任务使用五个标准状态：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
-
-### Domain docs
-
-这是单一领域上下文；术语在 `CONTEXT.md`，长期取舍在 `docs/adr/`。见 `docs/agents/domain.md`。
+- [README.md](README.md) — 使用、部署和 Instance Root 布局
+- [CONTEXT.md](CONTEXT.md) — 术语与边界
+- [Harness layers map](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作和下一步
+- [ADR](docs/adr/) — 长期取舍
+- [Integration docs](docs/integrations/) — Local 与 Weixin

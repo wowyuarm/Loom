@@ -43,6 +43,10 @@ npm link
 `loom` 随后指向这个仓库的 `dist/src/cli.js`。源码更新后必须先通过验证并重新
 build，运行中的 Host 仍需正常重启；当前不把开发 checkout 伪装成版本化发布包。
 
+Host 是 Local socket 的唯一 owner。`loom chat` 或 `loom history` 只能连接已经运行的
+`loom run`；Host 不在线或只遗留旧 socket 文件时，CLI 会明确提示先启动 Host，且不会
+自行删除 socket 或直接打开 Runtime Store。
+
 Local 使用 `runtime/integrations/local.sock`。CLI 是客户端，不会直接打开
 Runtime Store，也不保存自己的 inbox。`history` 从 Runtime 的 human Input、
 message Effect 和 confirmed Delivery 重建 Interaction View，因此未来从 Weixin

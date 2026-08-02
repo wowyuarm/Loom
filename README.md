@@ -113,10 +113,11 @@ npm run build
 
 ## 文档
 
-Loom 的文档体系遵循 [Matt Pocock 的 engineering skills](https://github.com/mattpocock/skills/tree/main/skills/engineering)：稳定术语落在 CONTEXT.md，难以逆转的取舍落在 ADR，工作路线用 `.scratch/` 里的 map 与 ticket 推进，任务用标准 triage 状态流转。
+Loom 的文档保持薄：稳定术语落在 CONTEXT.md，难以逆转的取舍落在 ADR，当前工作路线用 `.scratch/` 里的 map 与 ticket 推进。
 
 - [CONTEXT.md](CONTEXT.md) — 术语与边界
 - [docs/adr/](docs/adr/) — 难以逆转的长期取舍
 - [AGENTS.md](AGENTS.md) — 协作规则
+- [.scratch/harness-layers/map.md](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作与下一步
 - [docs/agents/](docs/agents/) — 工程任务约定
 - [docs/integrations/](docs/integrations/) — Local 与 Weixin 接入
