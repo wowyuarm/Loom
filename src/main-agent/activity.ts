@@ -76,6 +76,7 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
             actorRef: inputActorRef(input),
             kind: "input" as const,
             content: structuredClone(input.payload),
+            ...(input.interaction ? { interaction: structuredClone(input.interaction) } : {}),
           };
         });
     const events = orderEvents([

@@ -11,6 +11,8 @@ import {
 } from "../../src/integrations/raft/index.js";
 import type { RuntimeInput } from "../../src/runtime/index.js";
 
+const activationTime = () => new Date("2026-08-03T04:59:00.000Z");
+
 test("persists a content-free wake before resolving and completing its Runtime Input", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-ingress-"));
   const resolution = deferred<Awaited<ReturnType<RaftRemote["resolveMessage"]>>>();
@@ -24,6 +26,7 @@ test("persists a content-free wake before resolving and completing its Runtime I
   };
   const channel = await openRaftChannel({
     stateFile: path.join(root, "raft.db"),
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-hal",
@@ -112,6 +115,7 @@ test("persists a content-free wake before resolving and completing its Runtime I
   await channel.stop();
   const recovered = await openRaftChannel({
     stateFile: path.join(root, "raft.db"),
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-hal",
@@ -161,6 +165,7 @@ test("delivers a persisted message through its opaque Destination and preserves 
   };
   const channel = await openRaftChannel({
     stateFile: path.join(root, "raft.db"),
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-hal",
@@ -255,6 +260,7 @@ test("offers four bounded read tools that keep Raft targets behind opaque refs",
   };
   const channel = await openRaftChannel({
     stateFile: path.join(root, "raft.db"),
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-hal",
@@ -309,6 +315,7 @@ test("stops accepting new wakes while an in-flight wake reaches its Runtime boun
   };
   const channel = await openRaftChannel({
     stateFile: path.join(root, "raft.db"),
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-hal",
@@ -385,6 +392,7 @@ test("keeps ordinary channel activity out of Runtime Inputs until Orientation co
   };
   const channel = await openRaftChannel({
     stateFile,
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-loom",
@@ -428,6 +436,7 @@ test("keeps ordinary channel activity out of Runtime Inputs until Orientation co
   await channel.stop();
   const recovered = await openRaftChannel({
     stateFile,
+    now: activationTime,
     routeRef: "raft-primary",
     serverId: "server-1",
     selfMemberId: "agent-loom",
@@ -441,6 +450,50 @@ test("keeps ordinary channel activity out of Runtime Inputs until Orientation co
   assert.equal((await recoveredSource.capture())?.revision, remaining.revision);
   await recoveredSource.markPresented(remaining.revision);
   assert.equal(await recoveredSource.capture(), undefined);
+});
+
+test("does not create a Runtime Input for a message that predates activation", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-activation-boundary-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2000-01-01T00:00:00.000Z",
+      signal: "direct_message",
+      content: "An old message.",
+      sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+      place: {
+        target: "dm:@yu",
+        kind: "direct",
+        visibility: "private",
+        audience: "Only members of this DM can read it.",
+      },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-loom",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "must-not-exist" };
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-old",
+    messageId: "message-old",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => channel.status().pendingWakes === 0);
+
+  assert.equal(inputs.length, 0);
 });
 
 function deferred<T>(): {

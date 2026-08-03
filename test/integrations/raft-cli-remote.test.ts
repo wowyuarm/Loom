@@ -42,6 +42,10 @@ test("validates a pinned Raft profile and resolves and sends through the 0.0.17 
       audience: "Only members of dm:@yu can read this DM.",
     },
   });
+  assert.equal((await remote.resolveMessage("aaaaaaaa-1111-2222-3333-444444444444")).signal, "channel_activity");
+  assert.equal((await remote.resolveMessage("bbbbbbbb-1111-2222-3333-444444444444")).signal, "task");
+  assert.equal((await remote.resolveMessage("cccccccc-1111-2222-3333-444444444444")).signal, "channel_activity");
+  assert.equal((await remote.resolveMessage("dddddddd-1111-2222-3333-444444444444")).signal, "thread_reply");
   assert.deepEqual(await remote.sendText({ target: "dm:@yu", text: "A durable reply." }), {
     disposition: "sent",
     remoteId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -169,11 +173,19 @@ if (command[0] === "--version") {
   };
   process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
 } else if (command[0] === "message" && command[1] === "resolve") {
-  process.stdout.write("[target=dm:@yu msg=12345678 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: Can we inspect this: carefully?\\n");
+  const id = command[2];
+  if (id.startsWith("aaaaaaaa")) process.stdout.write("[target=#commons msg=aaaaaaaa time=2026-08-03 05:01:00 type=agent] @alex — Another agent: Update [task #12 status=todo assignee=agent:agent-other]\\n");
+  else if (id.startsWith("bbbbbbbb")) process.stdout.write("[target=#commons msg=bbbbbbbb time=2026-08-03 05:02:00 type=agent] @alex — Another agent: Update [task #13 status=todo assignee=agent:agent-loom]\\n");
+  else if (id.startsWith("cccccccc")) process.stdout.write("[target=#commons:cccccccc msg=cccccccc time=2026-08-03 05:03:00 type=agent] @alex — Another agent: An unfollowed reply\\n");
+  else if (id.startsWith("dddddddd")) process.stdout.write("[target=#commons:dddddddd msg=dddddddd time=2026-08-03 05:04:00 type=agent] @alex — Another agent: A followed reply\\n");
+  else process.stdout.write("[target=dm:@yu msg=12345678 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: Can we inspect this: carefully?\\n");
 } else if (command[0] === "server" && command[1] === "info") {
   process.stdout.write("## Server Channels\\n\\nPrivate channels are shown only when this agent is a member.\\n#commons [public, joined, not muted] — A shared place.\\n\\nShowing 1-1 of 2.\\nMore: raft server info --channels --offset 1 --limit 1\\n");
 } else if (command[0] === "channel" && command[1] === "info") {
   process.stdout.write("## Channel\\n\\nChannel: #commons\\nID: channel-commons\\nVisibility: public\\nJoined: yes\\nMuted: no\\nDescription: A shared place.\\n");
+} else if (command[0] === "channel" && command[1] === "members") {
+  const followed = command[2].endsWith(":dddddddd");
+  process.stdout.write("## Channel Members\\n\\n### Agents\\n" + (followed ? "  - @loom (active)\\n" : "  - @alex (active)\\n") + "\\n### Humans\\n  (none)\\n");
 } else if (command[0] === "message" && command[1] === "search") {
   process.stdout.write('Search results for: "durable" (1 result)\\n\\n<result ref="msg:bbbbbbbb-1111-2222-3333-444444444444">\\nSource: channel:commons\\nSender: alex (agent)\\nTime: 2026-08-03 04:55:00\\n\\n<preview>\\nA durable <match>result</match>.\\n</preview>\\n</result>\\n');
 } else if (command[0] === "message" && command[1] === "send") {

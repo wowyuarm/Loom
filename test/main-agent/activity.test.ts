@@ -184,6 +184,73 @@ test("preserves an external Interaction actor in Frozen Activity", async () => {
     activity.events.find(event => event.eventId === "input:input-2")?.actorRef,
     "external:raft:server-1:member-7",
   );
+  assert.deepEqual(activity.events.find(event => event.eventId === "input:input-2")?.interaction, closing.inputs[1]!.interaction);
+});
+
+test("preserves Interaction Context when Frozen Activity has no transcript", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-context-without-transcript-"));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory: path.join(root, "transcripts"),
+    nextWindowId: () => "window-2",
+  });
+  const interaction: NonNullable<ActivityFreezeRequest["inputs"][number]["interaction"]> = {
+    routeRef: "raft:server-1",
+    signal: "mention",
+    actor: { actorRef: "external:raft:server-1:member-7", kind: "agent", label: "Mira" },
+    place: {
+      placeRef: "raft:server-1:channel-3",
+      kind: "channel",
+      label: "#design",
+      visibility: "public",
+    },
+    audience: { visibility: "public", description: "Raft server members" },
+    references: [{ kind: "message", ref: "raft:server-1:message-42" }],
+    destinations: [{
+      destinationRef: "raft:server-1:channel-3:top-level",
+      routeRef: "raft:server-1",
+      kind: "top_level",
+    }],
+    defaultDestinationRef: "raft:server-1:channel-3:top-level",
+  };
+  const state = serializeContextWindowState({
+    version: 1,
+    id: "window-1",
+    frozenSeed: [],
+    recentActivityReferences: [],
+    committedTrace: [],
+    transcriptSources: [],
+  });
+  const { activity } = await lifecycle.freeze({
+    segment: {
+      id: "segment-no-transcript",
+      openedAt: "2026-08-03T05:00:00.000Z",
+      closedAt: "2026-08-03T05:01:00.000Z",
+      recordingDay: "2026-08-03",
+    },
+    recentActivities: [],
+    executionState: state,
+    inputs: [{
+      id: "input-no-transcript",
+      kind: "interaction",
+      payload: { text: "A message without committed transcript evidence." },
+      interaction,
+      occurredAt: "2026-08-03T05:00:00.000Z",
+    }],
+    turns: [{
+      id: "turn-no-transcript",
+      inputIds: ["input-no-transcript"],
+      status: "failed",
+      startedAt: "2026-08-03T05:00:00.000Z",
+      endedAt: "2026-08-03T05:01:00.000Z",
+      error: "fixture failure",
+    }],
+    toolActivities: [],
+    effects: [],
+    deliveries: [],
+  });
+
+  assert.deepEqual(activity.events.find(event => event.eventId === "input:input-no-transcript")?.interaction, interaction);
 });
 
 test("omits a retried interrupted assistant attempt from Frozen Activity evidence", async () => {

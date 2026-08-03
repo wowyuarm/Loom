@@ -70,6 +70,7 @@ export interface FrozenActivityEvent {
   actorRef: ActorReference;
   kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
   content: JsonValue;
+  interaction?: InteractionContext;
 }
 
 export interface FrozenActivityTurn {
@@ -246,12 +247,14 @@ export type OrientationResult =
       narrative: string;
       whyNow: string;
       evidence: string[];
+      acknowledgeExternalEvidence?: () => Promise<void>;
     }
   | {
       outcome: "none";
       runId: string;
       whyNow: string;
       evidence: string[];
+      acknowledgeExternalEvidence?: () => Promise<void>;
     };
 
 export interface Orientation {

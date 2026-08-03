@@ -85,6 +85,7 @@ test("uses one Instance Time Policy for Opportunity context and Activity recordi
 test("forms one grounded Opportunity while the Runtime is idle", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-"));
   const requests: OrientationRequest[] = [];
+  let acknowledged = false;
   const runtime = openRuntime({
     root,
     now: () => new Date("2026-07-20T06:30:00.000Z"),
@@ -97,6 +98,7 @@ test("forms one grounded Opportunity while the Runtime is idle", async t => {
           narrative: "A current line has a concrete place to continue.",
           whyNow: "The latest evidence left it open.",
           evidence: ["attention.md names the open line"],
+          acknowledgeExternalEvidence: async () => { acknowledged = true; },
         };
       },
     },
@@ -123,6 +125,7 @@ test("forms one grounded Opportunity while the Runtime is idle", async t => {
     kind: "opportunity",
     status: "pending",
   }]);
+  assert.equal(acknowledged, true);
 });
 
 test("does not treat an external Interaction actor as the principal human", async t => {
@@ -211,6 +214,7 @@ test("does not treat an external Interaction actor as the principal human", asyn
 
 test("creates no Input when Orientation finds no grounded Opportunity", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-none-"));
+  let acknowledged = false;
   const runtime = openRuntime({
     root,
     orientation: {
@@ -220,6 +224,7 @@ test("creates no Input when Orientation finds no grounded Opportunity", async t 
           runId: "orientation-run-none",
           whyNow: "The inspected evidence has no current traction.",
           evidence: ["attention.md contains no open line"],
+          acknowledgeExternalEvidence: async () => { acknowledged = true; },
         };
       },
     },
@@ -231,6 +236,7 @@ test("creates no Input when Orientation finds no grounded Opportunity", async t 
     runId: "orientation-run-none",
   });
   assert.deepEqual(runtime.status().inputs, []);
+  assert.equal(acknowledged, true);
 });
 
 test("freezes a standalone proactive tool activity immediately after its Turn", async t => {
@@ -578,12 +584,14 @@ test("discards a silent Opportunity Segment and restores the prior Main Agent st
 
 test("discards an Orientation result when human Input wins the idle race", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-race-"));
+  let acknowledged = false;
   let resolveOrientation!: (value: {
     outcome: "opportunity";
     runId: string;
     narrative: string;
     whyNow: string;
     evidence: string[];
+    acknowledgeExternalEvidence?: () => Promise<void>;
   }) => void;
   const result = new Promise<{
     outcome: "opportunity";
@@ -591,6 +599,7 @@ test("discards an Orientation result when human Input wins the idle race", async
     narrative: string;
     whyNow: string;
     evidence: string[];
+    acknowledgeExternalEvidence?: () => Promise<void>;
   }>(resolve => {
     resolveOrientation = resolve;
   });
@@ -613,6 +622,7 @@ test("discards an Orientation result when human Input wins the idle race", async
     narrative: "This result is stale.",
     whyNow: "It was grounded before the human arrived.",
     evidence: ["old evidence"],
+    acknowledgeExternalEvidence: async () => { acknowledged = true; },
   });
 
   assert.deepEqual(await forming, {
@@ -624,6 +634,7 @@ test("discards an Orientation result when human Input wins the idle race", async
     sourceId: input.sourceId,
     kind: input.kind,
   })), [{ source: "test-channel", sourceId: "human-1", kind: "interaction" }]);
+  assert.equal(acknowledged, false);
 });
 
 test("lets human Input supersede a still-running Opportunity Pulse", async t => {

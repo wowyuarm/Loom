@@ -66,10 +66,14 @@ class RevisionBoundOrientation implements Orientation {
       ...(externalAttentionEvidence ? { externalAttentionEvidence } : {}),
     });
     const result = await orientation.form(request);
-    if (externalAttentionEvidence) {
-      await this.options.externalAttentionSource!.markPresented(externalAttentionEvidence.revision);
-    }
-    return result;
+    return {
+      ...result,
+      ...(externalAttentionEvidence ? {
+        acknowledgeExternalEvidence: () => this.options.externalAttentionSource!.markPresented(
+          externalAttentionEvidence.revision,
+        ),
+      } : {}),
+    };
   }
 }
 

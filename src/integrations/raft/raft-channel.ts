@@ -167,6 +167,7 @@ export interface RaftChannel extends OutboundDelivery {
 
 export interface OpenRaftChannelOptions {
   stateFile: string;
+  now?: () => Date;
   routeRef: string;
   serverId: string;
   selfMemberId: string;
@@ -239,7 +240,7 @@ class DefaultRaftChannel implements RaftChannel {
     `);
     this.#database.prepare(`
       INSERT OR IGNORE INTO integration_state (singleton, activated_at) VALUES (1, ?)
-    `).run(new Date().toISOString());
+    `).run((options.now?.() ?? new Date()).toISOString());
   }
 
   async start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): Promise<void> {
@@ -533,6 +534,12 @@ class DefaultRaftChannel implements RaftChannel {
         const message = await this.options.remote.resolveMessage(wake.message_id);
         if (message.messageId !== wake.message_id) {
           throw new Error("Raft resolved a different message than the persisted wake");
+        }
+        if (Date.parse(message.occurredAt) < Date.parse(this.#activationBoundary())) {
+          this.#completeWake(wake.message_id);
+          this.#state = "connected";
+          this.#lastError = undefined;
+          continue;
         }
         if (message.signal === "channel_activity") {
           this.#recordAmbientActivity(message);

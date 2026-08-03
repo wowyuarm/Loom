@@ -475,13 +475,14 @@ class SqliteRuntime implements Runtime {
       if (completedPulseNextRunAt) {
         this.#completePulse(observedAt, completedPulseNextRunAt, "orientation_none");
       }
+      await result.acknowledgeExternalEvidence?.();
       return { disposition: "none", runId: result.runId };
     }
     if (!result.runId.trim() || !result.narrative.trim()) {
       throw new Error("Orientation Opportunity requires a runId and narrative");
     }
 
-    return this.#transaction(() => {
+    const admitted = this.#transaction(() => {
       if (!this.#isOpportunityIdle()
         || this.#latestOpportunityTransitionSequence() !== snapshot.transitionSequence) {
         return { disposition: "stale", runId: result.runId } as const;
@@ -517,6 +518,10 @@ class SqliteRuntime implements Runtime {
       }
       return { disposition: "accepted", inputId, runId: result.runId } as const;
     });
+    if (admitted.disposition === "accepted") {
+      await result.acknowledgeExternalEvidence?.();
+    }
+    return admitted;
   }
 
   async advance(options: AdvanceOptions = {}): Promise<AdvanceResult> {

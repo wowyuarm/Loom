@@ -108,6 +108,7 @@ export async function readCommittedActivityEvents(request: {
       actorRef: inputActorRef(input),
       kind: "input",
       content: structuredClone(input.payload),
+      ...(input.interaction ? { interaction: structuredClone(input.interaction) } : {}),
     });
   }
   return events;
@@ -155,6 +156,7 @@ function projectActivityEntries(request: {
         actorRef: inputActorRef(input),
         kind: "input",
         content: structuredClone(input.payload),
+        ...(input.interaction ? { interaction: structuredClone(input.interaction) } : {}),
       });
       index += 1;
       continue;

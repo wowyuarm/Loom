@@ -169,7 +169,7 @@ class DefaultRaftCliRemote implements RaftRemote {
     return {
       messageId: canonicalId,
       occurredAt: localTimestamp(localTime!),
-      signal: signalFor(target!, content, this.#selfProfile.name),
+      signal: await this.#signalFor(target!, content),
       content,
       sender: {
         memberId: sender?.id ?? `system:${senderHandle}`,
@@ -252,15 +252,16 @@ class DefaultRaftCliRemote implements RaftRemote {
       ...(request.cursor ? { cursor: request.cursor } : {}),
       limit: request.limit,
     });
-    const items = page.items.map(item => ({
-      signal: activitySignal(item.place, item.preview, this.#selfProfile.name),
+    const items = await Promise.all(page.items.map(async item => ({
+      signal: await this.#signalFor(item.place.target, item.preview),
       occurredAt: item.occurredAt,
       place: item.place,
       sender: item.sender,
       references: item.references,
       summary: item.preview,
-    })).filter(item => request.signals.includes(item.signal));
-    return { items, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+    })));
+    const filtered = items.filter(item => request.signals.includes(item.signal));
+    return { items: filtered, ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
   }
 
   async searchMessages(request: {
@@ -492,6 +493,31 @@ class DefaultRaftCliRemote implements RaftRemote {
     };
   }
 
+  async #signalFor(target: string, content: string): Promise<RaftRemoteMessage["signal"]> {
+    const mentionsSelf = new RegExp(
+      `(^|\\W)@${escapeRegExp(this.#selfProfile.name)}(?:\\W|$)`,
+      "i",
+    ).test(content);
+    if (mentionsSelf) return "mention";
+
+    const task = taskAssignment(content);
+    if (task?.assigneeType === "agent" && task.assigneeId === this.options.expectedSelfMemberId) return "task";
+    if (target.startsWith("dm:@")) return "direct_message";
+    if (task) return "channel_activity";
+    if (parseTarget(target).thread) {
+      return await this.#participatesInThread(target) ? "thread_reply" : "channel_activity";
+    }
+    return "channel_activity";
+  }
+
+  async #participatesInThread(target: string): Promise<boolean> {
+    const output = (await this.#run(["channel", "members", target])).stdout;
+    return new RegExp(
+      `^\\s*-\\s+@${escapeRegExp(this.#selfProfile.name)}(?:\\s|\\()`,
+      "im",
+    ).test(output);
+  }
+
   async #run(
     args: string[],
     options: { stdin?: string; useProfile?: boolean } = {},
@@ -691,23 +717,13 @@ function resolvedContent(remainder: string, description: string | null | undefin
   return content;
 }
 
-function signalFor(target: string, content: string, selfHandle: string): RaftRemoteMessage["signal"] {
-  if (/\[task #[0-9]+ status=/i.test(content)) return "task";
-  if (parseTarget(target).thread) return "thread_reply";
-  if (target.startsWith("dm:@")) return "direct_message";
-  if (new RegExp(`(^|\\W)@${escapeRegExp(selfHandle)}(?:\\W|$)`, "i").test(content)) return "mention";
-  return "channel_activity";
-}
-
-function activitySignal(
-  place: RaftRemotePlace,
-  preview: string,
-  selfHandle: string,
-): RaftRemoteMessage["signal"] {
-  if (place.kind === "reply_thread") return "thread_reply";
-  if (place.kind === "dm") return "direct_message";
-  if (new RegExp(`(^|\\W)@${escapeRegExp(selfHandle)}(?:\\W|$)`, "i").test(preview)) return "mention";
-  return "channel_activity";
+function taskAssignment(content: string): { assigneeType?: string; assigneeId?: string } | undefined {
+  const match = /\[task #[0-9]+ status=[^\]\s]+(?: assignee=([^:\]\s]+):([^\]\s]+))?\]/i.exec(content);
+  if (!match) return undefined;
+  return {
+    ...(match[1] ? { assigneeType: match[1] } : {}),
+    ...(match[2] ? { assigneeId: match[2] } : {}),
+  };
 }
 
 function safePlaceLabel(target: string, provided?: string): string {
