@@ -42,6 +42,7 @@ import {
   type AttachmentStore,
 } from "../integrations/attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
+import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import {
   createRevisionBoundLifeRecorder,
@@ -99,6 +100,7 @@ export interface OpenLoomInstanceOptions {
   machineTimeZone?: string;
   now?: () => Date;
   outboundDelivery?: OutboundDelivery;
+  channelAgentSurface?: InteractionChannelAgentSurface;
   nmem?: NmemRecallToolOptions;
   attachmentStore?: AttachmentStore;
   observe?: OperationalEventObserver;
@@ -266,6 +268,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     agentWorkspace,
     attachmentStore,
     ...(options.observe ? { observe: options.observe } : {}),
+    ...(options.channelAgentSurface ? { channelAgentSurface: options.channelAgentSurface } : {}),
     ...(configuration.defaultInteractionRoute
       ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
       : {}),
@@ -275,14 +278,21 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     revisions,
     layout,
     agentWorkspace,
+    ...(options.channelAgentSurface?.attentionSource
+      ? { externalAttentionSource: options.channelAgentSurface.attentionSource }
+      : {}),
     loadOrientationActionSpace: async () => ({
       skills: await loadWorkspaceSkillIndex(layout.workspaceRoot),
       mainAgentTools: [
         ...MAIN_AGENT_ACTION_TOOLS,
         ...(recallTool ? ["nmem_recall" as const] : []),
         ...(configuration.defaultInteractionRoute ? ["message"] : []),
+        ...(options.channelAgentSurface?.tools.map(tool => tool.name) ?? []),
       ],
-      evidenceSources: options.nmem?.endpoint ? ["nmem"] : [],
+      evidenceSources: [
+        ...(options.nmem?.endpoint ? ["nmem"] : []),
+        ...(options.channelAgentSurface?.attentionSource ? ["raft"] : []),
+      ],
     }),
   });
   let runtime!: Runtime;

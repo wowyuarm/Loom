@@ -34,6 +34,7 @@ import type {
 } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { InstanceLayout } from "./layout.js";
+import type { InteractionChannelAttentionSource } from "../main-agent/channel-surface.js";
 
 export interface RevisionBoundOrganOptions {
   revisions: ModelRuntimeRevisions;
@@ -41,12 +42,14 @@ export interface RevisionBoundOrganOptions {
   agentWorkspace: AgentWorkspace;
   now?: () => Date;
   loadOrientationActionSpace?: () => Promise<OrientationActionSpace>;
+  externalAttentionSource?: InteractionChannelAttentionSource;
 }
 
 class RevisionBoundOrientation implements Orientation {
   constructor(private readonly options: RevisionBoundOrganOptions) {}
 
   async form(request: OrientationRequest): Promise<OrientationResult> {
+    const externalAttentionEvidence = await this.options.externalAttentionSource?.capture();
     const selection = firstCandidate(this.options.revisions.current(), "orientation");
     const orientation = await createPiOrientation({
       agentWorkspace: this.options.agentWorkspace,
@@ -60,8 +63,13 @@ class RevisionBoundOrientation implements Orientation {
         mainAgentTools: [],
         evidenceSources: [],
       })),
+      ...(externalAttentionEvidence ? { externalAttentionEvidence } : {}),
     });
-    return orientation.form(request);
+    const result = await orientation.form(request);
+    if (externalAttentionEvidence) {
+      await this.options.externalAttentionSource!.markPresented(externalAttentionEvidence.revision);
+    }
+    return result;
   }
 }
 

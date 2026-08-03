@@ -144,6 +144,48 @@ test("keeps a Harness message correction out of Frozen Activity Input", async ()
   assert.match(JSON.stringify(activity.events), /visible reply/);
 });
 
+test("preserves an external Interaction actor in Frozen Activity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-external-actor-"));
+  const { transcriptDirectory } = await writePrimaryTranscript(root, transcript(root));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory,
+    nextWindowId: () => "window-2",
+  });
+  const closing = request();
+  closing.inputs[1]!.interaction = {
+    routeRef: "raft:server-1",
+    signal: "mention",
+    actor: {
+      actorRef: "external:raft:server-1:member-7",
+      kind: "agent",
+      label: "Mira",
+    },
+    place: {
+      placeRef: "raft:server-1:channel-3",
+      kind: "channel",
+      label: "#design",
+      visibility: "public",
+    },
+    audience: { visibility: "public", description: "Raft server members" },
+    references: [{ kind: "message", ref: "raft:server-1:message-42" }],
+    destinations: [{
+      destinationRef: "raft:server-1:channel-3:top-level",
+      routeRef: "raft:server-1",
+      kind: "top_level",
+      label: "#design",
+    }],
+    defaultDestinationRef: "raft:server-1:channel-3:top-level",
+  };
+
+  const { activity } = await lifecycle.freeze(closing);
+
+  assert.equal(
+    activity.events.find(event => event.eventId === "input:input-2")?.actorRef,
+    "external:raft:server-1:member-7",
+  );
+});
+
 test("omits a retried interrupted assistant attempt from Frozen Activity evidence", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-interrupted-attempt-"));
   const { transcriptDirectory } = await writePrimaryTranscript(root, transcriptWithInterruptedAttempt(root));

@@ -14,6 +14,7 @@ import type {
   ActivityRecorder,
   AttentionMaintenance,
   AttentionMaintenanceResult,
+  ActorReference,
   MemoryReflection,
   MemoryReflectionResult,
   AgentExecution,
@@ -72,6 +73,7 @@ interface InputRow {
   source_id: string;
   kind: InputKind;
   payload_json: string;
+  interaction_json: string | null;
   occurred_at: string;
   status: RuntimeInputStatus["status"];
 }
@@ -113,6 +115,7 @@ interface EffectRow {
   kind: string;
   payload_json: string;
   route_ref: string | null;
+  destination_ref: string | null;
   input_position: number;
   status: RuntimeEffectStatus["status"];
   next_delivery_after: string | null;
@@ -270,14 +273,16 @@ class SqliteRuntime implements Runtime {
       const now = this.#now();
       const result = this.#database.prepare(`
         INSERT OR IGNORE INTO inputs (
-          id, source, source_id, kind, payload_json, occurred_at, accepted_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+          id, source, source_id, kind, payload_json, interaction_json,
+          occurred_at, accepted_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
       `).run(
         id,
         input.source,
         input.sourceId,
         input.kind,
         JSON.stringify(input.payload),
+        input.interaction ? JSON.stringify(input.interaction) : null,
         input.occurredAt ?? now.toISOString(),
         now.toISOString(),
       );
@@ -809,7 +814,7 @@ class SqliteRuntime implements Runtime {
     const rows = this.#database.prepare(`
       WITH interaction_entries AS (
         SELECT transitions.sequence,
-               'human' AS actor,
+               COALESCE(json_extract(inputs.interaction_json, '$.actor.actorRef'), 'human') AS actor_ref,
                'input:' || inputs.id AS entry_id,
                inputs.occurred_at AS entry_at,
                inputs.source AS entry_source,
@@ -826,7 +831,7 @@ class SqliteRuntime implements Runtime {
         UNION ALL
 
         SELECT transitions.sequence,
-               'individual' AS actor,
+               'individual' AS actor_ref,
                'effect:' || effects.id AS entry_id,
                delivery_attempts.ended_at AS entry_at,
                COALESCE(effects.route_ref, 'unknown') AS entry_source,
@@ -841,14 +846,14 @@ class SqliteRuntime implements Runtime {
           AND delivery_attempts.status = 'delivered'
           AND effects.kind = 'message'
       )
-      SELECT sequence, actor, entry_id, entry_at, entry_source, input_id, turn_id, content_json
+      SELECT sequence, actor_ref, entry_id, entry_at, entry_source, input_id, turn_id, content_json
       FROM interaction_entries
       WHERE sequence > ?
       ORDER BY sequence
       LIMIT ?
     `).all(after, limit + 1) as unknown as Array<{
       sequence: number;
-      actor: "human" | "individual";
+      actor_ref: ActorReference;
       entry_id: string;
       entry_at: string;
       entry_source: string;
@@ -867,7 +872,7 @@ class SqliteRuntime implements Runtime {
     const entries = selected.map(row => ({
       id: row.entry_id,
       at: row.entry_at,
-      actor: row.actor,
+      actorRef: row.actor_ref,
       source: row.entry_source,
       inputIds: row.input_id
         ? [row.input_id]
@@ -927,7 +932,7 @@ class SqliteRuntime implements Runtime {
 
   status(): RuntimeStatus {
     const rows = this.#database.prepare(`
-      SELECT id, source, source_id, kind, payload_json, status
+      SELECT id, source, source_id, kind, payload_json, interaction_json, status
       FROM inputs
       ORDER BY accepted_at, id
     `).all() as unknown as InputRow[];
@@ -943,7 +948,7 @@ class SqliteRuntime implements Runtime {
       ORDER BY position
     `);
     const effectRows = this.#database.prepare(`
-      SELECT id, turn_id, kind, payload_json, route_ref, input_position, status,
+      SELECT id, turn_id, kind, payload_json, route_ref, destination_ref, input_position, status,
              next_delivery_after
       FROM effects
       ORDER BY created_at, id
@@ -977,6 +982,9 @@ class SqliteRuntime implements Runtime {
         sourceId: row.source_id,
         kind: row.kind,
         payload: JSON.parse(row.payload_json) as JsonValue,
+        ...(row.interaction_json
+          ? { interaction: JSON.parse(row.interaction_json) as NonNullable<RuntimeInputStatus["interaction"]> }
+          : {}),
         status: row.status,
       })),
       turns: turnRows.map(row => {
@@ -999,6 +1007,7 @@ class SqliteRuntime implements Runtime {
         kind: row.kind,
         payload: JSON.parse(row.payload_json) as JsonValue,
         ...(row.route_ref ? { routeRef: row.route_ref } : {}),
+        ...(row.destination_ref ? { destinationRef: row.destination_ref } : {}),
         coveredInputPosition: row.input_position,
         status: row.status,
         ...(row.next_delivery_after ? { nextDeliveryAt: row.next_delivery_after } : {}),
@@ -1543,6 +1552,10 @@ class SqliteRuntime implements Runtime {
       const latestHuman = this.#database.prepare(`
         SELECT occurred_at FROM inputs
         WHERE kind = 'interaction'
+          AND (
+            interaction_json IS NULL
+            OR json_extract(interaction_json, '$.actor.actorRef') = 'human'
+          )
         ORDER BY accepted_at DESC, id DESC
         LIMIT 1
       `).get() as unknown as { occurred_at: string } | undefined;
@@ -1634,7 +1647,8 @@ class SqliteRuntime implements Runtime {
   ): ActivityFreezeRequest {
     if (!segment.closed_at) throw new Error(`Closing segment ${segment.id} has no close time`);
     const inputRows = this.#database.prepare(`
-      SELECT DISTINCT inputs.id, inputs.kind, inputs.payload_json, inputs.occurred_at
+      SELECT DISTINCT inputs.id, inputs.kind, inputs.payload_json, inputs.interaction_json,
+             inputs.occurred_at
       FROM inputs
       JOIN turn_inputs ON turn_inputs.input_id = inputs.id
       JOIN turns ON turns.id = turn_inputs.turn_id
@@ -1644,6 +1658,7 @@ class SqliteRuntime implements Runtime {
       id: string;
       kind: InputKind;
       payload_json: string;
+      interaction_json: string | null;
       occurred_at: string;
     }>;
     const turnRows = this.#database.prepare(`
@@ -1667,6 +1682,7 @@ class SqliteRuntime implements Runtime {
     `);
     const effectRows = this.#database.prepare(`
       SELECT effects.id, effects.turn_id, effects.kind, effects.payload_json, effects.route_ref,
+             effects.destination_ref,
              effects.status, effects.created_at, effects.ended_at
       FROM effects
       JOIN turns ON turns.id = effects.turn_id
@@ -1724,6 +1740,9 @@ class SqliteRuntime implements Runtime {
         id: row.id,
         kind: row.kind,
         payload: JSON.parse(row.payload_json) as JsonValue,
+        ...(row.interaction_json
+          ? { interaction: JSON.parse(row.interaction_json) as NonNullable<ActivityFreezeRequest["inputs"][number]["interaction"]> }
+          : {}),
         occurredAt: row.occurred_at,
       })),
       turns: turnRows.map(row => ({
@@ -1754,6 +1773,7 @@ class SqliteRuntime implements Runtime {
         kind: row.kind,
         payload: JSON.parse(row.payload_json) as JsonValue,
         ...(row.route_ref ? { routeRef: row.route_ref } : {}),
+        ...(row.destination_ref ? { destinationRef: row.destination_ref } : {}),
         createdAt: row.created_at,
         ...(row.ended_at ? { endedAt: row.ended_at } : {}),
         status: row.status,
@@ -2380,12 +2400,12 @@ class SqliteRuntime implements Runtime {
       const existingSegment = this.#readActiveSegment();
       if (existingSegment?.status === "closing") return undefined;
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json, occurred_at
+        SELECT id, kind, payload_json, interaction_json, occurred_at
         FROM inputs
         WHERE status = 'pending'
         ORDER BY accepted_at, id
         LIMIT 1
-      `).get() as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "occurred_at"> | undefined;
+      `).get() as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "interaction_json" | "occurred_at"> | undefined;
       if (!input) return undefined;
 
       const now = this.#now();
@@ -2441,6 +2461,9 @@ class SqliteRuntime implements Runtime {
           id: input.id,
           kind: input.kind,
           payload: JSON.parse(input.payload_json) as JsonValue,
+          ...(input.interaction_json
+            ? { interaction: JSON.parse(input.interaction_json) as NonNullable<ExecutionInput["interaction"]> }
+            : {}),
           occurredAt: input.occurred_at,
           inclusionPosition: 1,
         },
@@ -2722,14 +2745,16 @@ class SqliteRuntime implements Runtime {
       const effectId = this.#nextId();
       this.#database.prepare(`
         INSERT INTO effects (
-          id, turn_id, kind, payload_json, route_ref, input_position, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+          id, turn_id, kind, payload_json, route_ref, destination_ref,
+          input_position, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).run(
         effectId,
         turnId,
         effect.kind,
         JSON.stringify(effect.payload),
         effect.routeRef ?? null,
+        effect.destinationRef ?? null,
         position.position,
         now.toISOString(),
       );
@@ -2824,7 +2849,7 @@ class SqliteRuntime implements Runtime {
   #claimPendingDelivery(observedAt: Date): { request: DeliveryAttemptRequest; fencingToken: number } | undefined {
     return this.#transaction(() => {
       const effect = this.#database.prepare(`
-        SELECT id, kind, payload_json, route_ref
+        SELECT id, kind, payload_json, route_ref, destination_ref
         FROM effects
         WHERE status = 'pending' AND route_ref IS NOT NULL
           AND (next_delivery_after IS NULL OR next_delivery_after <= ?)
@@ -2837,7 +2862,7 @@ class SqliteRuntime implements Runtime {
         LIMIT 1
       `).get(observedAt.toISOString()) as unknown as Pick<
         EffectRow,
-        "id" | "kind" | "payload_json" | "route_ref"
+        "id" | "kind" | "payload_json" | "route_ref" | "destination_ref"
       > | undefined;
       if (!effect?.route_ref) return undefined;
 
@@ -2884,6 +2909,7 @@ class SqliteRuntime implements Runtime {
           kind: effect.kind,
           payload: JSON.parse(effect.payload_json) as JsonValue,
           routeRef: effect.route_ref,
+          ...(effect.destination_ref ? { destinationRef: effect.destination_ref } : {}),
           idempotencyKey,
         },
         fencingToken: tokenRow.value,
@@ -3028,8 +3054,9 @@ class SqliteRuntime implements Runtime {
   ): Promise<void> {
     const prepared = this.#transaction(() => {
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json, occurred_at FROM inputs WHERE id = ? AND status = 'pending'
-      `).get(inputId) as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "occurred_at"> | undefined;
+        SELECT id, kind, payload_json, interaction_json, occurred_at
+        FROM inputs WHERE id = ? AND status = 'pending'
+      `).get(inputId) as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "interaction_json" | "occurred_at"> | undefined;
       if (!input) return undefined;
       const turn = this.#database.prepare(`
         SELECT id FROM turns
@@ -3048,6 +3075,9 @@ class SqliteRuntime implements Runtime {
           id: input.id,
           kind: input.kind,
           payload: JSON.parse(input.payload_json) as JsonValue,
+          ...(input.interaction_json
+            ? { interaction: JSON.parse(input.interaction_json) as NonNullable<ExecutionInput["interaction"]> }
+            : {}),
           occurredAt: input.occurred_at,
           inclusionPosition: next.position,
         } satisfies ExecutionInput,

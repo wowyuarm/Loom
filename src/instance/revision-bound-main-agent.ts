@@ -19,12 +19,14 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { InstanceLayout } from "./layout.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
+import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
 
 export interface RevisionBoundMainAgentOptions {
   revisions: ModelRuntimeRevisions;
   layout: InstanceLayout;
   agentWorkspace: AgentWorkspace;
   defaultInteractionRoute?: string;
+  channelAgentSurface?: InteractionChannelAgentSurface;
   additionalTools?: ToolDefinition[];
   attachmentStore: AttachmentStore;
   observe?: OperationalEventObserver;
@@ -74,6 +76,9 @@ class RevisionBoundMainAgent implements AgentExecution {
       model: main.model,
       ...(main.thinkingLevel ? { thinkingLevel: main.thinkingLevel } : {}),
       harnessSystemPrompt: HARNESS_SYSTEM_GUIDANCE,
+      ...(this.options.channelAgentSurface
+        ? { channelAgentSurface: this.options.channelAgentSurface }
+        : {}),
       ...(this.options.defaultInteractionRoute
         ? { defaultInteractionRoute: this.options.defaultInteractionRoute }
         : {}),

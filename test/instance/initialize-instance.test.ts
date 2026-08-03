@@ -41,6 +41,8 @@ test("creates an Instance scaffold without inventing Individual material", async
     "    enabled: true",
     "  weixin:",
     "    enabled: false",
+    "  raft:",
+    "    enabled: false",
     "  nmem:",
     "    enabled: false",
     "interaction:",

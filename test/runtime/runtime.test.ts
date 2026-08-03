@@ -314,6 +314,207 @@ function recorder(recorded: string[], failFirst = false): ActivityRecorder {
   };
 }
 
+test("preserves external Interaction attribution and Destinations", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-external-interaction-"));
+  const runtime = openRuntime({ root });
+  t.after(() => runtime.close());
+
+  const accepted = await runtime.acceptInput({
+    source: "raft",
+    sourceId: "message-42",
+    kind: "interaction",
+    payload: { text: "Could you review this?" },
+    interaction: {
+      routeRef: "raft:server-1",
+      signal: "mention",
+      actor: {
+        actorRef: "external:raft:server-1:member-7",
+        kind: "agent",
+        label: "Mira",
+      },
+      place: {
+        placeRef: "raft:server-1:channel-3",
+        kind: "channel",
+        label: "#design",
+        visibility: "public",
+      },
+      audience: {
+        visibility: "public",
+        description: "Raft server members",
+      },
+      references: [{ kind: "message", ref: "raft:server-1:message-42" }],
+      destinations: [{
+        destinationRef: "raft:server-1:channel-3:top-level",
+        routeRef: "raft:server-1",
+        kind: "top_level",
+        label: "#design",
+      }],
+      defaultDestinationRef: "raft:server-1:channel-3:top-level",
+    },
+    occurredAt: "2026-08-03T01:00:00.000Z",
+  });
+
+  assert.equal(accepted.disposition, "accepted");
+  assert.deepEqual(runtime.status().inputs[0]?.interaction, {
+    routeRef: "raft:server-1",
+    signal: "mention",
+    actor: {
+      actorRef: "external:raft:server-1:member-7",
+      kind: "agent",
+      label: "Mira",
+    },
+    place: {
+      placeRef: "raft:server-1:channel-3",
+      kind: "channel",
+      label: "#design",
+      visibility: "public",
+    },
+    audience: {
+      visibility: "public",
+      description: "Raft server members",
+    },
+    references: [{ kind: "message", ref: "raft:server-1:message-42" }],
+    destinations: [{
+      destinationRef: "raft:server-1:channel-3:top-level",
+      routeRef: "raft:server-1",
+      kind: "top_level",
+      label: "#design",
+    }],
+    defaultDestinationRef: "raft:server-1:channel-3:top-level",
+  });
+});
+
+test("passes durable Interaction facts to Agent Execution", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-execution-interaction-"));
+  const execution = new HeldExecution();
+  const runtime = openRuntime({ root, execution });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "raft",
+    sourceId: "message-for-execution",
+    kind: "interaction",
+    payload: { text: "Please look at the shared discussion." },
+    interaction: {
+      routeRef: "raft:server-1",
+      signal: "thread_reply",
+      actor: {
+        actorRef: "external:raft:server-1:member-7",
+        kind: "agent",
+        label: "Mira",
+      },
+      place: {
+        placeRef: "raft:server-1:thread-4",
+        kind: "reply_thread",
+        label: "Design discussion",
+        visibility: "public",
+      },
+      audience: { visibility: "public", description: "Raft server members" },
+      references: [
+        { kind: "message", ref: "raft:server-1:message-44" },
+        { kind: "thread", ref: "raft:server-1:thread-4" },
+      ],
+      destinations: [{
+        destinationRef: "raft:server-1:thread-4",
+        routeRef: "raft:server-1",
+        kind: "reply_thread",
+        label: "Design discussion",
+      }],
+      defaultDestinationRef: "raft:server-1:thread-4",
+    },
+  });
+
+  const advancing = runtime.advance();
+  const request = await execution.started.promise;
+  assert.deepEqual(request.inputs[0]?.interaction, {
+    routeRef: "raft:server-1",
+    signal: "thread_reply",
+    actor: {
+      actorRef: "external:raft:server-1:member-7",
+      kind: "agent",
+      label: "Mira",
+    },
+    place: {
+      placeRef: "raft:server-1:thread-4",
+      kind: "reply_thread",
+      label: "Design discussion",
+      visibility: "public",
+    },
+    audience: { visibility: "public", description: "Raft server members" },
+    references: [
+      { kind: "message", ref: "raft:server-1:message-44" },
+      { kind: "thread", ref: "raft:server-1:thread-4" },
+    ],
+    destinations: [{
+      destinationRef: "raft:server-1:thread-4",
+      routeRef: "raft:server-1",
+      kind: "reply_thread",
+      label: "Design discussion",
+    }],
+    defaultDestinationRef: "raft:server-1:thread-4",
+  });
+  execution.complete(request);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("fixes an Effect Destination before Delivery", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-effect-destination-"));
+  const deliveries: Parameters<OutboundDelivery["deliver"]>[0][] = [];
+  const execution = new EffectThenHoldExecution({
+    kind: "message",
+    payload: { text: "Reply in the existing discussion." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:thread-4",
+  });
+  const runtime = openRuntime({
+    root,
+    execution,
+    outboundDelivery: {
+      async deliver(request) {
+        deliveries.push(structuredClone(request));
+        return { status: "delivered", remoteId: "raft-message-45" };
+      },
+    },
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "raft",
+    sourceId: "message-44",
+    kind: "interaction",
+    payload: { text: "Can you reply here?" },
+    interaction: {
+      routeRef: "raft:server-1",
+      signal: "thread_reply",
+      actor: { actorRef: "human", kind: "human", label: "Yu" },
+      place: {
+        placeRef: "raft:server-1:thread-4",
+        kind: "reply_thread",
+        label: "Design discussion",
+        visibility: "private",
+      },
+      audience: { visibility: "private", description: "Yu and the Individual" },
+      references: [{ kind: "thread", ref: "raft:server-1:thread-4" }],
+      destinations: [{
+        destinationRef: "raft:server-1:thread-4",
+        routeRef: "raft:server-1",
+        kind: "reply_thread",
+        label: "Design discussion",
+      }],
+      defaultDestinationRef: "raft:server-1:thread-4",
+    },
+  });
+
+  const advancing = runtime.advance();
+  const request = await execution.started.promise;
+  await waitUntil(() => runtime.status().effects.length === 1);
+  assert.equal(runtime.status().effects[0]?.destinationRef, "raft:server-1:thread-4");
+  execution.complete(request);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  assert.deepEqual(await runtime.advance(), { disposition: "delivery_completed" });
+  assert.equal(deliveries[0]?.destinationRef, "raft:server-1:thread-4");
+});
+
 test("rebuilds channel-neutral interaction history from confirmed Runtime facts", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interactions-"));
   const now = new Date("2026-07-19T10:00:00.000Z");
@@ -339,12 +540,12 @@ test("rebuilds channel-neutral interaction history from confirmed Runtime facts"
 
   const beforeDelivery = runtime.interactionView();
   assert.deepEqual(beforeDelivery.entries.map(entry => ({
-    actor: entry.actor,
+    actorRef: entry.actorRef,
     source: entry.source,
     inputIds: entry.inputIds,
     content: entry.content,
   })), [{
-    actor: "human",
+    actorRef: "human",
     source: "weixin",
     inputIds: [accepted.inputId],
     content: { text: "hello from another channel" },
@@ -355,12 +556,12 @@ test("rebuilds channel-neutral interaction history from confirmed Runtime facts"
   assert.deepEqual(await runtime.advance(), { disposition: "delivery_completed" });
   const afterDelivery = runtime.interactionView({ after: beforeDelivery.cursor });
   assert.deepEqual(afterDelivery.entries.map(entry => ({
-    actor: entry.actor,
+    actorRef: entry.actorRef,
     source: entry.source,
     inputIds: entry.inputIds,
     content: entry.content,
   })), [{
-    actor: "individual",
+    actorRef: "individual",
     source: "default",
     inputIds: [accepted.inputId],
     content: { text: "hello from the Agent" },

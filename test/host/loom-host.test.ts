@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { openLoomHost } from "../../src/host/index.js";
 import { readLocalInteractionHistory } from "../../src/integrations/local/index.js";
+import type { RaftRemote } from "../../src/integrations/raft/index.js";
 import { resolveInstanceLayout } from "../../src/instance/layout.js";
 import { openRuntime, type AgentExecution } from "../../src/runtime/index.js";
 
@@ -104,11 +105,11 @@ test("starts an explicitly enabled Local channel over the Instance Interaction V
 
   assert.equal(accepted.disposition, "accepted");
   assert.deepEqual(history.entries.map(entry => ({
-    actor: entry.actor,
+    actorRef: entry.actorRef,
     source: entry.source,
     content: entry.content,
   })), [{
-    actor: "human",
+    actorRef: "human",
     source: "local",
     content: { text: "hello through the local route" },
   }]);
@@ -235,6 +236,32 @@ test("keeps the Host running while the configured Weixin route is degraded", asy
   assert.equal(host.status().state, "running");
   assert.notEqual(host.status().driver.state, "stopped");
   assert.match(host.status().integrations?.weixin?.lastError ?? "", /HTTP 503/);
+});
+
+test("assembles one explicitly enabled Raft Channel and owns its lifecycle", async t => {
+  const root = await preparedInstanceRoot();
+  await configureRaft(root);
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no wake expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    listPlaces: async () => ({ items: [] }),
+    readActivity: async () => ({ items: [] }),
+    searchMessages: async () => ({ items: [] }),
+    openReference: async () => ({ objectKind: "place", evidence: {}, references: [] }),
+  };
+  const host = await openLoomHost({ root, machineTimeZone: "UTC", raftRemote: remote });
+  t.after(() => host.stop());
+
+  await host.start();
+  await eventually(() => host.status().integrations?.raft?.state === "connected");
+  assert.equal(host.status().state, "running");
+  assert.deepEqual(host.status().integrations?.raft, {
+    state: "connected",
+    pendingWakes: 0,
+  });
+
+  await host.stop();
+  assert.equal(host.status().integrations?.raft?.state, "stopped");
 });
 
 test("delivers a persisted outbound Effect through the configured Weixin route", async t => {
@@ -377,6 +404,32 @@ async function configureWeixin(root: string, baseUrl: string): Promise<void> {
     writeFile(path.join(weixinRoot, "auth.json"), JSON.stringify({
       version: 1,
       token: "host-token",
+    }), "utf8"),
+  ]);
+}
+
+async function configureRaft(root: string): Promise<void> {
+  const configurationRoot = path.join(root, "configuration");
+  const raftRoot = path.join(configurationRoot, "integrations", "raft");
+  await mkdir(raftRoot, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(configurationRoot, "instance.yaml"), [
+      "version: 1",
+      "integrations:",
+      "  raft:",
+      "    enabled: true",
+      "interaction:",
+      "  defaultRoute: raft-primary",
+      "",
+    ].join("\n"), "utf8"),
+    writeFile(path.join(raftRoot, "config.json"), JSON.stringify({
+      version: 1,
+      routeRef: "raft-primary",
+      profile: "loom-test",
+      serverId: "server-1",
+      selfMemberId: "agent-rowan",
+      principalMemberId: "human-alex",
+      principalDmTarget: "dm:@alex",
     }), "utf8"),
   ]);
 }

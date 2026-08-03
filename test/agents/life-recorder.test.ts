@@ -215,6 +215,32 @@ test("rejects an event with an unsupported actor reference before calling the mo
   await assert.rejects(recorder.record(frozen), /unsupported actorRef.*external:unknown/i);
 });
 
+test("accepts a namespaced external actor as attributed evidence", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-external-actor-"));
+  const workspaceRoot = await createRecorderWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-external-actor");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read_activity", { offset: 0 }, { id: "read-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("No durable narrative change."),
+  ]);
+  const recorder = await createPiLifeRecorder({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+  });
+  const frozen = activity();
+  frozen.events[0]!.actorRef = "external:raft:server-1:member-7";
+
+  const receipt = await recorder.record(frozen);
+
+  assert.equal(receipt.daily.status, "no_change");
+});
+
 test("rolls back earlier writes when an episode cites evidence outside the frozen activity", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-evidence-"));
   const workspaceRoot = await createRecorderWorkspace(root);

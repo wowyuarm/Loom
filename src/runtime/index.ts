@@ -13,6 +13,7 @@ export type {
 } from "./scheduler.js";
 export type {
   AcceptedInput,
+  ActorReference,
   AdvanceOptions,
   AdvanceResult,
   ActivityFreezeRequest,
@@ -35,6 +36,8 @@ export type {
   ExecutionResult,
   FormOpportunityResult,
   InputKind,
+  InteractionContext,
+  InteractionDestination,
   InteractionViewEntry,
   InteractionViewOptions,
   InteractionViewPage,

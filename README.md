@@ -30,7 +30,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   │     Tool Trace Compactor      压缩过长的工具轨迹
   │
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Local · Weixin · nmem · Attachments
+        Local · Weixin · Raft · nmem · Attachments
 ```
 
 这些东西归属分明：**Agent Workspace** 是 Individual 自己的--身份、关系、记忆、私人工作都在这里，Harness 不替它决定。运行事实、执行证据和装配配置归 Harness 持有，让进程能恢复、能审计、能重新装配。
@@ -42,7 +42,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 ## 现状
 
 - **阶段**：早期，单 Instance，前台 Host 运行。Loom 不负责 OS service 安装，也不替 Individual 生成身份。
-- **已验证**：Local interaction channel、Weixin（文字 / 单张入站图片 / 单个出站附件）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。
+- **已验证**：Local interaction channel、Weixin（文字 / 单张入站图片 / 单个出站附件）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。Raft 的机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行。
 - **边界**：一个 Instance 只启用一个 interaction channel；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Integration。
 
 ## 快速开始
@@ -72,7 +72,7 @@ models:
       model: deepseek-chat
 ```
 
-`models.default` 是所有模型 role 的 fallback；也可以为 `main-interaction`、`orientation`、`life-recorder` 等 8 个 role 单独指定。自定义 provider/model 定义仍由 Pi 的 `configuration/pi/models.json` 管理。时间、调度等字段缺省使用机器时区与内置节律。Weixin 接入见 [Weixin Integration](docs/integrations/weixin.md)。
+`models.default` 是所有模型 role 的 fallback；也可以为 `main-interaction`、`orientation`、`life-recorder` 等 8 个 role 单独指定。自定义 provider/model 定义仍由 Pi 的 `configuration/pi/models.json` 管理。时间、调度等字段缺省使用机器时区与内置节律。Weixin 接入见 [Weixin Integration](docs/integrations/weixin.md)，Raft External Agent 的登录、配置和运行边界见 [Raft Interaction Channel](docs/integrations/raft.md)。
 
 运行 Instance：
 
@@ -90,7 +90,8 @@ Instance Root 布局：
 <root>/
 ├── configuration/
 │   ├── instance.yaml          装配、时间、模型、Integration、调度
-│   └── pi/                    auth.json · models.json · models-store.json
+│   ├── pi/                    auth.json · models.json · models-store.json
+│   └── integrations/          weixin/ · raft/（按启用状态提供）
 ├── workspace/                 Agent Individual 拥有
 │   ├── identity.md  memory.md  attention.md  facts.json
 │   ├── behavior/{interaction,background}.md
@@ -120,5 +121,5 @@ Loom 的文档保持薄：稳定术语落在 CONTEXT.md，难以逆转的取舍�
 - [AGENTS.md](AGENTS.md) — 协作规则
 - [.scratch/harness-layers/map.md](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作与下一步
 - [docs/agents/](docs/agents/) — 工程任务约定
-- [docs/integrations/](docs/integrations/) — Local 与 Weixin 接入
+- [docs/integrations/](docs/integrations/) — Local、Weixin 与 Raft 接入
 - [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 由用户授权的操作 agent 部署、初始化和维护实例

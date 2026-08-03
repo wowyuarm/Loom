@@ -20,6 +20,7 @@ import type {
   AgentExecution,
   ExecutionInput,
   ExecutionResult,
+  InteractionDestination,
   JsonValue,
   RunningExecution,
   TurnControl,
@@ -57,6 +58,7 @@ import { createMessageTool, type MessageTurnDecision } from "./message.js";
 import { loadDailyContext } from "./daily-context.js";
 import { attachmentReferences, type AttachmentReference } from "../attachments/index.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
+import type { InteractionChannelAgentSurface } from "./channel-surface.js";
 import { createAttachmentTool } from "./attachment.js";
 import {
   emitOperationalEvent,
@@ -91,6 +93,7 @@ export interface PiAgentExecutionOptions {
   model: Model<any>;
   thinkingLevel?: ThinkingLevel;
   harnessSystemPrompt: string;
+  channelAgentSurface?: InteractionChannelAgentSurface;
   defaultInteractionRoute?: string;
   additionalTools?: ToolDefinition[];
   skillSources?: PiSkillSources;
@@ -128,6 +131,7 @@ interface ActiveTurn {
   control: TurnControl;
   pending: ExecutionInput[];
   annotations: InputAnnotationReference[];
+  destinations: Map<string, NonNullable<ExecutionInput["interaction"]>["destinations"][number]>;
   includedInteraction: boolean;
   presentedInteraction: boolean;
 }
@@ -144,6 +148,7 @@ class InputAnnotationLifecycle {
       control,
       pending: [...request.inputs],
       annotations: [],
+      destinations: new Map(),
       includedInteraction: false,
       presentedInteraction: false,
     };
@@ -174,8 +179,12 @@ class InputAnnotationLifecycle {
       kind: input.kind,
       occurredAt: input.occurredAt,
       payload: input.payload,
+      ...(input.interaction ? { interaction: input.interaction } : {}),
     });
     active.annotations.push({ inputId: input.id, annotationEntryId });
+    for (const destination of input.interaction?.destinations ?? []) {
+      active.destinations.set(destination.destinationRef, destination);
+    }
     if (input.kind === "interaction") active.includedInteraction = true;
     active.control.includeInput(input.id);
   }
@@ -197,6 +206,10 @@ class InputAnnotationLifecycle {
     const first = !active.presentedInteraction;
     active.presentedInteraction = true;
     return first;
+  }
+
+  destinations(turnId: string) {
+    return [...this.#require(turnId).destinations.values()];
   }
 
   end(turnId: string): void {
@@ -237,6 +250,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     ) => Promise<PreparedPiSession>,
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
+    private readonly channelAgentSurface: InteractionChannelAgentSurface | undefined,
     private readonly defaultInteractionRoute: string | undefined,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
     private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
@@ -314,7 +328,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           ? Promise.resolve(undefined)
           : loadDailyContext(this.agentWorkspace, request.recordingDay),
       ]);
-      const systemPrompt = composeSystemPrompt(this.harnessSystemPrompt, workspaceSnapshot);
+      const systemPrompt = composeSystemPrompt(
+        this.harnessSystemPrompt,
+        workspaceSnapshot,
+        this.channelAgentSurface?.guidance,
+      );
       let preparedWindow: ContextWindowState = restoredWindow ?? {
         version: 1,
         id: request.turnId,
@@ -353,9 +371,12 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         }));
       }
       if (this.defaultInteractionRoute) {
+        const defaultDestination = this.channelAgentSurface?.defaultDestination;
         turnTools.push(createMessageTool({
           control: lifecycle.control(request.turnId),
           routeRef: this.defaultInteractionRoute,
+          destinations: () => lifecycle.destinations(request.turnId),
+          ...(defaultDestination ? { defaultDestination } : {}),
           decision: messageDecision,
           workspaceRoot: this.agentWorkspace.root,
           ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
@@ -512,6 +533,10 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 }
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
+  const additionalTools = [
+    ...(options.additionalTools ?? []),
+    ...(options.channelAgentSurface?.tools ?? []),
+  ];
   const reservedTools = new Set<string>([
     ...MAIN_AGENT_BUILTIN_TOOLS,
     "expand_tool_result",
@@ -519,7 +544,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     "message",
   ]);
   const additionalToolNames = new Set<string>();
-  for (const tool of options.additionalTools ?? []) {
+  for (const tool of additionalTools) {
     if (reservedTools.has(tool.name)) {
       throw new Error(`${tool.name} is maintained by Loom and cannot be supplied as an additional tool`);
     }
@@ -530,6 +555,10 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
   }
   if (options.defaultInteractionRoute !== undefined && !options.defaultInteractionRoute.trim()) {
     throw new Error("Default Interaction Route cannot be blank");
+  }
+  if (options.channelAgentSurface?.defaultDestination
+    && options.channelAgentSurface.defaultDestination.routeRef !== options.defaultInteractionRoute) {
+    throw new Error("Interaction Channel default Destination must use the default Interaction Route");
   }
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
@@ -581,7 +610,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       appendSystemPromptOverride: () => [],
     });
     await resourceLoader.reload();
-    const customTools = [...(options.additionalTools ?? []), ...turnTools];
+    const customTools = [...additionalTools, ...turnTools];
     const { session } = await createAgentSession({
       cwd: options.agentWorkspace.root,
       agentDir: options.agentDir,
@@ -608,6 +637,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     createSession,
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),
     options.harnessSystemPrompt,
+    options.channelAgentSurface,
     options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,
@@ -615,7 +645,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.model.input.includes("image"),
     new Set([
       ...MAIN_AGENT_BUILTIN_TOOLS,
-      ...(options.additionalTools ?? []).map(tool => tool.name),
+      ...additionalTools.map(tool => tool.name),
       ...(options.attachmentStore ? ["attachment"] : []),
     ]),
     options.observe,
@@ -730,6 +760,7 @@ function inputText(input: ExecutionInput, options: {
 } = {}): string {
   if (input.kind === "opportunity") return opportunityInputText(input);
   if (input.kind === "continuation") return afterChatContinuationInputText(input);
+  if (input.interaction) return interactionInputText(input, options);
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
     const text = input.payload.text;
     if (typeof text === "string" || Array.isArray(input.payload.attachments)) {
@@ -757,6 +788,64 @@ function inputText(input: ExecutionInput, options: {
     }
   }
   return JSON.stringify(input.payload);
+}
+
+function interactionInputText(
+  input: ExecutionInput,
+  options: NonNullable<Parameters<typeof inputText>[1]>,
+): string {
+  const interaction = input.interaction!;
+  const payloadText = input.payload
+    && typeof input.payload === "object"
+    && !Array.isArray(input.payload)
+    && typeof input.payload.text === "string"
+    ? input.payload.text
+    : JSON.stringify(input.payload);
+  const actorLabel = interaction.actor.label ? ` (${interaction.actor.label})` : "";
+  const placeLabel = interaction.place.label ? ` (${interaction.place.label})` : "";
+  const lines = options.humanArrivedDuringNonInteraction ? [
+    "An Interaction arrived while the non-interaction Turn was still running.",
+    "Treat it as a real current Interaction, not as part of the earlier background opportunity or continuation.",
+    "",
+  ] : [];
+  lines.push(
+    "<interaction_context>",
+    `Route: ${interaction.routeRef}`,
+    `Signal: ${interaction.signal}`,
+    `Actor: ${interaction.actor.kind}${actorLabel}`,
+    `Actor ref: ${interaction.actor.actorRef}`,
+    `Place: ${interaction.place.kind}${placeLabel}`,
+    `Place ref: ${interaction.place.placeRef}`,
+    `Visibility: ${interaction.place.visibility}`,
+    `Audience: ${interaction.audience.visibility}; ${interaction.audience.description}`,
+  );
+  if (interaction.audience.actorRefs?.length) {
+    lines.push(`Audience actor refs: ${interaction.audience.actorRefs.join(", ")}`);
+  }
+  lines.push("References:");
+  lines.push(...(interaction.references.length > 0
+    ? interaction.references.map(reference => `- ${reference.kind}: ${reference.ref}`)
+    : ["- none"]));
+  lines.push("Available destinations:");
+  lines.push(...interaction.destinations.map(destination => {
+    const label = destination.label ? ` (${destination.label})` : "";
+    const selected = destination.destinationRef === interaction.defaultDestinationRef ? "; default" : "";
+    return `- ${destination.kind}${label}: ${destination.destinationRef}; route ${destination.routeRef}${selected}`;
+  }));
+  lines.push(
+    "Content:",
+    payloadText,
+    "</interaction_context>",
+  );
+  if (options.includeMessageReminder) {
+    lines.push(
+      "",
+      "To make a reply or another message visible in an Interaction Channel, use message.send; ordinary assistant text is not delivered.",
+      "message.send can use only an available Destination shown above. If this interaction can naturally end without another message, use message.no_reply.",
+      "This interaction must end with one of those decisions.",
+    );
+  }
+  return lines.join("\n");
 }
 
 interface InputPresentation {
@@ -984,12 +1073,16 @@ function currentAttentionMessage(content: string): AgentMessage {
 function composeSystemPrompt(
   harnessSystemPrompt: string,
   snapshot: AgentWorkspaceTurnSnapshot,
+  interactionChannelGuidance: string | undefined,
 ): string {
   return [
     section("Harness System Guidance", harnessSystemPrompt),
     section("Identity", snapshot.identity),
     section("Behavior", snapshot.behavior),
     section("Long-term Memory", snapshot.longTermMemory),
+    ...(interactionChannelGuidance?.trim()
+      ? [section("Interaction Channel Guidance", interactionChannelGuidance.trim())]
+      : []),
   ].join("\n\n");
 }
 

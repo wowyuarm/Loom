@@ -28,6 +28,8 @@ integrations:
     enabled: true
   weixin:
     enabled: false
+  raft:
+    enabled: false
   nmem:
     enabled: false
 interaction:

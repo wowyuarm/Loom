@@ -195,7 +195,7 @@ class DefaultLocalInteractionChannel implements LocalInteractionChannel {
       const outcome = await this.#waitForOutcome(handlers, accepted.inputId, socket);
       if (!outcome) return;
       const entries = readAfter(handlers.interactionView, cursor)
-        .filter(entry => entry.actor === "individual" && entry.inputIds.includes(accepted.inputId));
+        .filter(entry => entry.actorRef === "individual" && entry.inputIds.includes(accepted.inputId));
       writeResponse(socket, { ok: true, type: "chat", inputId: accepted.inputId, outcome, entries });
     } catch (error) {
       writeResponse(socket, { ok: false, error: errorMessage(error) });

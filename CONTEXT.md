@@ -110,6 +110,10 @@ _Avoid_: persona configuration, workspace material, runtime state
 Runtime Instance 中连接 outbound Effect 与具体外部投递方式的不透明引用。Main Agent 只知道可用的默认 route，不由此看到 channel、endpoint、凭据或人的身份。
 _Avoid_: channel, recipient, endpoint, delivery
 
+**Interaction Destination**:
+一条 Interaction Route 内具体的外部交流落点，例如 DM、channel 或 reply thread。Input 可以提供可回复的 Destination，outbound Effect 在被接受时固定最终 Destination；它不决定使用哪个 Integration，也不能由“最近打开的场所”推断。
+_Avoid_: interaction route, recipient guess, recent thread, channel adapter
+
 **Model Runtime Revision**:
 一份已经验证、可供一次模型运行固定使用的 Pi runtime 与 Harness model role 选择。新的配置只影响后续 Main Agent Turn 或 Cognitive Organ run；已经开始的运行与 steering 继续使用原 revision。
 _Avoid_: provider abstraction, model health, mutable session model
@@ -169,7 +173,7 @@ _Avoid_: summarizer, memory importer, behavior generator, identity author
 _Avoid_: active segment, transcript slice, conversation summary
 
 **Actor Reference (`actorRef`)**:
-Frozen Activity 内标识事件归属的稳定引用；当前只区分 Agent Individual、主要关系对象与 system。自然姓名和关系称谓来自 Stable Facts，不能替代或改变 Actor Reference 所确定的归属。
+Runtime Input 与 Frozen Activity 内标识事件归属的稳定引用。当前实现只支持 Agent Individual、主要关系对象与 system；Interaction Channel 目标模型还允许 namespaced external actor，用来区分其他 human、agent 与外部 system actor。自然姓名和关系称谓来自 Channel evidence 或 Stable Facts，不能替代或改变 Actor Reference 所确定的归属。
 _Avoid_: display name, inferred speaker, relationship label
 
 **Daily Narrative**:

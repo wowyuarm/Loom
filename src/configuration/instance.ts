@@ -17,6 +17,7 @@ export interface InstanceConfiguration {
 export interface IntegrationConfiguration {
   local: boolean;
   weixin: boolean;
+  raft: boolean;
   nmem: boolean;
 }
 
@@ -145,10 +146,11 @@ function parseInteraction(value: unknown): string | undefined {
 function parseIntegrations(value: unknown): IntegrationConfiguration {
   if (value === undefined) return defaultIntegrations();
   if (!isObject(value)) throw new Error("Instance Configuration integrations must be an object");
-  assertOnlyKeys(value, ["local", "weixin", "nmem"], "Instance Configuration integrations");
+  assertOnlyKeys(value, ["local", "weixin", "raft", "nmem"], "Instance Configuration integrations");
   return Object.freeze({
     local: parseIntegrationEnabled(value.local, "integrations.local"),
     weixin: parseIntegrationEnabled(value.weixin, "integrations.weixin"),
+    raft: parseIntegrationEnabled(value.raft, "integrations.raft"),
     nmem: parseIntegrationEnabled(value.nmem, "integrations.nmem"),
   });
 }
@@ -165,7 +167,7 @@ function parseIntegrationEnabled(value: unknown, label: string): boolean {
 }
 
 function defaultIntegrations(): IntegrationConfiguration {
-  return Object.freeze({ local: false, weixin: false, nmem: false });
+  return Object.freeze({ local: false, weixin: false, raft: false, nmem: false });
 }
 
 function parseSchedule(value: unknown): ScheduleConfiguration {

@@ -125,6 +125,90 @@ test("forms one grounded Opportunity while the Runtime is idle", async t => {
   }]);
 });
 
+test("does not treat an external Interaction actor as the principal human", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-external-actor-"));
+  const requests: OrientationRequest[] = [];
+  const runtime = openRuntime({
+    root,
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { branch: "prepared" });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.resolve(executionResult(request, { branch: "external-complete" })),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+    activityLifecycle: {
+      async freeze(request) {
+        return {
+          activity: {
+            version: 1,
+            segmentId: request.segment.id,
+            recordingDay: request.segment.recordingDay,
+            openedAt: request.segment.openedAt,
+            closedAt: request.segment.closedAt,
+            events: [],
+            turns: [],
+          },
+          successorExecutionState: { branch: "successor" },
+        };
+      },
+    },
+    orientation: {
+      async form(request) {
+        requests.push(request);
+        return {
+          outcome: "none",
+          runId: "orientation-after-external",
+          whyNow: "No opening.",
+          evidence: [],
+        };
+      },
+    },
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "raft",
+    sourceId: "external-message",
+    kind: "interaction",
+    payload: { text: "A message from another Raft agent." },
+    interaction: {
+      routeRef: "raft:server-1",
+      signal: "direct_message",
+      actor: {
+        actorRef: "external:raft:server-1:member-7",
+        kind: "agent",
+        label: "Mira",
+      },
+      place: {
+        placeRef: "raft:server-1:dm-7",
+        kind: "direct",
+        label: "Mira",
+        visibility: "private",
+      },
+      audience: { visibility: "private", description: "The Individual and Mira" },
+      references: [{ kind: "message", ref: "raft:server-1:message-9" }],
+      destinations: [{
+        destinationRef: "raft:server-1:dm-7:top-level",
+        routeRef: "raft:server-1",
+        kind: "top_level",
+        label: "Mira",
+      }],
+      defaultDestinationRef: "raft:server-1:dm-7:top-level",
+    },
+    occurredAt: "2026-08-03T01:00:00.000Z",
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.equal((await runtime.closeActivity()).disposition, "activity_frozen");
+  assert.equal((await runtime.formOpportunity()).disposition, "none");
+
+  assert.equal(requests[0]?.lastHumanInputAt, undefined);
+});
+
 test("creates no Input when Orientation finds no grounded Opportunity", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-proactive-none-"));
   const runtime = openRuntime({

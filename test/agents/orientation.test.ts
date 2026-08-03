@@ -31,6 +31,10 @@ test("forms a grounded Opportunity through an isolated Orientation run", async (
       assert.match(messages, /activity-recent/);
       assert.match(messages, /attention\.md/);
       assert.match(messages, /continue-private-work/);
+      assert.match(messages, /External Attention Evidence/);
+      assert.match(messages, /raft:ambient:7/);
+      assert.match(messages, /raft:message:opaque/);
+      assert.doesNotMatch(messages, /ordinary public message body/);
       assert.doesNotMatch(messages, /private result body/);
       return fauxAssistantMessage(
         fauxToolCall("read_recent_activity", {
@@ -66,6 +70,16 @@ test("forms a grounded Opportunity through an isolated Orientation run", async (
       mainAgentTools: ["read", "edit", "message"],
       evidenceSources: [],
     }),
+    externalAttentionEvidence: {
+      source: "raft",
+      revision: "raft:ambient:7",
+      observedAt: "2026-07-20T06:29:00.000Z",
+      evidence: {
+        signalCount: 1,
+        places: [{ placeRef: "raft:place:opaque", label: "commons" }],
+        references: [{ kind: "message", ref: "raft:message:opaque" }],
+      },
+    },
     nextRunId: () => "orientation-run-1",
   });
 

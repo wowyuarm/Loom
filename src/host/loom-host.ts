@@ -26,6 +26,12 @@ import {
   type WeixinAdapter,
   type WeixinAdapterStatus,
 } from "../integrations/weixin/index.js";
+import {
+  openConfiguredRaftChannel,
+  type RaftChannel,
+  type RaftChannelStatus,
+  type RaftRemote,
+} from "../integrations/raft/index.js";
 import type {
   AcceptedInput,
   InteractionViewOptions,
@@ -54,10 +60,16 @@ export interface LoomHostStatus {
   integrations?: {
     local?: LocalInteractionChannelStatus;
     weixin?: WeixinAdapterStatus;
+    raft?: RaftChannelStatus;
   };
 }
 
-export type OpenLoomHostOptions = Omit<OpenLoomInstanceOptions, "attachmentStore">;
+export type OpenLoomHostOptions = Omit<
+  OpenLoomInstanceOptions,
+  "attachmentStore" | "channelAgentSurface"
+> & {
+  raftRemote?: RaftRemote;
+};
 
 class DefaultLoomHost implements LoomHost {
   readonly #root: string;
@@ -66,6 +78,7 @@ class DefaultLoomHost implements LoomHost {
   readonly #ownership: InstanceRootOwnership;
   readonly #local: LocalInteractionChannel | undefined;
   readonly #weixin: WeixinAdapter | undefined;
+  readonly #raft: RaftChannel | undefined;
   readonly #attachmentStore: AttachmentStore;
   #state: LoomHostStatus["state"] = "open";
   #finalInstanceStatus: LoomInstanceStatus | undefined;
@@ -79,6 +92,7 @@ class DefaultLoomHost implements LoomHost {
     attachmentStore: AttachmentStore;
     local?: LocalInteractionChannel;
     weixin?: WeixinAdapter;
+    raft?: RaftChannel;
   }) {
     this.#root = options.root;
     this.#instance = options.instance;
@@ -87,6 +101,7 @@ class DefaultLoomHost implements LoomHost {
     this.#attachmentStore = options.attachmentStore;
     this.#local = options.local;
     this.#weixin = options.weixin;
+    this.#raft = options.raft;
   }
 
   async start(): Promise<void> {
@@ -102,6 +117,7 @@ class DefaultLoomHost implements LoomHost {
         inputOutcome: inputId => this.#instance.inputOutcome(inputId),
       });
       this.#weixin?.start(input => this.acceptInput(input));
+      await this.#raft?.start(input => this.acceptInput(input));
     } catch (error) {
       await this.stop();
       throw error;
@@ -133,10 +149,11 @@ class DefaultLoomHost implements LoomHost {
       state: this.#state,
       driver: this.#driver.status(),
       instance: this.#finalInstanceStatus ?? this.#instance.status(),
-      ...(this.#local || this.#weixin ? {
+      ...(this.#local || this.#weixin || this.#raft ? {
         integrations: {
           ...(this.#local ? { local: this.#local.status() } : {}),
           ...(this.#weixin ? { weixin: this.#weixin.status() } : {}),
+          ...(this.#raft ? { raft: this.#raft.status() } : {}),
         },
       } : {}),
     };
@@ -160,7 +177,11 @@ class DefaultLoomHost implements LoomHost {
           await this.#local?.stop();
         } finally {
           try {
-            await this.#weixin?.stop();
+            try {
+              await this.#weixin?.stop();
+            } finally {
+              await this.#raft?.stop();
+            }
           } finally {
             this.#attachmentStore.close();
           }
@@ -181,6 +202,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
   const ownership = await acquireInstanceRootOwnership(root);
   let local: LocalInteractionChannel | undefined;
   let weixin: WeixinAdapter | undefined;
+  let raft: RaftChannel | undefined;
   let attachmentStore: AttachmentStore | undefined;
   try {
     const layout = resolveInstanceLayout(root);
@@ -192,7 +214,12 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       file: layout.configurationFile,
       ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
     });
-    if (configuration.integrations.local && configuration.integrations.weixin) {
+    const enabledInteractionChannels = [
+      configuration.integrations.local,
+      configuration.integrations.weixin,
+      configuration.integrations.raft,
+    ].filter(Boolean).length;
+    if (enabledInteractionChannels > 1) {
       throw new Error("Loom Host currently accepts one enabled interaction channel");
     }
     if (configuration.integrations.local) {
@@ -214,17 +241,32 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       });
       if (!weixin) throw new Error("Enabled Weixin requires both config.json and auth.json");
     }
-    if ((local || weixin) && options.outboundDelivery) {
+    if (configuration.integrations.raft) {
+      if (!configuration.defaultInteractionRoute) {
+        throw new Error("Enabled Raft requires interaction.defaultRoute");
+      }
+      raft = await openConfiguredRaftChannel({
+        configurationFile: layout.raftConfigurationFile,
+        stateFile: layout.raftStateFile,
+        expectedRouteRef: configuration.defaultInteractionRoute,
+        ...(options.raftRemote ? { remote: options.raftRemote } : {}),
+      });
+      if (!raft) throw new Error("Enabled Raft requires config.json");
+    } else if (options.raftRemote) {
+      throw new Error("Raft Remote was provided while the Integration is disabled");
+    }
+    if ((local || weixin || raft) && options.outboundDelivery) {
       throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
     }
-    const { outboundDelivery, ...instanceOptions } = options;
+    const { outboundDelivery, raftRemote: _raftRemote, ...instanceOptions } = options;
     const instance = await openLoomInstance({
       ...instanceOptions,
       root,
       attachmentStore,
-      ...(local || weixin || outboundDelivery
-        ? { outboundDelivery: local ?? weixin ?? outboundDelivery }
+      ...(local || weixin || raft || outboundDelivery
+        ? { outboundDelivery: local ?? weixin ?? raft ?? outboundDelivery }
         : {}),
+      ...(raft ? { channelAgentSurface: raft.agentSurface() } : {}),
     });
     return new DefaultLoomHost({
       root,
@@ -238,10 +280,12 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       attachmentStore,
       ...(local ? { local } : {}),
       ...(weixin ? { weixin } : {}),
+      ...(raft ? { raft } : {}),
     });
   } catch (error) {
     await local?.stop();
     await weixin?.stop();
+    await raft?.stop();
     attachmentStore?.close();
     ownership.release();
     throw error;

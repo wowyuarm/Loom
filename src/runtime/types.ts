@@ -4,11 +4,56 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 export type InputKind = "interaction" | "opportunity" | "continuation";
 export type RuntimeInputKind = Exclude<InputKind, "continuation">;
 
+export type ActorReference = "individual" | "human" | "system" | `external:${string}`;
+
+export interface InteractionActor {
+  actorRef: ActorReference;
+  kind: "individual" | "human" | "agent" | "system";
+  label?: string;
+}
+
+export interface InteractionPlace {
+  placeRef: string;
+  kind: "direct" | "channel" | "reply_thread";
+  label?: string;
+  visibility: "private" | "restricted" | "public";
+}
+
+export interface InteractionAudience {
+  visibility: "private" | "restricted" | "public";
+  description: string;
+  actorRefs?: ActorReference[];
+}
+
+export interface InteractionReference {
+  kind: "message" | "thread" | "task" | "reminder" | "other";
+  ref: string;
+}
+
+export interface InteractionDestination {
+  destinationRef: string;
+  routeRef: string;
+  kind: "top_level" | "reply_thread";
+  label?: string;
+}
+
+export interface InteractionContext {
+  routeRef: string;
+  signal: "direct_message" | "mention" | "thread_reply" | "task" | "reminder" | "channel_activity" | "other";
+  actor: InteractionActor;
+  place: InteractionPlace;
+  audience: InteractionAudience;
+  references: InteractionReference[];
+  destinations: InteractionDestination[];
+  defaultDestinationRef?: string;
+}
+
 export interface RuntimeInput {
   source: string;
   sourceId: string;
   kind: RuntimeInputKind;
   payload: JsonValue;
+  interaction?: InteractionContext;
   occurredAt?: string;
 }
 
@@ -22,7 +67,7 @@ export interface FrozenActivityEvent {
   eventId: string;
   turnId: string;
   at: string;
-  actorRef: "individual" | "human" | "system";
+  actorRef: ActorReference;
   kind: "input" | "output" | "thinking" | "tool_call" | "tool_result" | "effect" | "delivery" | "system";
   content: JsonValue;
 }
@@ -74,6 +119,7 @@ export interface ActivityFreezeRequest {
     id: string;
     kind: InputKind;
     payload: JsonValue;
+    interaction?: InteractionContext;
     occurredAt: string;
   }>;
   turns: Array<{
@@ -100,6 +146,7 @@ export interface ActivityFreezeRequest {
     kind: string;
     payload: JsonValue;
     routeRef?: string;
+    destinationRef?: string;
     createdAt: string;
     endedAt?: string;
     status: RuntimeEffectStatus["status"];
@@ -215,6 +262,7 @@ export interface ExecutionInput {
   id: string;
   kind: InputKind;
   payload: JsonValue;
+  interaction?: InteractionContext;
   occurredAt: string;
   inclusionPosition: number;
 }
@@ -242,6 +290,7 @@ export interface EffectRequest {
   kind: string;
   payload: JsonValue;
   routeRef?: string;
+  destinationRef?: string;
 }
 
 export interface EffectReceipt {
@@ -269,6 +318,7 @@ export interface DeliveryAttemptRequest {
   kind: string;
   payload: JsonValue;
   routeRef: string;
+  destinationRef?: string;
   idempotencyKey: string;
 }
 
@@ -301,13 +351,14 @@ export interface RuntimeInputStatus {
   sourceId: string;
   kind: InputKind;
   payload: JsonValue;
+  interaction?: InteractionContext;
   status: "pending" | "active" | "consumed" | "blocked";
 }
 
 export interface InteractionViewEntry {
   id: string;
   at: string;
-  actor: "human" | "individual";
+  actorRef: ActorReference;
   source: string;
   inputIds: string[];
   content: JsonValue;
@@ -344,6 +395,7 @@ export interface RuntimeEffectStatus {
   kind: string;
   payload: JsonValue;
   routeRef?: string;
+  destinationRef?: string;
   coveredInputPosition: number;
   status: "pending" | "completed" | "reconciliation_required" | "abandoned";
   nextDeliveryAt?: string;

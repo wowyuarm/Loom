@@ -50,7 +50,7 @@ async function main(argv: string[]): Promise<void> {
     if (remaining.length > 0) throw new Error(`Unknown argument: ${remaining[0]}`);
     const entries = await readRecentInteractions(resolveInstanceLayout(root).localSocketPath, 100);
     for (const entry of entries) {
-      console.log(`${entry.at} ${entry.actor} [${entry.source}]: ${interactionText(entry.content) ?? JSON.stringify(entry.content)}`);
+      console.log(`${entry.at} ${entry.actorRef} [${entry.source}]: ${interactionText(entry.content) ?? JSON.stringify(entry.content)}`);
     }
     return;
   }
@@ -65,7 +65,7 @@ async function main(argv: string[]): Promise<void> {
       at: operationalTimestamp(),
       root: runningStatus.root,
     });
-    for (const integration of ["local", "weixin"] as const) {
+    for (const integration of ["local", "weixin", "raft"] as const) {
       const status = runningStatus.integrations?.[integration];
       if (!status) continue;
       observe({

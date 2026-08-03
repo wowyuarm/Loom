@@ -6,6 +6,7 @@ export {
   type LoomInstanceStatus,
   type OpenLoomInstanceOptions,
 } from "./loom-instance.js";
+export type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
 export {
   initializeLoomInstance,
   type InitializeLoomInstanceResult,

@@ -105,7 +105,7 @@ export async function readCommittedActivityEvents(request: {
       eventId: `input:${input.id}`,
       turnId,
       at: input.occurredAt,
-      actorRef: input.kind === "interaction" ? "human" : "system",
+      actorRef: inputActorRef(input),
       kind: "input",
       content: structuredClone(input.payload),
     });
@@ -140,6 +140,7 @@ function projectActivityEntries(request: {
         || (data as Record<string, unknown>).kind !== input.kind
         || (data as Record<string, unknown>).occurredAt !== input.occurredAt
         || !isDeepStrictEqual((data as Record<string, unknown>).payload, input.payload)
+        || !isDeepStrictEqual((data as Record<string, unknown>).interaction, input.interaction)
         || userEntry?.type !== "message"
         || userEntry.parentId !== entry.id
         || !isMessageRole(userEntry, "user")) {
@@ -151,7 +152,7 @@ function projectActivityEntries(request: {
         eventId: `input:${input.id}`,
         turnId,
         at: input.occurredAt,
-        actorRef: input.kind === "interaction" ? "human" : "system",
+        actorRef: inputActorRef(input),
         kind: "input",
         content: structuredClone(input.payload),
       });
@@ -217,6 +218,10 @@ function projectActivityEntries(request: {
       });
     }
   }
+}
+
+function inputActorRef(input: ActivityFreezeRequest["inputs"][number]): FrozenActivityEvent["actorRef"] {
+  return input.kind === "interaction" ? input.interaction?.actor.actorRef ?? "human" : "system";
 }
 
 interface TranscriptHeader extends Record<string, unknown> {

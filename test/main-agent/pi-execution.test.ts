@@ -522,6 +522,41 @@ test("binds interaction Workspace materials to their system and Context levels",
   assert.doesNotMatch(await readFile(transcriptFile, "utf8"), /current attention/);
 });
 
+test("places enabled Interaction Channel Guidance after Long-term Memory", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-channel-guidance-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const prompt = context.systemPrompt ?? "";
+      const memory = prompt.indexOf("# Long-term Memory");
+      const channel = prompt.indexOf("# Interaction Channel Guidance");
+      assert.ok(memory >= 0 && channel > memory);
+      assert.match(prompt, /Raft is an external shared collaboration place/);
+      return fauxAssistantMessage("guidance received");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "harness guidance",
+    channelAgentSurface: {
+      guidance: "Raft is an external shared collaboration place.",
+      tools: [],
+    },
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-channel-guidance",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [executionInput("input-channel-guidance", "hello")],
+  }, noEffectControl()).result;
+});
+
 test("keeps the complete Current Attention when normal Context material is over budget", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-required-attention-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
@@ -1531,6 +1566,269 @@ test("reminds the Main Agent how to make the first interaction visible", async t
   }, noEffectControl()).result;
 });
 
+test("presents a Raft Input as actor-aware Interaction Context", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-raft-interaction-context-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    context => {
+      const currentInput = JSON.stringify(context.messages.at(-1));
+      assert.match(currentInput, /<interaction_context>/);
+      assert.match(currentInput, /external:raft:server-1:member-7/);
+      assert.match(currentInput, /agent \(Mira\)/);
+      assert.match(currentInput, /#design/);
+      assert.match(currentInput, /public.*Raft server members/);
+      assert.match(currentInput, /raft:server-1:message-42/);
+      assert.match(currentInput, /raft:server-1:channel-3:top-level/);
+      assert.match(currentInput, /Could you review this/);
+      assert.doesNotMatch(currentInput, /<human_input>/);
+      assert.match(currentInput, /message\.send/);
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "no_reply",
+      }, { id: "message-no-reply" }), { stopReason: "toolUse" });
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+
+  await execution.start({
+    turnId: "turn-raft",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-raft", "Could you review this?"),
+      interaction: {
+        routeRef: "raft:server-1",
+        signal: "mention",
+        actor: {
+          actorRef: "external:raft:server-1:member-7",
+          kind: "agent",
+          label: "Mira",
+        },
+        place: {
+          placeRef: "raft:server-1:channel-3",
+          kind: "channel",
+          label: "#design",
+          visibility: "public",
+        },
+        audience: { visibility: "public", description: "Raft server members" },
+        references: [{ kind: "message", ref: "raft:server-1:message-42" }],
+        destinations: [{
+          destinationRef: "raft:server-1:channel-3:top-level",
+          routeRef: "raft:server-1",
+          kind: "top_level",
+          label: "#design",
+        }],
+        defaultDestinationRef: "raft:server-1:channel-3:top-level",
+      },
+    }],
+  }, noEffectControl()).result;
+});
+
+test("sends to the only Destination authorized by the current Interaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-raft-message-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I will review it here.",
+    }, { id: "message-send" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-raft-message",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-raft-message", "Could you review this?"),
+      interaction: raftInteractionContext(),
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-raft-message" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I will review it here." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
+  }]);
+});
+
+test("uses only the configured principal DM for a proactive message with no current Interaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-proactive-default-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I wanted to share this while it was still alive.",
+    }, { id: "message-principal-dm" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+    channelAgentSurface: {
+      guidance: "Raft is an external shared collaboration place.",
+      tools: [],
+      defaultDestination: {
+        destinationRef: "raft:server-1:principal-dm",
+        routeRef: "raft:server-1",
+        kind: "top_level",
+        label: "principal DM",
+      },
+    },
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-proactive-dm",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("opportunity-principal-dm", "background opportunity"),
+      kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "A concrete thing may be worth sharing.",
+        observedAt: "2026-08-03T05:00:00.000Z",
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-principal-dm" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I wanted to share this while it was still alive." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:principal-dm",
+  }]);
+});
+
+test("requires an explicit Destination after multiple Interaction places enter a Turn", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-multiple-destinations-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const providerStarted = deferred();
+  const releaseProvider = deferred();
+  faux.setResponses([
+    async () => {
+      providerStarted.resolve();
+      await releaseProvider.promise;
+      return fauxAssistantMessage("The first place is understood.");
+    },
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "This must not be sent to a guessed place.",
+    }, { id: "message-without-destination" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I will answer in the design channel.",
+      destination_ref: "raft:server-1:channel-3:top-level",
+    }, { id: "message-with-destination" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+  const running = execution.start({
+    turnId: "turn-two-places",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-design", "First place"),
+      interaction: raftInteractionContext(),
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-two-places" };
+    },
+  });
+  await providerStarted.promise;
+  await running.steer({
+    ...executionInput("input-dm", "Second place"),
+    inclusionPosition: 2,
+    interaction: {
+      ...raftInteractionContext(),
+      signal: "direct_message",
+      place: {
+        placeRef: "raft:server-1:dm-8",
+        kind: "direct",
+        label: "Noa",
+        visibility: "private",
+      },
+      audience: { visibility: "private", description: "Noa and the Individual" },
+      references: [{ kind: "message", ref: "raft:server-1:message-50" }],
+      destinations: [{
+        destinationRef: "raft:server-1:dm-8:top-level",
+        routeRef: "raft:server-1",
+        kind: "top_level",
+        label: "Noa",
+      }],
+      defaultDestinationRef: "raft:server-1:dm-8:top-level",
+    },
+  });
+  releaseProvider.resolve();
+
+  await running.result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I will answer in the design channel." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
+  }]);
+});
+
 test("asks once for a missing message decision in the same interaction", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-followup-"));
   const transcriptDirectory = path.join(root, "transcript");
@@ -2112,6 +2410,33 @@ function executionInput(id: string, text: string) {
     payload: { text },
     occurredAt: "2026-07-19T00:00:00.000Z",
     inclusionPosition: 1,
+  };
+}
+
+function raftInteractionContext() {
+  return {
+    routeRef: "raft:server-1",
+    signal: "mention" as const,
+    actor: {
+      actorRef: "external:raft:server-1:member-7" as const,
+      kind: "agent" as const,
+      label: "Mira",
+    },
+    place: {
+      placeRef: "raft:server-1:channel-3",
+      kind: "channel" as const,
+      label: "#design",
+      visibility: "public" as const,
+    },
+    audience: { visibility: "public" as const, description: "Raft server members" },
+    references: [{ kind: "message" as const, ref: "raft:server-1:message-42" }],
+    destinations: [{
+      destinationRef: "raft:server-1:channel-3:top-level",
+      routeRef: "raft:server-1",
+      kind: "top_level" as const,
+      label: "#design",
+    }],
+    defaultDestinationRef: "raft:server-1:channel-3:top-level",
   };
 }
 

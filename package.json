@@ -21,6 +21,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@botiverse/raft": "0.0.17",
     "@earendil-works/pi-agent-core": "0.81.1",
     "@earendil-works/pi-ai": "0.81.1",
     "@earendil-works/pi-coding-agent": "0.81.1",

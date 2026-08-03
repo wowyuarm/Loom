@@ -117,7 +117,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-当前没有待实施的 Loom code ticket。继续观察 HaL 的真实互动、主动与沉默、认知材料演化、长模型调用和重启连续性；出现稳定的 Harness 问题后再建一张范围明确的 ticket，不把 provider route、Local client 或运维能力混成一个工作单元。
+当前主动工程工作是 [Raft Interaction Channel Ticket 04](../raft-channel/issues/04-implement-raft-interaction-channel.md)。它把已收束的 channel 设计实现为一项完整工作单元：Runtime Interaction facts、Main Agent/Orientation surface、Raft Adapter/Host 与运维材料先作为机械实现提交；真实 Raft-only acceptance 仍是关闭 ticket 的唯一门槛。HaL 的既有 Local 实例继续作为独立运行观察，接入 Raft 时不影响 Xi 或其他 Loom Instance。
 
 ## Independent Development
 

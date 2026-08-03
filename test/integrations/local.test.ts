@@ -36,14 +36,14 @@ test("uses a Unix socket as transport while history remains Harness-owned", asyn
       entries.push({
         id: `input:${inputId}`,
         at: "2026-07-31T10:00:00.000Z",
-        actor: "human",
+        actorRef: "human",
         source: input.source,
         inputIds: [inputId],
         content: input.payload,
       }, {
         id: "effect:effect-1",
         at: "2026-07-31T10:00:01.000Z",
-        actor: "individual",
+        actorRef: "individual",
         source: LOCAL_INTERACTION_ROUTE,
         inputIds: [inputId],
         content: { text: "hello from the Individual" },
@@ -68,7 +68,7 @@ test("uses a Unix socket as transport while history remains Harness-owned", asyn
     entries: [{
       id: "effect:effect-1",
       at: "2026-07-31T10:00:01.000Z",
-      actor: "individual",
+      actorRef: "individual",
       source: "local",
       inputIds: ["input-1"],
       content: { text: "hello from the Individual" },

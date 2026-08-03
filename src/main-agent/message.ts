@@ -2,7 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { TurnControl } from "../runtime/index.js";
+import type { InteractionDestination, TurnControl } from "../runtime/index.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 
 export interface MessageTurnDecision {
@@ -22,6 +22,8 @@ interface MessageToolDetails {
 export function createMessageTool(options: {
   control: TurnControl;
   routeRef: string;
+  destinations?: () => InteractionDestination[];
+  defaultDestination?: InteractionDestination;
   decision: MessageTurnDecision;
   attachmentStore?: AttachmentStore;
   workspaceRoot: string;
@@ -63,6 +65,9 @@ export function createMessageTool(options: {
         description: "End after this send, or continue the same Turn for another message, tool action, or further work.",
         default: "end_turn",
       })),
+      destination_ref: Type.Optional(Type.String({
+        description: "Select one available Interaction Destination. Omit only when the current Turn has one default or one available Destination.",
+      })),
     }),
     executionMode: "sequential",
     execute: async (_toolCallId, params): Promise<AgentToolResult<MessageToolDetails>> => {
@@ -96,13 +101,19 @@ export function createMessageTool(options: {
             source: attachmentPath,
           })
         : undefined;
+      const destination = selectDestination(
+        options.destinations?.() ?? [],
+        params.destination_ref,
+        options.defaultDestination,
+      );
       const receipt = options.control.prepareEffect({
         kind: "message",
         payload: {
           ...(text ? { text } : {}),
           ...(attachment ? { attachments: [JSON.parse(JSON.stringify(attachment))] } : {}),
         },
-        routeRef: options.routeRef,
+        routeRef: destination?.routeRef ?? options.routeRef,
+        ...(destination ? { destinationRef: destination.destinationRef } : {}),
       });
       options.decision.sent += 1;
       const afterSend = params.after_send ?? "end_turn";
@@ -122,4 +133,20 @@ export function createMessageTool(options: {
       };
     },
   });
+}
+
+function selectDestination(
+  destinations: InteractionDestination[],
+  requested: string | undefined,
+  defaultDestination: InteractionDestination | undefined,
+): InteractionDestination | undefined {
+  const unique = [...new Map(destinations.map(destination => [destination.destinationRef, destination])).values()];
+  if (requested?.trim()) {
+    const selected = unique.find(destination => destination.destinationRef === requested.trim());
+    if (!selected) throw new Error("message destination_ref is not available in the current Interaction Context");
+    return selected;
+  }
+  if (unique.length === 0) return defaultDestination;
+  if (unique.length === 1) return unique[0];
+  throw new Error("message send requires destination_ref when more than one Interaction Destination is available");
 }

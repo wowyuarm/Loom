@@ -436,15 +436,21 @@ function validateActivity(activity: FrozenActivity): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(activity.recordingDay)) throw new Error("Invalid recordingDay");
   validateIsoTimestamp(activity.openedAt, "openedAt");
   validateIsoTimestamp(activity.closedAt, "closedAt");
-  const actorRefs = new Set(["individual", "human", "system"]);
   const eventIds = new Set<string>();
   for (const event of activity.events) {
     const eventId = requireNonBlank(event.eventId, "eventId");
     if (eventIds.has(eventId)) throw new Error(`Duplicate eventId: ${eventId}`);
-    if (!actorRefs.has(event.actorRef)) throw new Error(`Unsupported actorRef in frozen activity: ${event.actorRef}`);
+    if (!isActorReference(event.actorRef)) throw new Error(`Unsupported actorRef in frozen activity: ${event.actorRef}`);
     validateIsoTimestamp(event.at, `event ${eventId} timestamp`);
     eventIds.add(eventId);
   }
+}
+
+function isActorReference(value: string): boolean {
+  return value === "individual"
+    || value === "human"
+    || value === "system"
+    || /^external:[^:\s]+:[^:\s]+(?::[^:\s]+)+$/.test(value);
 }
 
 function toolResult(value: unknown) {

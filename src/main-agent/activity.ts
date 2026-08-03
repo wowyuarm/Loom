@@ -73,7 +73,7 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
             eventId: `input:${input.id}`,
             turnId: turn.id,
             at: input.occurredAt,
-            actorRef: input.kind === "interaction" ? "human" as const : "system" as const,
+            actorRef: inputActorRef(input),
             kind: "input" as const,
             content: structuredClone(input.payload),
           };
@@ -130,6 +130,10 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
       successorExecutionState: serializeContextWindowState(successor),
     };
   }
+}
+
+function inputActorRef(input: ActivityFreezeRequest["inputs"][number]): FrozenActivityEvent["actorRef"] {
+  return input.kind === "interaction" ? input.interaction?.actor.actorRef ?? "human" : "system";
 }
 
 function failedToolActivityEvents(
@@ -199,6 +203,7 @@ function effectEvent(effect: ActivityFreezeRequest["effects"][number]): FrozenAc
       kind: effect.kind,
       payload: effect.payload,
       ...(effect.routeRef ? { routeRef: effect.routeRef } : {}),
+      ...(effect.destinationRef ? { destinationRef: effect.destinationRef } : {}),
       status: effect.status,
       ...(effect.endedAt ? { endedAt: effect.endedAt } : {}),
     }),

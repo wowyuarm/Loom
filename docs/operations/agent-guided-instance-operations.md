@@ -45,6 +45,13 @@ non-empty. Model choices belong in `configuration/instance.yaml`; Pi credentials
 belong in `configuration/pi/auth.json`. Optional Integrations remain disabled
 until their configuration and credentials are deliberately supplied.
 
+Integration-specific preparation belongs to the corresponding operational
+document. For Raft, the Operator Agent follows [Raft Interaction Channel](../integrations/raft.md)
+to create or select an External Agent profile, bind it to the intended server
+and principal relationship actor, write the Instance configuration, and run
+the first real acceptance checks. Loom does not perform Raft login or infer
+these bindings from a credential.
+
 `loom run` owns one prepared Instance Root. `loom chat` and `loom history` are
 clients of its enabled Local Interaction Channel; they do not create another
 Runtime owner or private history store. `loom run` accepts `SIGTERM` and waits

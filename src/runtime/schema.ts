@@ -5,6 +5,10 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (version.user_version === 11) migrateVersion11(database);
   const migrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (migrated.user_version === 12) migrateVersion12(database);
+  const deliveryMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (deliveryMigrated.user_version === 13) migrateVersion13(database);
+  const interactionMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (interactionMigrated.user_version === 14) migrateVersion14(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -17,6 +21,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       source_id TEXT NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN ('interaction', 'opportunity', 'continuation')),
       payload_json TEXT NOT NULL,
+      interaction_json TEXT,
       occurred_at TEXT NOT NULL,
       accepted_at TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'consumed', 'blocked')),
@@ -67,6 +72,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       kind TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       route_ref TEXT,
+      destination_ref TEXT,
       input_position INTEGER NOT NULL CHECK (input_position > 0),
       status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'reconciliation_required', 'abandoned')),
       created_at TEXT NOT NULL,
@@ -224,21 +230,44 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       reason TEXT
     ) STRICT;
 
-    PRAGMA user_version = 13;
+    PRAGMA user_version = 15;
   `);
 }
 
+function migrateVersion14(database: DatabaseSync): void {
+  migrateOptionalColumn(database, "effects", "destination_ref", "TEXT", 15);
+}
+
+function migrateVersion13(database: DatabaseSync): void {
+  migrateOptionalColumn(database, "inputs", "interaction_json", "TEXT", 14);
+}
+
 function migrateVersion12(database: DatabaseSync): void {
-  const effects = database.prepare(`
-    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'effects'
-  `).get();
-  if (!effects) return;
-  database.exec(`
-    BEGIN IMMEDIATE;
-    ALTER TABLE effects ADD COLUMN next_delivery_after TEXT;
-    PRAGMA user_version = 13;
-    COMMIT;
-  `);
+  migrateOptionalColumn(database, "effects", "next_delivery_after", "TEXT", 13);
+}
+
+function migrateOptionalColumn(
+  database: DatabaseSync,
+  table: string,
+  column: string,
+  type: string,
+  nextVersion: number,
+): void {
+  const tableExists = database.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+  `).get(table);
+  const columnExists = tableExists && (database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{
+    name: string;
+  }>).some(candidate => candidate.name === column);
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    if (tableExists && !columnExists) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    database.exec(`PRAGMA user_version = ${nextVersion}`);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion11(database: DatabaseSync): void {

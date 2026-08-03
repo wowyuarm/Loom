@@ -13,7 +13,7 @@ export type OperationalEvent =
   | {
       event: "integration.state";
       at: string;
-      integration: "local" | "weixin";
+      integration: "local" | "weixin" | "raft";
       state: string;
     }
   | {
