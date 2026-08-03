@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { ModelRuntimeRevision, ModelRuntimeRevisions } from "../configuration/index.js";
 import { createPiToolTraceCompactor } from "../agents/tool-trace-compactor.js";
@@ -20,6 +21,8 @@ import type { InstanceLayout } from "./layout.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
+
+const CORE_SKILLS_DIRECTORY = fileURLToPath(new URL("../main-agent/core-skills/", import.meta.url));
 
 export interface RevisionBoundMainAgentOptions {
   revisions: ModelRuntimeRevisions;
@@ -83,6 +86,7 @@ class RevisionBoundMainAgent implements AgentExecution {
         ? { defaultInteractionRoute: this.options.defaultInteractionRoute }
         : {}),
       ...(this.options.additionalTools ? { additionalTools: this.options.additionalTools } : {}),
+      skillSources: { core: [CORE_SKILLS_DIRECTORY], integrations: [] },
       toolTraceCompactor: compactor,
       attachmentStore: this.options.attachmentStore,
       ...(this.options.observe ? { observe: this.options.observe } : {}),

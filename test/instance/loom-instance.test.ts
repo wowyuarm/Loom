@@ -233,6 +233,33 @@ test("runs one Main Agent Turn through the assembled Instance", async t => {
   assert.equal(instance.status().runtime.turns[0]?.status, "completed");
 });
 
+test("provides the built-in skill manager and Workspace cwd guidance to the Main Agent", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  const provider = await startOpenAiProvider(body => {
+    const request = JSON.stringify(body);
+    assert.match(request, /<name>skill-manager<\/name>/);
+    assert.match(request, /Your current working directory is the root of your Agent Workspace/);
+    assert.match(request, /read the built-in skill-manager before changing anything under skills\//);
+    return { text: "A private response" };
+  });
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  const now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  t.after(() => instance.close());
+
+  await instance.acceptInput({
+    source: "test-channel",
+    sourceId: "skill-manager-input",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  await instance.runOnce(now);
+
+  assert.equal(provider.requests(), 1);
+});
+
 test("refuses to open before model execution when Individual-owned materials are missing", async t => {
   const root = await createInstanceRoot();
   const provider = await startOpenAiProvider({ text: "must not run" });

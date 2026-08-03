@@ -11,7 +11,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "npm run clean && tsc -p tsconfig.json && chmod +x dist/src/cli.js",
+    "build": "npm run clean && tsc -p tsconfig.json && cp -R src/main-agent/core-skills dist/src/main-agent/core-skills && chmod +x dist/src/cli.js",
     "test": "npm run build && node scripts/run-tests.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
