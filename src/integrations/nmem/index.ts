@@ -1,4 +1,8 @@
 export {
+  loadNmemConnectionConfiguration,
+  type NmemConnectionConfiguration,
+} from "./configuration.js";
+export {
   createNmemEpisodeReconciler,
   type NmemEpisodeReconciler,
   type NmemEpisodeReconcilerOptions,

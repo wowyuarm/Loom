@@ -188,6 +188,75 @@ test("does not inspect Weixin files while the Integration is disabled", async ()
   await host.stop();
 });
 
+test("loads an enabled nmem connection from the Instance Root", async t => {
+  const root = await preparedInstanceRoot();
+  await configureNmem(root, {
+    endpoint: "http://127.0.0.1:1",
+    spaceId: "loom-test",
+    apiKey: "nmem-test-key",
+  });
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+
+  assert.ok(host.status().instance.nmem);
+  const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
+  assert.ok("runId" in report);
+  if ("runId" in report) {
+    assert.deepEqual(report.integrations, [{ name: "nmem", state: "active" }]);
+  }
+});
+
+test("rejects enabled nmem without connection configuration", async () => {
+  const root = await preparedInstanceRoot();
+  const configurationRoot = path.join(root, "configuration");
+  await mkdir(configurationRoot, { recursive: true });
+  await writeFile(path.join(configurationRoot, "instance.yaml"), [
+    "version: 1",
+    "integrations:",
+    "  nmem:",
+    "    enabled: true",
+    "",
+  ].join("\n"), "utf8");
+
+  await assert.rejects(
+    openLoomHost({ root, machineTimeZone: "UTC" }),
+    /Enabled nmem requires config\.json/,
+  );
+});
+
+test("accepts local nmem without an auth file", async () => {
+  const root = await preparedInstanceRoot();
+  await configureNmem(root, { endpoint: "http://127.0.0.1:14242" });
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  assert.ok(host.status().instance.nmem);
+  await host.stop();
+});
+
+test("does not inspect nmem files while the Integration is disabled", async () => {
+  const root = await preparedInstanceRoot();
+  const configurationRoot = path.join(root, "configuration");
+  const nmemRoot = path.join(configurationRoot, "integrations", "nmem");
+  await mkdir(nmemRoot, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(configurationRoot, "instance.yaml"), [
+      "version: 1",
+      "integrations:",
+      "  nmem:",
+      "    enabled: false",
+      "",
+    ].join("\n"), "utf8"),
+    writeFile(path.join(nmemRoot, "config.json"), "not active configuration", "utf8"),
+    writeFile(path.join(nmemRoot, "auth.json"), "not active credentials", "utf8"),
+  ]);
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  assert.equal(host.status().instance.nmem, undefined);
+  await host.stop();
+});
+
 test("runs one configured Weixin route through Host ingress and graceful stop", async t => {
   let pollCount = 0;
   let stopNotifications = 0;
@@ -476,6 +545,36 @@ async function configureRaft(root: string): Promise<void> {
       principalMemberId: "human-alex",
       principalDmTarget: "dm:@alex",
     }), "utf8"),
+  ]);
+}
+
+async function configureNmem(root: string, options: {
+  endpoint: string;
+  spaceId?: string;
+  apiKey?: string;
+}): Promise<void> {
+  const configurationRoot = path.join(root, "configuration");
+  const nmemRoot = path.join(configurationRoot, "integrations", "nmem");
+  await mkdir(nmemRoot, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(configurationRoot, "instance.yaml"), [
+      "version: 1",
+      "integrations:",
+      "  nmem:",
+      "    enabled: true",
+      "",
+    ].join("\n"), "utf8"),
+    writeFile(path.join(nmemRoot, "config.json"), JSON.stringify({
+      version: 1,
+      endpoint: options.endpoint,
+      ...(options.spaceId ? { spaceId: options.spaceId } : {}),
+    }), "utf8"),
+    ...(options.apiKey ? [
+      writeFile(path.join(nmemRoot, "auth.json"), JSON.stringify({
+        version: 1,
+        apiKey: options.apiKey,
+      }), "utf8"),
+    ] : []),
   ]);
 }
 

@@ -30,9 +30,10 @@ the authorized environment.
 | User need | Guide |
 | --- | --- |
 | Install Loom, initialize an Instance, configure systemd, update code or host multiple Individuals | [Instance Lifecycle](reference/instance-lifecycle.md) |
+| Configure models, credentials, schedules, routes or enabled Integrations | [Configuration And Credentials](reference/configuration-and-credentials.md) |
 | View live state, understand recent Agent runs, investigate failure or recover a process | [Status And Diagnosis](reference/status-and-diagnosis.md) |
 | Back up, restore or migrate a complete Instance | [Backup, Restore And Migration](reference/backup-and-restore.md) |
-| Enable or verify an Integration | [Local](../integrations/local.md), [Weixin](../integrations/weixin.md), [Raft](../integrations/raft.md) or [Web Access](../integrations/web.md) |
+| Enable or verify an Integration | [Local](../integrations/local.md), [Weixin](../integrations/weixin.md), [Raft](../integrations/raft.md), [nmem](../integrations/nmem.md) or [Web Access](../integrations/web.md) |
 
 Read only the guides needed for the user's request. Integration-specific login,
 configuration and acceptance belong to the corresponding Integration guide.

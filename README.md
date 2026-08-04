@@ -47,32 +47,24 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 
 ## 快速开始
 
+推荐直接让具备 Bash 权限的 Claude Code、Codex 等 Agent 阅读
+[Agent-guided Instance Operations](docs/operations/agent-guided-instance-operations.md)，
+再根据你的目标完成安装、配置和验证。
+
+### 手动开始
+
 需要 Node `>=24.15.0`。
 
 ```bash
+npm ci
 npm run build
 node dist/src/cli.js init
 ```
 
-`init` 写入 `configuration/instance.yaml`（默认启用 Local）、两份 Harness 默认 Behavior 和 Pi 配置目录，不覆盖已有文件。它返回需要由 Individual 提供的 active material：
-
-```text
-workspace/facts.json
-workspace/identity.md
-workspace/memory.md
-workspace/attention.md
-```
-
-补齐这些材料后，在 `init` 生成的 `configuration/instance.yaml` 里加入 `models` 段配置模型，并按 Pi 格式提供 `configuration/pi/auth.json`：
-
-```yaml
-models:
-  default:
-    - provider: deepseek
-      model: deepseek-chat
-```
-
-`models.default` 是所有模型 role 的 fallback；也可以为 `main-interaction`、`orientation`、`life-recorder` 等 8 个 role 单独指定。自定义 provider/model 定义仍由 Pi 的 `configuration/pi/models.json` 管理。时间、调度等字段缺省使用机器时区与内置节律。Weixin 接入见 [Weixin Integration](docs/integrations/weixin.md)，Raft External Agent 的登录、配置和运行边界见 [Raft Interaction Channel](docs/integrations/raft.md)。
+`init` 只创建基础目录，不生成 Individual 材料，也不覆盖已有文件。继续准备实例见
+[Instance Lifecycle](docs/operations/reference/instance-lifecycle.md)；模型、key 和
+Integration 配置见
+[Configuration And Credentials](docs/operations/reference/configuration-and-credentials.md)。
 
 运行 Instance：
 
@@ -80,7 +72,7 @@ models:
 node dist/src/cli.js run
 ```
 
-该入口保持前台运行，在 `SIGINT` 或 `SIGTERM` 后等待当前工作自然结束。缺少必要 Workspace 材料或配置损坏时会直接拒绝打开；模型或认证尚未就绪时，Host 保持运行并把 agent work 标记为 blocked。
+该入口保持前台运行，在 `SIGINT` 或 `SIGTERM` 后等待当前工作自然结束。
 
 默认 Instance Root 是 `~/.loom`。只有维护非默认实例或测试时才需要
 `--root`。在仓库开发期可 `npm link` 后直接使用 `loom`：
@@ -108,7 +100,7 @@ Instance Root 布局：
 ├── configuration/
 │   ├── instance.yaml          装配、时间、模型、Integration、调度
 │   ├── pi/                    auth.json · models.json · models-store.json
-│   └── integrations/          weixin/ · raft/（按启用状态提供）
+│   └── integrations/<name>/   config.json · auth.json（按需）
 ├── workspace/                 Agent Individual 拥有
 │   ├── identity.md  memory.md  attention.md  facts.json
 │   ├── behavior/{interaction,background}.md
@@ -117,7 +109,7 @@ Instance Root 布局：
 │   ├── host-lock.db           Host 独占锁
 │   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
-│   └── integrations/          local.sock · weixin.db · attachments/
+│   └── integrations/          channel state · nmem.db · attachments/
 ├── transcripts/{main,organs}/
 └── backups/                   认知器官写前备份
 ```
@@ -139,5 +131,5 @@ Loom 的文档保持薄：稳定术语落在 CONTEXT.md，难以逆转的取舍�
 - [AGENTS.md](AGENTS.md) — 协作规则
 - [.scratch/harness-layers/map.md](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作与下一步
 - [docs/agents/](docs/agents/) — 工程任务约定
-- [docs/integrations/](docs/integrations/) — Local、Weixin 与 Raft 接入
+- [docs/integrations/](docs/integrations/) — Integration 接入与运行边界
 - [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 可直接交给 Claude Code、Codex 等经用户授权且具备主机操作能力的 Agent，用于安装、初始化和运维 Loom

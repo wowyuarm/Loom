@@ -43,6 +43,8 @@ test("creates an Instance scaffold without inventing Individual material", async
     "    enabled: false",
     "  raft:",
     "    enabled: false",
+    "  web:",
+    "    enabled: false",
     "  nmem:",
     "    enabled: false",
     "interaction:",

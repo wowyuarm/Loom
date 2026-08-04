@@ -26,10 +26,10 @@ user. `facts.json` must contain `version: 1` and object sections named
 `individual` and `human`; the other files must be non-empty. An empty scaffold
 is not a ready Individual.
 
-Model choices belong in `configuration/instance.yaml`; Pi credentials belong in
-`configuration/pi/auth.json`. Optional Integrations remain disabled until their
-configuration and credentials are deliberately supplied. Follow the matching
-guide under `docs/integrations/` before enabling one.
+Follow [Configuration And Credentials](configuration-and-credentials.md) for
+model selection, secret files, permissions and Integration enablement. Optional
+Integrations remain disabled until every required file is deliberately supplied.
+Then follow the matching guide under `docs/integrations/` before enabling one.
 
 `loom run` owns one prepared Instance Root. It accepts `SIGTERM` and waits for
 current work to finish, so an external supervisor owns boot startup and restart.

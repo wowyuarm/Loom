@@ -34,6 +34,7 @@ import {
   type RaftRemote,
 } from "../integrations/raft/index.js";
 import { openConfiguredWebAccess, type WebAccessIntegration } from "../integrations/web/index.js";
+import { loadNmemConnectionConfiguration } from "../integrations/nmem/index.js";
 import type {
   AcceptedInput,
   InteractionViewOptions,
@@ -76,7 +77,7 @@ export interface LoomHostStatus {
 
 export type OpenLoomHostOptions = Omit<
   OpenLoomInstanceOptions,
-  "attachmentStore" | "channelAgentSurface" | "webAccess"
+  "attachmentStore" | "channelAgentSurface" | "webAccess" | "nmem"
 > & {
   raftRemote?: RaftRemote;
 };
@@ -318,6 +319,12 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
         authFile: layout.webAuthFile,
       });
     }
+    const nmem = configuration.integrations.nmem
+      ? await loadNmemConnectionConfiguration({
+          configurationFile: layout.nmemConfigurationFile,
+          authFile: layout.nmemAuthFile,
+        })
+      : undefined;
     if ((local || weixin || raft) && options.outboundDelivery) {
       throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
     }
@@ -331,6 +338,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
         : {}),
       ...(raft ? { channelAgentSurface: raft.agentSurface() } : {}),
       ...(web ? { webAccess: web } : {}),
+      ...(nmem ? { nmem } : {}),
     });
     return new DefaultLoomHost({
       root,

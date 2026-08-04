@@ -14,6 +14,8 @@ export interface InstanceLayout {
   raftStateFile: string;
   webConfigurationFile: string;
   webAuthFile: string;
+  nmemConfigurationFile: string;
+  nmemAuthFile: string;
   localSocketPath: string;
   statusSocketPath: string;
   attachmentStoreRoot: string;
@@ -32,6 +34,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
   const weixinRoot = path.join(configurationRoot, "integrations", "weixin");
   const raftRoot = path.join(configurationRoot, "integrations", "raft");
   const webRoot = path.join(configurationRoot, "integrations", "web");
+  const nmemRoot = path.join(configurationRoot, "integrations", "nmem");
   const transcriptRoot = path.join(resolvedRoot, "transcripts");
   return {
     root: resolvedRoot,
@@ -47,6 +50,8 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     raftStateFile: path.join(resolvedRoot, "runtime", "integrations", "raft.db"),
     webConfigurationFile: path.join(webRoot, "config.json"),
     webAuthFile: path.join(webRoot, "auth.json"),
+    nmemConfigurationFile: path.join(nmemRoot, "config.json"),
+    nmemAuthFile: path.join(nmemRoot, "auth.json"),
     localSocketPath: path.join(resolvedRoot, "runtime", "integrations", "local.sock"),
     statusSocketPath: path.join(resolvedRoot, "runtime", "status.sock"),
     attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
