@@ -101,10 +101,10 @@ Raft status 有四种状态：
 - `degraded`：bridge 已退出，或某条 wake 暂时无法解析或送入 Runtime；
 - `stopped`：Host 已完成 graceful stop。
 
-这些状态当前由 Loom Host 接口持有，还没有单独的 `loom status` 客户端命令。
-`loom run` 启动时会输出一条 Raft `integration.state`；运行中 bridge 后来失联会反映在
-Host status，但当前不会另外推送一条状态变化事件。不要把进程仍在运行当成 Raft 一定
-connected；真实验收会判断是否需要新增持续运维入口。
+这些状态可通过 `loom status` 的 Raft 条目读取；`--json` 提供相同状态的结构化形式。
+`loom run` 启动时也会输出一条 Raft `integration.state`，但该诊断事件不能替代当前
+status。运行中 bridge 后来失联会反映为 `degraded`，当前不会另外推送一条状态变化
+事件。不要把进程仍在运行当成 Raft 一定 connected。
 
 bridge 会保存并重放尚未成功交给 Loom 的 content-free wake；Loom 按 Raft message
 ID 去重，并在 Runtime 接受后才把自己的 wake 标记完成。若 bridge 进程在 Host 仍
