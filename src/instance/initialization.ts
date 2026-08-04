@@ -30,6 +30,8 @@ integrations:
     enabled: false
   raft:
     enabled: false
+  web:
+    enabled: false
   nmem:
     enabled: false
 interaction:

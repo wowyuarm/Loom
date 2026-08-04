@@ -44,6 +44,7 @@ import {
 } from "../integrations/attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
+import type { WebAccessIntegration } from "../integrations/web/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import {
   createRevisionBoundLifeRecorder,
@@ -103,6 +104,7 @@ export interface OpenLoomInstanceOptions {
   now?: () => Date;
   outboundDelivery?: OutboundDelivery;
   channelAgentSurface?: InteractionChannelAgentSurface;
+  webAccess?: WebAccessIntegration;
   nmem?: NmemRecallToolOptions;
   attachmentStore?: AttachmentStore;
   observe?: OperationalEventObserver;
@@ -278,7 +280,10 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     ...(configuration.defaultInteractionRoute
       ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
       : {}),
-    ...(recallTool ? { additionalTools: [recallTool] } : {}),
+    ...((recallTool || options.webAccess) ? { additionalTools: [
+      ...(recallTool ? [recallTool] : []),
+      ...(options.webAccess?.tools() ?? []),
+    ] } : {}),
   });
   const orientation = createRevisionBoundOrientation({
     revisions,

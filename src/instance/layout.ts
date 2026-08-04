@@ -12,6 +12,8 @@ export interface InstanceLayout {
   weixinStateFile: string;
   raftConfigurationFile: string;
   raftStateFile: string;
+  webConfigurationFile: string;
+  webAuthFile: string;
   localSocketPath: string;
   statusSocketPath: string;
   attachmentStoreRoot: string;
@@ -29,6 +31,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
   const piRoot = path.join(configurationRoot, "pi");
   const weixinRoot = path.join(configurationRoot, "integrations", "weixin");
   const raftRoot = path.join(configurationRoot, "integrations", "raft");
+  const webRoot = path.join(configurationRoot, "integrations", "web");
   const transcriptRoot = path.join(resolvedRoot, "transcripts");
   return {
     root: resolvedRoot,
@@ -42,6 +45,8 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     weixinStateFile: path.join(resolvedRoot, "runtime", "integrations", "weixin.db"),
     raftConfigurationFile: path.join(raftRoot, "config.json"),
     raftStateFile: path.join(resolvedRoot, "runtime", "integrations", "raft.db"),
+    webConfigurationFile: path.join(webRoot, "config.json"),
+    webAuthFile: path.join(webRoot, "auth.json"),
     localSocketPath: path.join(resolvedRoot, "runtime", "integrations", "local.sock"),
     statusSocketPath: path.join(resolvedRoot, "runtime", "status.sock"),
     attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),

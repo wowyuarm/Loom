@@ -110,6 +110,8 @@ test("requires explicit Integration enablement and keeps Integrations disabled b
     "    enabled: false",
     "  raft:",
     "    enabled: true",
+    "  web:",
+    "    enabled: true",
     "  nmem:",
     "    enabled: true",
     "",
@@ -121,8 +123,8 @@ test("requires explicit Integration enablement and keeps Integrations disabled b
     machineTimeZone: "UTC",
   });
 
-  assert.deepEqual(configured.integrations, { local: true, weixin: false, raft: true, nmem: true });
-  assert.deepEqual(defaults.integrations, { local: false, weixin: false, raft: false, nmem: false });
+  assert.deepEqual(configured.integrations, { local: true, weixin: false, raft: true, web: true, nmem: true });
+  assert.deepEqual(defaults.integrations, { local: false, weixin: false, raft: false, web: false, nmem: false });
 });
 
 test("loads the proactive Pulse schedule with Harness defaults and explicit overrides", async () => {

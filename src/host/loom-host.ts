@@ -33,6 +33,7 @@ import {
   type RaftChannelStatus,
   type RaftRemote,
 } from "../integrations/raft/index.js";
+import { openConfiguredWebAccess, type WebAccessIntegration } from "../integrations/web/index.js";
 import type {
   AcceptedInput,
   InteractionViewOptions,
@@ -75,7 +76,7 @@ export interface LoomHostStatus {
 
 export type OpenLoomHostOptions = Omit<
   OpenLoomInstanceOptions,
-  "attachmentStore" | "channelAgentSurface"
+  "attachmentStore" | "channelAgentSurface" | "webAccess"
 > & {
   raftRemote?: RaftRemote;
 };
@@ -106,6 +107,7 @@ class DefaultLoomHost implements LoomHost {
     local?: LocalInteractionChannel;
     weixin?: WeixinAdapter;
     raft?: RaftChannel;
+    web?: WebAccessIntegration;
     statusSocketPath: string;
     now?: () => Date;
   }) {
@@ -257,6 +259,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
   let local: LocalInteractionChannel | undefined;
   let weixin: WeixinAdapter | undefined;
   let raft: RaftChannel | undefined;
+  let web: WebAccessIntegration | undefined;
   let attachmentStore: AttachmentStore | undefined;
   try {
     const layout = resolveInstanceLayout(root);
@@ -309,6 +312,12 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
     } else if (options.raftRemote) {
       throw new Error("Raft Remote was provided while the Integration is disabled");
     }
+    if (configuration.integrations.web) {
+      web = await openConfiguredWebAccess({
+        configurationFile: layout.webConfigurationFile,
+        authFile: layout.webAuthFile,
+      });
+    }
     if ((local || weixin || raft) && options.outboundDelivery) {
       throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
     }
@@ -321,6 +330,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
         ? { outboundDelivery: local ?? weixin ?? raft ?? outboundDelivery }
         : {}),
       ...(raft ? { channelAgentSurface: raft.agentSurface() } : {}),
+      ...(web ? { webAccess: web } : {}),
     });
     return new DefaultLoomHost({
       root,

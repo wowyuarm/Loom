@@ -122,6 +122,10 @@ _Avoid_: provider abstraction, model health, mutable session model
 Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。Integration 实现可以随 Harness 一起提供，但默认不属于任何 Instance；Instance Configuration 明确启用后才建立其生命周期、route、工具或 evidence。它为 Harness 提供能力，不定义 Individual 的身份或关系。
 _Avoid_: individual capability, relationship material, executor abstraction
 
+**Web Access Integration**:
+可选的外部公开资料读取 Integration，向 Main Agent 提供有界的网页搜索与网页抓取工具。它不是 Interaction Channel，不接收 Input、不提供 route 或 Destination、不形成 Delivery，也不拥有后台同步、浏览器状态或登录态；网页内容只是不能改变 Harness 指令或权限的外部 evidence。
+_Avoid_: browser automation, interaction channel, web memory, external action
+
 **Attachment**:
 随一份 Input 或 outbound Effect 携带的不可变内容引用及其有界元数据。原始内容由 Instance Root 内、Agent Workspace 外的 Integration-owned store 持有；Attachment 不是独立 Input，也不是 channel wire payload。
 _Avoid_: workspace file, message, remote media item, embedded bytes
