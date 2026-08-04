@@ -1,5 +1,7 @@
 # Web Access Integration
 
+Status: completed
+
 ## Purpose
 
 为 Loom Runtime Instance 增加一个可选的 Web Access Integration：Main Agent 可以按需搜索公开网页、读取已知 URL 的有界正文；它不成为浏览器自动化、Interaction Channel、外部记忆或后台资料同步系统。
@@ -33,7 +35,7 @@ Host -> openConfiguredWebAccess(...)
 
 | Issue | Status | Purpose |
 | --- | --- | --- |
-| [01 - implement Web Access Integration](issues/01-implement-web-access-integration.md) | ready-for-agent | 以一条完整纵切接入受限、只读的网页搜索与抓取能力。 |
+| [01 - implement Web Access Integration](issues/01-implement-web-access-integration.md) | completed | 已完成配置、工具装配、测试和公开 URL 验收。 |
 
 ## Non-goals
 

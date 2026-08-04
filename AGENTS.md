@@ -34,7 +34,7 @@ src/
   workspace/        Agent Workspace 的访问与器官写入恢复
   instance/          Instance 装配、布局、Process Driver 与初始化
   host/             单 Instance 的 live owner
-  integrations/     Local、Weixin、nmem 和附件 Adapter
+  integrations/     Local、Weixin、Raft、Web、nmem 和附件 Adapter
   configuration/    Instance 配置、时间和模型 revision
 test/               与 src/ 对应的 Node test 覆盖
 docs/               ADR、工程约定和接入说明
@@ -56,6 +56,7 @@ node dist/src/cli.js init [--root <instance-root>]
 node dist/src/cli.js run [--root <instance-root>]
 node dist/src/cli.js chat [--root <instance-root>] <text>
 node dist/src/cli.js history [--root <instance-root>]
+node dist/src/cli.js status [--root <instance-root>] [--json] [--since <ISO timestamp>]
 ```
 
 CLI 默认 Instance Root 是 `~/.loom`。开发期 `npm run build && npm link` 后可使用 `loom` 命令；重新 build 后，已运行的 Host 仍要正常重启才能使用新产物。
@@ -112,5 +113,5 @@ Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也�
 - [CONTEXT.md](CONTEXT.md) — 术语与边界
 - [Harness layers map](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作和下一步
 - [ADR](docs/adr/) — 长期取舍
-- [Integration docs](docs/integrations/) — Local 与 Weixin
+- [Integration docs](docs/integrations/) — Local、Weixin、Raft、Web、nmem 与附件
 - [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 实例初始化、VPS 部署与多 Individual 运维

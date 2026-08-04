@@ -30,7 +30,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   │     Tool Trace Compactor      压缩过长的工具轨迹
   │
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Local · Weixin · Raft · nmem · Attachments
+        Local · Weixin · Raft · Web Access · nmem · Attachments
 ```
 
 这些东西归属分明：**Agent Workspace** 是 Individual 自己的--身份、关系、记忆、私人工作都在这里，Harness 不替它决定。运行事实、执行证据和装配配置归 Harness 持有，让进程能恢复、能审计、能重新装配。
@@ -42,7 +42,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 ## 现状
 
 - **阶段**：早期，单 Instance，前台 Host 运行。Loom 不负责 OS service 安装，也不替 Individual 生成身份。
-- **已验证**：Local interaction channel、Weixin（文字 / 单张入站图片 / 单个出站附件）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。Raft 的机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行。
+- **已验证**：Local interaction channel、Weixin（文字 / 单张入站图片 / 单个出站附件）、Web Access（搜索与公开网页抓取）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。Raft 的机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行。
 - **边界**：一个 Instance 只启用一个 interaction channel；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Integration。
 
 ## 快速开始
@@ -109,7 +109,7 @@ Instance Root 布局：
 │   ├── host-lock.db           Host 独占锁
 │   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
-│   └── integrations/          channel state · nmem.db · attachments/
+│   └── integrations/          channel state · raft.db · raft-bridge/ · nmem.db · attachments/
 ├── transcripts/{main,organs}/
 └── backups/                   认知器官写前备份
 ```
