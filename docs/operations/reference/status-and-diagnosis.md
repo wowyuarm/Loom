@@ -36,6 +36,11 @@ state. It contains no message, prompt, tool trace, Workspace content, Effect
 payload, credential, path, remote object id or raw provider error. A stopped or unreachable Host is
 explicitly `unavailable`; use systemd and the service journal to determine why.
 
+The Host version is the package version. When Loom runs from a Git checkout, it
+also includes that checkout's short commit as build metadata, such as
+`0.0.0+g0123456789ab`. A packaged build without Git metadata reports only its
+package version.
+
 `operational-events` is bounded diagnostic output, not a status fact source. A
 service journal can explain emitted events in a selected time range, but it is
 not a complete history and cannot replace `loom status`.

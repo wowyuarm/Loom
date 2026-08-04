@@ -47,7 +47,7 @@ test("serves content-free live status independently of Interaction Channels", as
   assert.equal(report.host.state, "running");
   if (!("runId" in report)) return;
   assert.match(report.runId, /^[0-9a-f-]{36}$/);
-  assert.equal(report.host.version, "0.0.0");
+  assert.match(report.host.version, /^0\.0\.0\+g[0-9a-f]{7,12}$/);
   assert.match(report.host.startedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.equal(report.model.state, "blocked");
   assert.deepEqual(report.runtime, {

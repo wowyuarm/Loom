@@ -190,7 +190,7 @@ test("chats through the running Local channel and rebuilds history in another cl
 
   const humanStatus = await runCli(cli, ["status"], env);
   assert.equal(humanStatus.code, 0, humanStatus.stderr);
-  assert.match(humanStatus.stdout, /^Host: running/m);
+  assert.match(humanStatus.stdout, /^Host: running \(Loom 0\.0\.0\+g[0-9a-f]{7,12}, started /m);
   assert.match(humanStatus.stdout, /^Model: active/m);
   assert.match(humanStatus.stdout, /^  Main Agent: succeeded/m);
   assert.match(humanStatus.stdout, /^  Local: listening/m);
