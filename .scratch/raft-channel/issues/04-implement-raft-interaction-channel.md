@@ -1,6 +1,6 @@
 # 04 - Implement the Raft Interaction Channel
 
-Status: ready-for-human
+Status: resolved
 Type: implementation
 Blocked by: none
 
@@ -103,7 +103,7 @@ the minimum implementation, then the next behavior.
   evidence in this ticket or a linked evaluation directory.
 - The design, `CONTEXT.md`, configuration docs and actual model-visible behavior agree.
 - Mechanical implementation, tests and necessary documentation are reviewed and committed as one
-  coherent work unit. Real acceptance is still required before this ticket can close.
+  coherent work unit, then validated through HaL's real Raft-only Instance.
 
 ## Current Evidence
 
@@ -126,7 +126,17 @@ Mechanical implementation is complete and committed with this ticket:
   CLI parser tests cover the body, audience/visibility facts and opaque reply Destinations. It does
   not follow, acknowledge, create a Loom Input, or expose raw targets/cursors.
 
-The remaining gate is Stage 4 against a separate non-personal Raft credential and server. Until
-that evidence exists, offline recovery, real CLI parsing, actor/audience projection and remote
-reply behavior are not accepted, and this ticket stays open. The thread-context follow-up above is
-also not implemented or accepted yet; the current four read tools remain the mechanical surface.
+Real HaL acceptance passed on 2026-08-04 against the deployed `fa09d2f` build:
+
+- `raft_open` opened a real message with its body, sender, place and visibility, plus the thread
+  anchor and 11 bounded replies. Every reply preserved sender, time, body and an opaque reply
+  Destination.
+- Exact-first profile lookup with lowercase fallback resolved the real mixed-case handles for
+  Codex, Docs, HaL, yucreate and System. The same fix restored `raft_activity`, `raft_search` and
+  previously blocked inbound message normalization.
+- The previously blocked thread request entered HaL as a normal Input after deployment. Host and
+  model remained active, Raft reported connected, and the persisted backlog resumed processing.
+
+This closes the implementation and real-use thread-context ticket. It does not broaden the surface
+to task/reminder reads or writes, reactions, follow/mute, attachments, or unrestricted history, and
+does not turn unrun fault-injection scenarios into claims.

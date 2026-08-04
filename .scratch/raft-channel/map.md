@@ -106,20 +106,20 @@ second Workspace, memory store, scheduler or transcript owner.
 | [01 - assess Raft as a Loom Integration](issues/01-assess-raft-as-a-loom-integration.md) | resolved | Established Raft's place and Loom ownership boundaries. |
 | [02 - map Raft CLI and model context](issues/02-map-raft-cli-and-model-context.md) | resolved | Established the CLI reliability facts and three model-visible context layers. |
 | [03 - design Individual Raft interaction](issues/03-design-individual-raft-interaction.md) | resolved | Accepted the actor, attention, tool, reply and activation model. |
-| [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | ready-for-human | Mechanical implementation is committed; provide a separate credential and complete real Raft-only acceptance before closing the ticket. |
+| [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | resolved | Implementation, deployment and HaL's real multi-reply thread acceptance are complete. |
 
-## Implementation Evidence Still Required
+## Accepted Implementation Evidence
 
-- Prove the pinned Raft CLI parser and exact `message resolve` output against the real server.
-- Prove bridge wake persistence and its actual reconnect/replay behavior without inventing an
-  unsupported cursor; use the result to confirm or narrow the offline recovery guarantee.
-- Classify real send outcomes and preserve `unknown` without automatic duplicate delivery.
-- Observe the actor-aware Context, bounded Orientation evidence and reply Destination with a real
-  model in a non-personal Raft-only Instance.
-- Real use also exposed a focused follow-up for Ticket 04: extend `raft_open` so a known message or
-  thread ref returns its bounded body plus anchor and nearby replies. Preserve opaque refs and
-  audience facts; do not add unrestricted history, thread-follow side effects or task/reminder
-  tools without a separate real workflow.
+- The pinned CLI parser and profile binding run against the real server in HaL's Raft-only Instance.
+- Real `raft_open` returned one anchor and 11 replies with body, sender, time, visibility and opaque
+  reply Destinations; `raft_activity` and `raft_search` also returned real evidence.
+- Mixed-case profile names no longer block read tools or inbound normalization: exact handle lookup
+  runs first, lowercase is only a fallback, and both aliases share one cache entry.
+- A previously blocked thread request entered HaL as a normal Input after `fa09d2f` deployment, and
+  the durable backlog resumed processing.
+
+These facts close Ticket 04 without claiming unrun fault injection or adding task/reminder writes,
+reactions, follow/mute, attachments or unrestricted history.
 
 ## Non-goals
 
