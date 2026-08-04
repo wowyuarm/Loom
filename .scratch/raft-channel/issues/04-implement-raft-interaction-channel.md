@@ -48,6 +48,25 @@ membership changes, profile synchronization, attachments, or a control plane.
 - Add explicit Instance Configuration and Host assembly. Disabled Raft contributes no lifecycle,
   prompt section, tool or attention evidence.
 
+### 3a. Real-use thread context follow-up
+
+The first real Raft use exposed one focused gap: a Main Agent that is mentioned in a reply thread
+receives the triggering message, but cannot reliably recover the discussion it belongs to. This is a
+follow-up to the mechanical implementation, not a reason to add a general Raft tool registry.
+
+- Keep one `raft_open` surface and extend it for a known message or thread ref.
+- Opening a message ref must return its actual bounded message evidence, including sender, time,
+  body, place, audience and visibility. The result must not be only a generic success sentence.
+- When the ref belongs to a reply thread, return the thread anchor and the nearest bounded set of
+  replies. Each reply carries sender, time, body, actor/audience/visibility facts and an opaque
+  reply Destination when one is available.
+- Do not turn opened context into a Loom Input, follow the thread, acknowledge it, or expose raw
+  Raft targets and cursors. The model receives enough context to decide whether and how to reply;
+  it does not receive unrestricted history.
+- Cover the contract with a public fake-remote test, then validate it in HaL's real Raft-only
+  Instance against a thread with multiple replies. Keep task/reminder reads, reactions and write
+  tools outside this follow-up until a separate real workflow requires them.
+
 ### 4. Real Acceptance and Hardening
 
 - Run one Raft-only prepared test Instance with a separate non-personal Workspace and credential.
@@ -97,12 +116,17 @@ Mechanical implementation is complete and committed with this ticket:
 - `@botiverse/raft@0.0.17` is a pinned package dependency. The CLI Adapter validates the profile
   bindings, owns an ephemeral loopback wake endpoint and bridge process, persists wake handling,
   and classifies text Delivery as delivered, not sent or unknown.
-- The full public test suite passes 301 tests together with typecheck, build and `git diff --check`.
+- The full public test suite passes 314 tests together with typecheck, build and `git diff --check`.
   `npm audit --omit=dev` could not complete because the npm registry TLS connection ended before
   the advisory response; no security result is claimed.
 - [Raft Interaction Channel](../../../docs/integrations/raft.md) records the actual configuration,
   lifecycle, tool surface, limits and Operator Agent acceptance procedure.
+- The thread-context follow-up is mechanically implemented: `raft_open` now returns bounded message
+  evidence and, for reply-thread refs, an anchor plus nearby replies. Public fake-remote and pinned
+  CLI parser tests cover the body, audience/visibility facts and opaque reply Destinations. It does
+  not follow, acknowledge, create a Loom Input, or expose raw targets/cursors.
 
 The remaining gate is Stage 4 against a separate non-personal Raft credential and server. Until
 that evidence exists, offline recovery, real CLI parsing, actor/audience projection and remote
-reply behavior are not accepted, and this ticket stays open.
+reply behavior are not accepted, and this ticket stays open. The thread-context follow-up above is
+also not implemented or accepted yet; the current four read tools remain the mechanical surface.

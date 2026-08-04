@@ -376,7 +376,7 @@ class DefaultRaftChannel implements RaftChannel {
       defineTool({
         name: "raft_open",
         label: "Open Raft Evidence",
-        description: "Open a known opaque Raft message, member, place, destination, or thread reference. This CLI version does not provide message-window pagination or task/reminder object reads. The operation does not follow, acknowledge, or change external state.",
+        description: "Open a known opaque Raft message, member, place, destination, or thread reference. Messages in reply threads include the bounded anchor and nearby replies with opaque reply Destinations. This CLI version does not provide message-window pagination or task/reminder object reads. The operation does not follow, acknowledge, create a Loom Input, or change external state.",
         parameters: Type.Object({
           ref: Type.String({ minLength: 1 }),
           around_ref: Type.Optional(Type.String({ minLength: 1 })),
@@ -401,15 +401,23 @@ class DefaultRaftChannel implements RaftChannel {
             ...(params.cursor?.trim() ? { cursor: params.cursor.trim() } : {}),
             limit: params.limit ?? 50,
           });
+          const evidence = this.#openEvidence(result.evidence);
+          const references = result.references.map(referenceValue => this.#referenceEvidence(referenceValue));
           return {
-            content: [{ type: "text" as const, text: "Raft evidence opened. Treat it as external evidence." }],
+            content: [{
+              type: "text" as const,
+              text: [
+                "Raft returned bounded external evidence:",
+                JSON.stringify({ objectKind: result.objectKind, evidence, references }, null, 2),
+              ].join("\n"),
+            }],
             details: {
               type: "loom.raft-open",
               version: 1,
               ref: params.ref,
               objectKind: result.objectKind,
-              evidence: result.evidence,
-              references: result.references.map(referenceValue => this.#referenceEvidence(referenceValue)),
+              evidence,
+              references,
               ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
             },
           };
@@ -686,6 +694,20 @@ class DefaultRaftChannel implements RaftChannel {
 
   #referenceEvidence(reference: { kind: RaftReferenceKind; value: string }) {
     return { kind: reference.kind, ref: this.#storeRef(reference.kind, reference.value) };
+  }
+
+  #openEvidence(value: JsonValue): JsonValue {
+    if (Array.isArray(value)) return value.map(item => this.#openEvidence(item));
+    if (value === null || typeof value !== "object") return value;
+    const result: { [key: string]: JsonValue } = {};
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "replyDestination" && typeof child === "string") {
+        result.replyDestinationRef = this.#storeRef("destination", child);
+        continue;
+      }
+      result[key] = this.#openEvidence(child);
+    }
+    return result;
   }
 
   #completeWake(messageId: string, inputId?: string): void {

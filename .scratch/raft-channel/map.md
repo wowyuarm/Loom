@@ -116,6 +116,10 @@ second Workspace, memory store, scheduler or transcript owner.
 - Classify real send outcomes and preserve `unknown` without automatic duplicate delivery.
 - Observe the actor-aware Context, bounded Orientation evidence and reply Destination with a real
   model in a non-personal Raft-only Instance.
+- Real use also exposed a focused follow-up for Ticket 04: extend `raft_open` so a known message or
+  thread ref returns its bounded body plus anchor and nearby replies. Preserve opaque refs and
+  audience facts; do not add unrestricted history, thread-follow side effects or task/reminder
+  tools without a separate real workflow.
 
 ## Non-goals
 

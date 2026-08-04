@@ -36,6 +36,13 @@ interface RaftProfile {
   description?: string | null;
 }
 
+interface HistoryMessage {
+  occurredAt: string;
+  senderName: string;
+  senderType: "human" | "agent" | "system";
+  remainder: string;
+}
+
 class DefaultRaftCliRemote implements RaftRemote {
   readonly #entrypoint: string;
   readonly #profile: string;
@@ -286,30 +293,38 @@ class DefaultRaftCliRemote implements RaftRemote {
     cursor?: string;
     limit: number;
   }): Promise<RaftRemoteOpenResult> {
-    if (request.aroundValue || request.cursor) {
+    if (request.cursor || (request.aroundValue && request.kind !== "thread")) {
       throw new Error("Raft CLI 0.0.17 cannot page an opaque open operation without exposing CLI cursors");
     }
     if (request.kind === "message") {
       const message = await this.resolveMessage(request.value);
+      const parsedTarget = parseTarget(message.place.target);
+      const messageEvidence = {
+        occurredAt: message.occurredAt,
+        signal: message.signal,
+        content: message.content,
+        sender: {
+          kind: message.sender.kind,
+          ...(message.sender.handle ? { handle: `@${message.sender.handle.replace(/^@/, "")}` } : {}),
+          ...(message.sender.displayName ? { displayName: message.sender.displayName } : {}),
+        },
+        place: {
+          kind: message.place.kind,
+          visibility: message.place.visibility,
+          ...(message.place.label ? { label: safePlaceLabel(message.place.target, message.place.label) } : {}),
+        },
+        audience: message.place.audience,
+        visibility: message.place.visibility,
+      } satisfies JsonValue;
+      const thread = parsedTarget.thread
+        ? await this.#openThreadContext(message.place.target, request.value, request.before, request.after, request.limit)
+        : undefined;
       return {
         objectKind: "message",
-        evidence: {
-          occurredAt: message.occurredAt,
-          signal: message.signal,
-          content: message.content,
-          sender: {
-            kind: message.sender.kind,
-            ...(message.sender.handle ? { handle: `@${message.sender.handle.replace(/^@/, "")}` } : {}),
-            ...(message.sender.displayName ? { displayName: message.sender.displayName } : {}),
-          },
-          place: {
-            kind: message.place.kind,
-            visibility: message.place.visibility,
-            ...(message.place.label ? { label: safePlaceLabel(message.place.target, message.place.label) } : {}),
-          },
-        },
+        evidence: { ...messageEvidence, ...(thread ? { thread } : {}) },
         references: [
           { kind: "place", value: message.place.target },
+          ...(parsedTarget.thread ? [{ kind: "destination" as const, value: message.place.target }] : []),
           ...(message.sender.handle ? [{ kind: "member" as const, value: message.sender.handle }] : []),
         ],
       };
@@ -327,7 +342,26 @@ class DefaultRaftCliRemote implements RaftRemote {
         references: [],
       };
     }
-    if (request.kind === "place" || request.kind === "destination" || request.kind === "thread") {
+    if (request.kind === "thread") {
+      const parsed = parseTarget(request.value);
+      if (!parsed.thread) throw new Error("Raft thread ref must identify a reply thread");
+      const threadId = request.value.slice(parsed.base.length + 1);
+      return {
+        objectKind: "thread",
+        evidence: {
+          place: await this.#placeEvidence(request.value),
+          thread: await this.#openThreadContext(
+            request.value,
+            request.aroundValue ?? threadId,
+            request.before,
+            request.after,
+            request.limit,
+          ),
+        },
+        references: [{ kind: "destination", value: request.value }],
+      };
+    }
+    if (request.kind === "place" || request.kind === "destination") {
       const place = await this.#placeEvidence(request.value);
       return {
         objectKind: request.kind,
@@ -336,6 +370,55 @@ class DefaultRaftCliRemote implements RaftRemote {
       };
     }
     throw new Error(`Raft ${request.kind} reading is unavailable in CLI ${SUPPORTED_RAFT_CLI_VERSION}`);
+  }
+
+  async #openThreadContext(
+    threadTarget: string,
+    aroundMessage: string,
+    before: number,
+    after: number,
+    limit: number,
+  ): Promise<JsonValue> {
+    const parsed = parseTarget(threadTarget);
+    const threadId = threadTarget.slice(parsed.base.length + 1);
+    const anchorPage = await this.#readHistory(parsed.base, threadId, 1);
+    const replyPage = await this.#readHistory(threadTarget, aroundMessage, Math.max(1, Math.min(limit, before + after + 1)));
+    const [anchorPlace, replyPlace] = await Promise.all([
+      this.#placeFor(parsed.base),
+      this.#placeFor(threadTarget),
+    ]);
+    const anchor = anchorPage[0] ? await this.#historyEvidence(anchorPage[0], anchorPlace) : null;
+    const replies = await Promise.all(replyPage.map(row => this.#historyEvidence(row, replyPlace)));
+    return {
+      anchor,
+      replies,
+    };
+  }
+
+  async #readHistory(target: string, around: string, limit: number): Promise<HistoryMessage[]> {
+    const output = (await this.#run(["message", "read", "--target", target, "--around", around, "--limit", String(limit)])).stdout;
+    return parseHistory(output);
+  }
+
+  async #historyEvidence(message: HistoryMessage, place: RaftRemoteMessage["place"]): Promise<JsonValue> {
+    const sender = message.senderType === "system" ? undefined : await this.#profileFor(message.senderName);
+    return {
+      occurredAt: message.occurredAt,
+      content: resolvedContent(message.remainder, sender?.description),
+      sender: {
+        kind: message.senderType,
+        handle: `@${message.senderName}`,
+        ...(sender?.displayName?.trim() ? { displayName: sender.displayName.trim() } : {}),
+      },
+      place: {
+        kind: place.kind,
+        visibility: place.visibility,
+        label: safePlaceLabel(place.target, place.label),
+      },
+      audience: place.audience,
+      visibility: place.visibility,
+      ...(parseTarget(place.target).thread ? { replyDestination: place.target } : {}),
+    };
   }
 
   async #profileFor(handle?: string): Promise<RaftProfile> {
@@ -704,6 +787,23 @@ function parseTarget(target: string): { base: string; thread: boolean } {
   const match = /^(dm:@[A-Za-z0-9_-]+|#[A-Za-z0-9_-]+):[0-9a-f]{8}$/i.exec(target);
   if (!match) throw new Error("Raft message resolve returned an unsupported target");
   return { base: match[1]!, thread: true };
+}
+
+function parseHistory(output: string): HistoryMessage[] {
+  const rows: HistoryMessage[] = [];
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("[seq=")) continue;
+    const match = /^\[seq=\S+ msg=\S+ time=(.+?) type=(human|agent|system)(?: [^\]]+)?\] @([A-Za-z0-9_-]+)([\s\S]*)$/.exec(line);
+    if (!match) throw new Error("Raft message read returned an unsupported 0.0.17 history format");
+    const [, localTime, senderType, senderName, remainder] = match;
+    rows.push({
+      occurredAt: localTimestamp(localTime!),
+      senderName: senderName!,
+      senderType: senderType as HistoryMessage["senderType"],
+      remainder: remainder!,
+    });
+  }
+  return rows;
 }
 
 function resolvedContent(remainder: string, description: string | null | undefined): string {

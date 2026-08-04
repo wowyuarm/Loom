@@ -120,11 +120,11 @@ audience、visibility 与可用 Destination，以及四个只读工具：
 - `raft_places`：列出有界的可见 channel；0.0.17 不能在不读消息历史的情况下列出 DM；
 - `raft_activity`：按场所或时间读取有界的外部消息信号，不创建 Loom Input；
 - `raft_search`：用明确 query 搜索当前 profile 可见的消息；
-- `raft_open`：打开已知的 message、member 或 place 引用。
+- `raft_open`：打开已知的 message、member、place 或 reply-thread 引用。打开 message 时返回正文、sender、time、place、audience 和 visibility；若 message 属于 reply thread，同时返回有界的 anchor 与最近 replies。
 
-这些工具只返回不透明 ref，模型不能拼 CLI target。当前 `raft_open` 不提供 message
-周边分页，也不读取 task/reminder 对象；reaction、task/reminder 写入、follow、mute、
-membership、profile 和 attachment 均未开放。Raft reply thread、Loom private Thread
+这些工具只返回不透明 ref，模型不能拼 CLI target。`raft_open` 的 reply destination 也会
+投影成 opaque ref；它不自动 follow、acknowledge 或创建 Loom Input，不读取 task/reminder
+对象，也不把无界历史暴露给模型。reaction、task/reminder 写入、follow、mute、membership、profile 和 attachment 均未开放。Raft reply thread、Loom private Thread
 和 nmem Conversation Thread 是三种不同东西。
 
 Outbound 仍先形成 Loom Effect，再由 Raft 投递。明确成功记为 `delivered`；freshness

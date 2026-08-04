@@ -248,9 +248,34 @@ test("offers four bounded read tools that keep Raft targets behind opaque refs",
       activityRequests.push(request);
       return { items: [] };
     },
-    searchMessages: async () => ({ items: [] }),
+    searchMessages: async () => ({
+      items: [{
+        messageId: "message-1",
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        place: { target: "#research", kind: "channel", visibility: "public", label: "research" },
+        sender: { memberId: "agent-other", kind: "agent", handle: "other" },
+        preview: "A thread message",
+        references: [{ kind: "message", value: "message-1" }],
+      }],
+    }),
     openReference: async request => {
       opened.push({ kind: request.kind, value: request.value });
+      if (request.kind === "message") {
+        return {
+          objectKind: "message",
+          evidence: {
+            content: "A thread message",
+            sender: { kind: "agent", handle: "@other" },
+            place: { kind: "reply_thread", visibility: "public", label: "research reply thread" },
+            audience: "Members of #research can read this thread.",
+            thread: {
+              anchor: { content: "The anchor", visibility: "public" },
+              replies: [{ content: "A reply", replyDestination: "#research:message-1" }],
+            },
+          },
+          references: [{ kind: "destination", value: "#research:message-1" }],
+        };
+      }
       return {
         objectKind: "place",
         evidence: { description: "A public channel for ongoing research." },
@@ -299,6 +324,18 @@ test("offers four bounded read tools that keep Raft targets behind opaque refs",
     evidence: { description: "A public channel for ongoing research." },
     references: [],
   });
+
+  const search = await executeTool(tools, "raft_search", { query: "thread", limit: 10 });
+  const messageRef = (search.details as { items: Array<{ messageRef: string }> }).items[0]!.messageRef;
+  const openedMessage = await executeTool(tools, "raft_open", { ref: messageRef });
+  assert.match(openedMessage.content[0]!.type === "text" ? openedMessage.content[0]!.text : "", /The anchor/);
+  assert.match(openedMessage.content[0]!.type === "text" ? openedMessage.content[0]!.text : "", /A reply/);
+  assert.doesNotMatch(openedMessage.content[0]!.type === "text" ? openedMessage.content[0]!.text : "", /#research:message-1/);
+  assert.deepEqual((openedMessage.details as { evidence: { thread: { replies: Array<{ replyDestinationRef: string }> } } }).evidence.thread.replies[0], {
+    content: "A reply",
+    replyDestinationRef: (openedMessage.details as { references: Array<{ kind: string; ref: string }> }).references.find(reference => reference.kind === "destination")!.ref,
+  });
+  assert.doesNotMatch(JSON.stringify(openedMessage.details), /#research:message-1/);
 
   await executeTool(tools, "raft_activity", { limit: 10 });
   assert.equal(activityRequests.length, 1);
