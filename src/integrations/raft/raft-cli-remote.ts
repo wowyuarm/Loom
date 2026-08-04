@@ -407,7 +407,7 @@ class DefaultRaftCliRemote implements RaftRemote {
       content: resolvedContent(message.remainder, sender?.description),
       sender: {
         kind: message.senderType,
-        handle: `@${message.senderName}`,
+        handle: `@${sender?.name ?? message.senderName}`,
         ...(sender?.displayName?.trim() ? { displayName: sender.displayName.trim() } : {}),
       },
       place: {
@@ -422,30 +422,41 @@ class DefaultRaftCliRemote implements RaftRemote {
   }
 
   async #profileFor(handle?: string): Promise<RaftProfile> {
-    const normalizedHandle = handle?.replace(/^@/, "").trim();
-    if (normalizedHandle && this.#profilesByHandle.has(normalizedHandle)) {
-      return this.#profilesByHandle.get(normalizedHandle)!;
+    const requestedHandle = handle?.replace(/^@/, "").trim();
+    const candidates = requestedHandle
+      ? [...new Set([requestedHandle, requestedHandle.toLowerCase()])]
+      : [undefined];
+    let lastError: unknown;
+    for (const candidate of candidates) {
+      if (candidate && this.#profilesByHandle.has(candidate)) return this.#profilesByHandle.get(candidate)!;
+      try {
+        const args = ["profile", "show"];
+        if (candidate) args.push(`@${candidate}`);
+        args.push("--json");
+        const document = jsonObject(await this.#run(args), "Raft profile show");
+        const data = objectField(document, "data", "Raft profile show");
+        const kind = data.kind;
+        if (kind !== "human" && kind !== "agent") throw new Error("Raft profile show returned an unsupported member kind");
+        const profile: RaftProfile = {
+          id: stringField(data, "id", "Raft profile show"),
+          kind,
+          name: stringField(data, "name", "Raft profile show"),
+          ...(typeof data.displayName === "string" || data.displayName === null
+            ? { displayName: data.displayName }
+            : {}),
+          ...(typeof data.description === "string" || data.description === null
+            ? { description: data.description }
+            : {}),
+        };
+        this.#profilesByHandle.set(profile.name, profile);
+        this.#profilesByHandle.set(profile.name.toLowerCase(), profile);
+        if (candidate) this.#profilesByHandle.set(candidate, profile);
+        return profile;
+      } catch (error) {
+        lastError = error;
+      }
     }
-    const args = ["profile", "show"];
-    if (normalizedHandle) args.push(`@${normalizedHandle}`);
-    args.push("--json");
-    const document = jsonObject(await this.#run(args), "Raft profile show");
-    const data = objectField(document, "data", "Raft profile show");
-    const kind = data.kind;
-    if (kind !== "human" && kind !== "agent") throw new Error("Raft profile show returned an unsupported member kind");
-    const profile: RaftProfile = {
-      id: stringField(data, "id", "Raft profile show"),
-      kind,
-      name: stringField(data, "name", "Raft profile show"),
-      ...(typeof data.displayName === "string" || data.displayName === null
-        ? { displayName: data.displayName }
-        : {}),
-      ...(typeof data.description === "string" || data.description === null
-        ? { description: data.description }
-        : {}),
-    };
-    this.#profilesByHandle.set(profile.name, profile);
-    return profile;
+    throw lastError instanceof Error ? lastError : new Error("Raft profile show failed");
   }
 
   async #search(request: {

@@ -31,7 +31,7 @@ test("validates a pinned Raft profile and resolves and sends through the 0.0.17 
     sender: {
       memberId: "human-yu",
       kind: "human",
-      handle: "yu",
+      handle: "Yu",
       displayName: "Yu",
     },
     place: {
@@ -180,7 +180,7 @@ if (command[0] === "--version") {
   const target = command.find(value => value.startsWith("@"));
   const profiles = {
     self: { id: "agent-loom", kind: "agent", name: "loom", displayName: "Loom Individual", description: "A continuing Individual." },
-    "@yu": { id: "human-yu", kind: "human", name: "yu", displayName: "Yu", description: "Long-term counterpart: operator" },
+      "@yu": { id: "human-yu", kind: "human", name: "Yu", displayName: "Yu", description: "Long-term counterpart: operator" },
     "@alex": { id: "agent-alex", kind: "agent", name: "alex", displayName: "Alex Agent", description: "Another agent" },
   };
   process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
@@ -194,7 +194,7 @@ if (command[0] === "--version") {
 } else if (command[0] === "message" && command[1] === "read") {
   const target = command[command.indexOf("--target") + 1];
   if (target === "#commons") process.stdout.write("## Message History for #commons around cccccccc (1 messages)\\n\\n[seq=10 msg=cccccccc-1111-2222-3333-444444444444 time=2026-08-03 05:02:30 type=agent replyCount=2 replyTarget=#commons:cccccccc] @alex — Another agent: The thread anchor\\n");
-  else process.stdout.write("## Message History for #commons:cccccccc around cccccccc (2 messages)\\n\\n[seq=11 msg=cccccccc-1111-2222-3333-444444444444 time=2026-08-03 05:03:00 type=agent] @alex — Another agent: An unfollowed reply\\n[seq=12 msg=ffffffff-1111-2222-3333-444444444444 time=2026-08-03 05:04:00 type=human] @yu — Long-term counterpart: operator: A second reply\\n");
+  else process.stdout.write("## Message History for #commons:cccccccc around cccccccc (2 messages)\\n\\n[seq=11 msg=cccccccc-1111-2222-3333-444444444444 time=2026-08-03 05:03:00 type=agent] @alex — Another agent: An unfollowed reply\\n[seq=12 msg=ffffffff-1111-2222-3333-444444444444 time=2026-08-03 05:04:00 type=human] @Yu — Long-term counterpart: operator: A second reply\\n");
 } else if (command[0] === "server" && command[1] === "info") {
   process.stdout.write("## Server Channels\\n\\nPrivate channels are shown only when this agent is a member.\\n#commons [public, joined, not muted] — A shared place.\\n\\nShowing 1-1 of 2.\\nMore: raft server info --channels --offset 1 --limit 1\\n");
 } else if (command[0] === "channel" && command[1] === "info") {
