@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { openLoomHost } from "../../src/host/index.js";
+import { openLoomHost, readLoomStatus } from "../../src/host/index.js";
 import { readLocalInteractionHistory } from "../../src/integrations/local/index.js";
 import type { RaftRemote } from "../../src/integrations/raft/index.js";
 import { resolveInstanceLayout } from "../../src/instance/layout.js";
@@ -32,6 +32,41 @@ test("holds exclusive live ownership of one prepared Instance Root", async t => 
 
   const replacement = await openLoomHost({ root, machineTimeZone: "UTC" });
   await replacement.stop();
+});
+
+test("serves content-free live status independently of Interaction Channels", async t => {
+  const root = await preparedInstanceRoot();
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+
+  const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
+  assert.equal((await stat(resolveInstanceLayout(root).statusSocketPath)).mode & 0o777, 0o600);
+
+  assert.equal(report.schemaVersion, 1);
+  assert.equal(report.host.state, "running");
+  if (!("runId" in report)) return;
+  assert.match(report.runId, /^[0-9a-f-]{36}$/);
+  assert.equal(report.host.version, "0.0.0");
+  assert.match(report.host.startedAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(report.model.state, "blocked");
+  assert.deepEqual(report.runtime, {
+    activeTurn: false,
+    pendingInputs: 0,
+    pendingEffects: 0,
+    deliveriesNeedingAttention: 0,
+  });
+  assert.deepEqual(report.agents.map(agent => ({ name: agent.name, state: agent.state })), [
+    { name: "main-agent", state: "never_run" },
+    { name: "orientation", state: "never_run" },
+    { name: "life-recorder", state: "never_run" },
+    { name: "attention-maintainer", state: "never_run" },
+    { name: "memory-reflector", state: "never_run" },
+    { name: "thread-maintainer", state: "never_run" },
+  ]);
+  assert.deepEqual(report.integrations, []);
+  assert.equal("root" in report.host, false);
+  assert.doesNotMatch(JSON.stringify(report), new RegExp(root.replaceAll("\\", "\\\\")));
 });
 
 test("accepts channel Input only through a running Host", async t => {
@@ -236,6 +271,16 @@ test("keeps the Host running while the configured Weixin route is degraded", asy
   assert.equal(host.status().state, "running");
   assert.notEqual(host.status().driver.state, "stopped");
   assert.match(host.status().integrations?.weixin?.lastError ?? "", /HTTP 503/);
+  const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
+  assert.ok("runId" in report);
+  if ("runId" in report) {
+    assert.deepEqual(report.integrations, [{
+      name: "weixin",
+      state: "degraded",
+      lastFailure: { category: "connection" },
+    }]);
+    assert.doesNotMatch(JSON.stringify(report), /HTTP 503|offline/);
+  }
 });
 
 test("assembles one explicitly enabled Raft Channel and owns its lifecycle", async t => {

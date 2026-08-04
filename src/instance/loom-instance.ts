@@ -18,6 +18,7 @@ import {
   type RuntimeInputOutcome,
   type OutboundDelivery,
   type RuntimeStatus,
+  type RuntimeOperationalStatus,
   type Scheduler,
   type SchedulerRunResult,
   type FormOpportunityResult,
@@ -92,6 +93,7 @@ export interface LoomInstance {
   runOnce(observedAt: Date): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
+  operationalStatus(options?: { since?: string }): RuntimeOperationalStatus;
   close(): void;
 }
 
@@ -170,6 +172,10 @@ class AssembledLoomInstance implements LoomInstance {
         },
       } : {}),
     };
+  }
+
+  operationalStatus(options: { since?: string } = {}): RuntimeOperationalStatus {
+    return this.runtime.operationalStatus(options);
   }
 
   close(): void {

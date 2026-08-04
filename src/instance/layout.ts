@@ -13,6 +13,7 @@ export interface InstanceLayout {
   raftConfigurationFile: string;
   raftStateFile: string;
   localSocketPath: string;
+  statusSocketPath: string;
   attachmentStoreRoot: string;
   workspaceRoot: string;
   runtimeRoot: string;
@@ -42,6 +43,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     raftConfigurationFile: path.join(raftRoot, "config.json"),
     raftStateFile: path.join(resolvedRoot, "runtime", "integrations", "raft.db"),
     localSocketPath: path.join(resolvedRoot, "runtime", "integrations", "local.sock"),
+    statusSocketPath: path.join(resolvedRoot, "runtime", "status.sock"),
     attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
     workspaceRoot: path.join(resolvedRoot, "workspace"),
     runtimeRoot: path.join(resolvedRoot, "runtime"),

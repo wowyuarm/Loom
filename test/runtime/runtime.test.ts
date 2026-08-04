@@ -250,6 +250,47 @@ const completingExecution: AgentExecution = {
   },
 };
 
+test("persists content-free Main Agent run status and bounded history", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-agent-status-"));
+  const now = new Date("2026-08-03T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution: completingExecution, now: () => now });
+
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "status-main-1",
+    kind: "interaction",
+    payload: { text: "private input must not appear" },
+  });
+  assert.equal((await runtime.advance()).disposition, "turn_completed");
+
+  const current = runtime.operationalStatus();
+  const main = current.agents.find(agent => agent.name === "main-agent");
+  assert.equal(main?.state, "succeeded");
+  assert.deepEqual(main?.latest && {
+    name: main.latest.name,
+    startedAt: main.latest.startedAt,
+    endedAt: main.latest.endedAt,
+    result: main.latest.result,
+    outcome: main.latest.outcome,
+  }, {
+    name: "main-agent",
+    startedAt: now.toISOString(),
+    endedAt: now.toISOString(),
+    result: "succeeded",
+    outcome: "completed",
+  });
+  assert.equal(main?.history, undefined);
+  assert.doesNotMatch(JSON.stringify(current), /private input/);
+
+  const historical = runtime.operationalStatus({ since: new Date(now.getTime() - 1).toISOString() });
+  assert.equal(historical.agents.find(agent => agent.name === "main-agent")?.history?.length, 1);
+
+  runtime.close();
+  const reopened = openRuntime({ root, now: () => now });
+  t.after(() => reopened.close());
+  assert.equal(reopened.operationalStatus().agents.find(agent => agent.name === "main-agent")?.state, "succeeded");
+});
+
 class ObservedCompletingExecution implements AgentExecution {
   readonly requests: TurnRequest[] = [];
 
@@ -426,6 +467,10 @@ test("passes durable Interaction facts to Agent Execution", async t => {
 
   const advancing = runtime.advance();
   const request = await execution.started.promise;
+  assert.equal(
+    runtime.operationalStatus().agents.find(agent => agent.name === "main-agent")?.state,
+    "running",
+  );
   assert.deepEqual(request.inputs[0]?.interaction, {
     routeRef: "raft:server-1",
     signal: "thread_reply",

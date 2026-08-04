@@ -492,6 +492,36 @@ export interface RuntimeStatus {
   afterChatContinuation?: RuntimeAfterChatContinuationStatus;
 }
 
+export type RuntimeAgentName =
+  | "main-agent"
+  | "orientation"
+  | "life-recorder"
+  | "attention-maintainer"
+  | "memory-reflector"
+  | "thread-maintainer";
+
+export interface RuntimeAgentRunSummary {
+  runId: string;
+  name: RuntimeAgentName;
+  startedAt: string;
+  endedAt?: string;
+  result: "running" | "succeeded" | "failed" | "interrupted";
+  outcome?: string;
+  failureCategory?: string;
+}
+
+export interface RuntimeAgentOperationalStatus {
+  name: RuntimeAgentName;
+  state: "running" | "retrying" | "never_run" | "succeeded" | "failed";
+  latest?: RuntimeAgentRunSummary;
+  nextRunAt?: string;
+  history?: RuntimeAgentRunSummary[];
+}
+
+export interface RuntimeOperationalStatus {
+  agents: RuntimeAgentOperationalStatus[];
+}
+
 export interface RuntimeOptions {
   root: string;
   timePolicy?: TimePolicy;
@@ -617,5 +647,6 @@ export interface Runtime {
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   inputOutcome(inputId: string): RuntimeInputOutcome;
   status(): RuntimeStatus;
+  operationalStatus(options?: { since?: string }): RuntimeOperationalStatus;
   close(): void;
 }

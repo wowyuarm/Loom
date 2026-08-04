@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 
 export function initializeRuntimeSchema(database: DatabaseSync): void {
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  const backfillAgentRuns = version.user_version < 16;
   if (version.user_version === 11) migrateVersion11(database);
   const migrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (migrated.user_version === 12) migrateVersion12(database);
@@ -9,6 +10,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (deliveryMigrated.user_version === 13) migrateVersion13(database);
   const interactionMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (interactionMigrated.user_version === 14) migrateVersion14(database);
+  const statusMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (statusMigrated.user_version === 15) migrateVersion15(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -230,7 +233,102 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       reason TEXT
     ) STRICT;
 
-    PRAGMA user_version = 15;
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id TEXT PRIMARY KEY,
+      agent_name TEXT NOT NULL CHECK (agent_name IN (
+        'main-agent', 'orientation', 'life-recorder', 'attention-maintainer',
+        'memory-reflector', 'thread-maintainer'
+      )),
+      status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      outcome TEXT,
+      failure_category TEXT
+    ) STRICT;
+
+    CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
+    ON agent_runs (agent_name, started_at DESC, id DESC);
+
+    PRAGMA user_version = 16;
+  `);
+  if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion15(database: DatabaseSync): void {
+  database.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id TEXT PRIMARY KEY,
+      agent_name TEXT NOT NULL CHECK (agent_name IN (
+        'main-agent', 'orientation', 'life-recorder', 'attention-maintainer',
+        'memory-reflector', 'thread-maintainer'
+      )),
+      status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      outcome TEXT,
+      failure_category TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
+    ON agent_runs (agent_name, started_at DESC, id DESC);
+    PRAGMA user_version = 16;
+    COMMIT;
+  `);
+}
+
+function backfillExistingAgentRuns(database: DatabaseSync): void {
+  database.exec(`
+    BEGIN IMMEDIATE;
+    INSERT OR IGNORE INTO agent_runs (
+      id, agent_name, status, started_at, ended_at, outcome, failure_category
+    )
+    SELECT
+      id,
+      'main-agent',
+      CASE
+        WHEN status = 'completed' THEN 'succeeded'
+        WHEN status = 'running' THEN 'running'
+        WHEN status = 'interrupted' THEN 'interrupted'
+        ELSE 'failed'
+      END,
+      started_at,
+      ended_at,
+      outcome,
+      CASE WHEN error IS NULL THEN NULL ELSE 'unknown' END
+    FROM turns
+    ORDER BY started_at, id;
+    INSERT OR IGNORE INTO agent_runs (
+      id, agent_name, status, started_at, ended_at, outcome, failure_category
+    )
+    SELECT
+      id,
+      'life-recorder',
+      CASE
+        WHEN status = 'recorded' THEN 'succeeded'
+        WHEN status = 'recording' THEN 'running'
+        WHEN status = 'interrupted' THEN 'interrupted'
+        ELSE 'failed'
+      END,
+      started_at,
+      ended_at,
+      CASE WHEN status = 'recorded' THEN 'recorded' ELSE NULL END,
+      CASE WHEN error IS NULL THEN NULL ELSE 'unknown' END
+    FROM activity_attempts
+    ORDER BY started_at, id;
+    INSERT OR IGNORE INTO agent_runs (
+      id, agent_name, status, started_at, ended_at, outcome, failure_category
+    )
+    SELECT
+      'legacy:thread-maintainer:' || activity_id,
+      'thread-maintainer',
+      'succeeded',
+      completed_at,
+      completed_at,
+      json_extract(result_json, '$.outcome'),
+      NULL
+    FROM thread_maintenance
+    WHERE status = 'completed' AND completed_at IS NOT NULL;
+    COMMIT;
   `);
 }
 

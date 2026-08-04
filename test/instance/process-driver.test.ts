@@ -222,6 +222,7 @@ function fakeInstance(overrides: Partial<LoomInstance>): LoomInstance {
     runOnce: async (): Promise<LoomInstanceRunResult> => ({ disposition: "idle" }),
     formOpportunity: async () => ({ disposition: "busy" }),
     status: () => { throw new Error("status is not used by process driver tests"); },
+    operationalStatus: () => ({ agents: [] }),
     close: () => {},
     ...overrides,
   };

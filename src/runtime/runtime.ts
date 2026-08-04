@@ -46,6 +46,9 @@ import type {
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
+  RuntimeAgentName,
+  RuntimeAgentRunSummary,
+  RuntimeOperationalStatus,
   ThreadActivityObservation,
   ThreadMaintenance,
   ThreadMaintenanceResult,
@@ -183,10 +186,29 @@ interface AfterChatContinuationRow {
   reason: string | null;
 }
 
+interface AgentRunRow {
+  id: string;
+  agent_name: RuntimeAgentName;
+  status: RuntimeAgentRunSummary["result"];
+  started_at: string;
+  ended_at: string | null;
+  outcome: string | null;
+  failure_category: string | null;
+}
+
 const AFTER_CHAT_DELAY_MS = 5 * 60 * 1_000;
 const AFTER_CHAT_EXPIRY_MS = 20 * 60 * 1_000;
 const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
 const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
+
+const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
+  "main-agent",
+  "orientation",
+  "life-recorder",
+  "attention-maintainer",
+  "memory-reflector",
+  "thread-maintainer",
+];
 
 function deliveryRetryDelay(attempt: number): number {
   const exponent = Math.min(
@@ -259,6 +281,7 @@ class SqliteRuntime implements Runtime {
     this.#reconcileExpiredThreadMaintenance();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
+    this.#reconcileOrphanedAgentRuns();
   }
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -450,7 +473,7 @@ class SqliteRuntime implements Runtime {
     const orientation: ActiveOrientation = { supersede };
     this.#opportunityRunning = true;
     this.#activeOrientation = orientation;
-    const completion = Promise.resolve().then(() => this.#orientation!.form(snapshot.request));
+    const completion = Promise.resolve().then(() => this.#runOrientation(snapshot.request));
     void completion.finally(() => {
       if (this.#activeOrientation === orientation) {
         this.#activeOrientation = undefined;
@@ -681,12 +704,16 @@ class SqliteRuntime implements Runtime {
 
     const windowEnd = schedule.window_end_sequence ?? this.#latestActivitySequence();
     const activities = this.#activitiesInSequenceRange(schedule.cursor_sequence, windowEnd);
+    const agentRunId = this.#nextId();
     this.#attentionMaintenanceRunning = true;
-    this.#database.prepare(`
-      UPDATE attention_maintenance
-      SET window_end_sequence = ?, attempt_count = attempt_count + 1
-      WHERE singleton = 1
-    `).run(windowEnd);
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE attention_maintenance
+        SET window_end_sequence = ?, attempt_count = attempt_count + 1
+        WHERE singleton = 1
+      `).run(windowEnd);
+      this.#startAgentRun(agentRunId, "attention-maintainer", this.#now());
+    });
     try {
       const result = await this.#attentionMaintenance.maintain({
         observedAt: options.observedAt.toISOString(),
@@ -694,21 +721,33 @@ class SqliteRuntime implements Runtime {
         recentActivities: activities,
       });
       const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
-      this.#database.prepare(`
-        UPDATE attention_maintenance
-        SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
-            window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
-        WHERE singleton = 1
-      `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(result));
+      this.#transaction(() => {
+        this.#database.prepare(`
+          UPDATE attention_maintenance
+          SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
+              window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
+          WHERE singleton = 1
+        `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(result));
+        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      });
       return { disposition: "completed", result, nextRunAt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-      this.#database.prepare(`
-        UPDATE attention_maintenance
-        SET next_run_after = ?, last_error = ?
-        WHERE singleton = 1
-      `).run(nextRunAt, message.slice(0, 2_000));
+      this.#transaction(() => {
+        this.#database.prepare(`
+          UPDATE attention_maintenance
+          SET next_run_after = ?, last_error = ?
+          WHERE singleton = 1
+        `).run(nextRunAt, message.slice(0, 2_000));
+        this.#finishAgentRun(
+          agentRunId,
+          "failed",
+          undefined,
+          this.#now(),
+          agentFailureCategory(error),
+        );
+      });
       return { disposition: "failed", nextRunAt, error: message };
     } finally {
       this.#attentionMaintenanceRunning = false;
@@ -739,10 +778,14 @@ class SqliteRuntime implements Runtime {
     }
     if (!this.#memoryReflection) return { disposition: "busy" };
 
+    const agentRunId = this.#nextId();
     this.#memoryReflectionRunning = true;
-    this.#database.prepare(`
-      UPDATE memory_reflection SET attempt_count = attempt_count + 1 WHERE singleton = 1
-    `).run();
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE memory_reflection SET attempt_count = attempt_count + 1 WHERE singleton = 1
+      `).run();
+      this.#startAgentRun(agentRunId, "memory-reflector", this.#now());
+    });
     try {
       const result = await this.#memoryReflection.reflect({
         reflectionDay,
@@ -752,14 +795,26 @@ class SqliteRuntime implements Runtime {
       });
       const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
       const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
-      this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, result);
+      this.#transaction(() => {
+        this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, result);
+        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      });
       return { disposition: "completed", reflectionDay, result, nextRunAt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-      this.#database.prepare(`
-        UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
-      `).run(nextRunAt, message.slice(0, 2_000));
+      this.#transaction(() => {
+        this.#database.prepare(`
+          UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
+        `).run(nextRunAt, message.slice(0, 2_000));
+        this.#finishAgentRun(
+          agentRunId,
+          "failed",
+          undefined,
+          this.#now(),
+          agentFailureCategory(error),
+        );
+      });
       return { disposition: "failed", reflectionDay, nextRunAt, error: message };
     } finally {
       this.#memoryReflectionRunning = false;
@@ -1112,11 +1167,108 @@ class SqliteRuntime implements Runtime {
     };
   }
 
+  operationalStatus(options: { since?: string } = {}): RuntimeOperationalStatus {
+    const since = options.since;
+    if (since !== undefined && !isIsoTimestamp(since)) {
+      throw new Error("Runtime operational status since must be a valid ISO timestamp");
+    }
+    const latestRows = this.#database.prepare(`
+      SELECT id, agent_name, status, started_at, ended_at, outcome, failure_category
+      FROM (
+        SELECT agent_runs.*, rowid AS run_sequence,
+               ROW_NUMBER() OVER (PARTITION BY agent_name ORDER BY started_at DESC, rowid DESC) AS rank
+        FROM agent_runs
+      )
+      WHERE rank = 1
+      ORDER BY agent_name
+    `).all() as unknown as AgentRunRow[];
+    const latestByAgent = new Map(latestRows.map(row => [row.agent_name, row]));
+    const historyRows = since === undefined ? [] : this.#database.prepare(`
+      SELECT id, agent_name, status, started_at, ended_at, outcome, failure_category
+      FROM agent_runs
+      WHERE ended_at IS NULL OR ended_at >= ?
+      ORDER BY started_at, rowid
+    `).all(since) as unknown as AgentRunRow[];
+    return {
+      agents: RUNTIME_AGENT_NAMES.map(name => {
+        const latest = latestByAgent.get(name);
+        const summary = latest ? agentRunSummary(latest) : undefined;
+        const history = historyRows.filter(row => row.agent_name === name).map(agentRunSummary);
+        const nextRunAt = summary && (summary.result === "failed" || summary.result === "interrupted")
+          ? this.#agentRetryAt(name)
+          : undefined;
+        return {
+          name,
+          state: summary ? (nextRunAt ? "retrying" : agentState(summary)) : "never_run",
+          ...(summary ? { latest: summary } : {}),
+          ...(nextRunAt ? { nextRunAt } : {}),
+          ...(since !== undefined ? { history } : {}),
+        };
+      }),
+    };
+  }
+
   frozenActivity(activityId: string): FrozenActivity | undefined {
     const row = this.#database.prepare(`
       SELECT frozen_activity_json FROM activities WHERE id = ?
     `).get(activityId) as unknown as { frozen_activity_json: string } | undefined;
     return row ? JSON.parse(row.frozen_activity_json) as FrozenActivity : undefined;
+  }
+
+  async #runOrientation(request: Parameters<Orientation["form"]>[0]): Promise<OrientationResult> {
+    const agentRunId = this.#nextId();
+    this.#startAgentRun(agentRunId, "orientation", this.#now());
+    try {
+      const result = await this.#orientation!.form(request);
+      this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      return result;
+    } catch (error) {
+      this.#finishAgentRun(
+        agentRunId,
+        "failed",
+        undefined,
+        this.#now(),
+        agentFailureCategory(error),
+      );
+      throw error;
+    }
+  }
+
+  #agentRetryAt(name: RuntimeAgentName): string | undefined {
+    if (name === "orientation") {
+      const pulse = this.#readPulseSchedule();
+      return pulse?.last_error ? pulse.next_pulse_after : undefined;
+    }
+    if (name === "attention-maintainer") {
+      const attention = this.#readAttentionSchedule();
+      return attention?.last_error ? attention.next_run_after : undefined;
+    }
+    if (name === "memory-reflector") {
+      const reflection = this.#readMemoryReflectionSchedule();
+      return reflection?.last_error ? reflection.next_run_after : undefined;
+    }
+    return undefined;
+  }
+
+  #startAgentRun(id: string, name: RuntimeAgentName, startedAt: Date): void {
+    this.#database.prepare(`
+      INSERT INTO agent_runs (id, agent_name, status, started_at)
+      VALUES (?, ?, 'running', ?)
+    `).run(id, name, startedAt.toISOString());
+  }
+
+  #finishAgentRun(
+    id: string,
+    result: Exclude<RuntimeAgentRunSummary["result"], "running">,
+    outcome: string | undefined,
+    endedAt: Date,
+    failureCategory?: string,
+  ): void {
+    this.#database.prepare(`
+      UPDATE agent_runs
+      SET status = ?, ended_at = ?, outcome = ?, failure_category = ?
+      WHERE id = ? AND status = 'running'
+    `).run(result, endedAt.toISOString(), outcome ?? null, failureCategory ?? null, id);
   }
 
   close(): void {
@@ -1932,10 +2084,35 @@ class SqliteRuntime implements Runtime {
           SET status = 'interrupted', ended_at = ?, error = 'runtime lease expired'
           WHERE id = ? AND status = 'running' AND fencing_token = ?
         `).run(now.toISOString(), turn.id, turn.fencing_token);
+        this.#finishAgentRun(turn.id, "interrupted", "lease_expired", now, "runtime_interrupted");
         this.#recordTransition("turn", turn.id, "running", "interrupted", "lease_expired", now, turn.fencing_token);
         this.#settleInputsAfterStoppedTurn(turn.id, "interrupted", now, turn.fencing_token);
         this.#settleAfterChatContinuationFromStoppedTurn(turn.id, now, turn.fencing_token);
       }
+    });
+  }
+
+  #reconcileOrphanedAgentRuns(): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      this.#database.prepare(`
+        UPDATE agent_runs
+        SET status = 'interrupted', ended_at = ?, outcome = 'process_restarted',
+            failure_category = 'runtime_interrupted'
+        WHERE status = 'running'
+          AND (
+            agent_name IN ('orientation', 'attention-maintainer', 'memory-reflector')
+            OR (agent_name = 'main-agent' AND id NOT IN (
+              SELECT id FROM turns WHERE status = 'running'
+            ))
+            OR (agent_name = 'life-recorder' AND id NOT IN (
+              SELECT id FROM activity_attempts WHERE status = 'recording'
+            ))
+            OR (agent_name = 'thread-maintainer' AND NOT EXISTS (
+              SELECT 1 FROM thread_maintenance WHERE status = 'running'
+            ))
+          )
+      `).run(now.toISOString());
     });
   }
 
@@ -1998,12 +2175,17 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       const now = this.#now();
       const expired = this.#database.prepare(`
-        SELECT id, attempt_count, fencing_token
+        SELECT activities.id, activities.attempt_count, activities.fencing_token,
+               activity_attempts.id AS attempt_id
         FROM activities
-        WHERE status = 'recording' AND lease_expires_at <= ?
-        ORDER BY sequence
+        JOIN activity_attempts
+          ON activity_attempts.activity_id = activities.id
+         AND activity_attempts.attempt_number = activities.attempt_count
+        WHERE activities.status = 'recording' AND activities.lease_expires_at <= ?
+        ORDER BY activities.sequence
       `).all(now.toISOString()) as unknown as Array<{
         id: string;
+        attempt_id: string;
         attempt_count: number;
         fencing_token: number;
       }>;
@@ -2020,6 +2202,13 @@ class SqliteRuntime implements Runtime {
           WHERE activity_id = ? AND attempt_number = ? AND status = 'recording'
             AND fencing_token = ?
         `).run(now.toISOString(), activity.id, activity.attempt_count, activity.fencing_token);
+        this.#finishAgentRun(
+          activity.attempt_id,
+          "interrupted",
+          "lease_expired",
+          now,
+          "runtime_interrupted",
+        );
         this.#recordTransition(
           "activity",
           activity.id,
@@ -2038,12 +2227,16 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       const now = this.#now();
       const expired = this.#database.prepare(`
-        SELECT activity_id, fencing_token
+        SELECT activity_id, fencing_token,
+               (SELECT id FROM agent_runs
+                WHERE agent_name = 'thread-maintainer' AND status = 'running'
+                ORDER BY started_at DESC, id DESC LIMIT 1) AS agent_run_id
         FROM thread_maintenance
         WHERE status = 'running' AND lease_expires_at <= ?
         ORDER BY created_at, activity_id
       `).all(now.toISOString()) as unknown as Array<{
         activity_id: string;
+        agent_run_id: string;
         fencing_token: number;
       }>;
       for (const maintenance of expired) {
@@ -2053,6 +2246,13 @@ class SqliteRuntime implements Runtime {
               lease_expires_at = NULL, last_error = 'maintenance lease expired'
           WHERE activity_id = ? AND status = 'running' AND fencing_token = ?
         `).run(maintenance.activity_id, maintenance.fencing_token);
+        this.#finishAgentRun(
+          maintenance.agent_run_id,
+          "interrupted",
+          "lease_expired",
+          now,
+          "runtime_interrupted",
+        );
         this.#recordTransition(
           "thread_maintenance",
           maintenance.activity_id,
@@ -2101,6 +2301,7 @@ class SqliteRuntime implements Runtime {
   #claimPendingThreadMaintenance(): {
     activity: FrozenActivity;
     observations: ThreadActivityObservation[];
+    agentRunId: string;
     attemptNumber: number;
     fencingToken: number;
   } | undefined {
@@ -2126,6 +2327,7 @@ class SqliteRuntime implements Runtime {
         RETURNING value
       `).get() as unknown as { value: number };
       const now = this.#now();
+      const agentRunId = this.#nextId();
       const attemptNumber = next.attempt_count + 1;
       const changed = this.#database.prepare(`
         UPDATE thread_maintenance
@@ -2141,6 +2343,7 @@ class SqliteRuntime implements Runtime {
         next.attempt_count,
       );
       if (changed.changes !== 1) return undefined;
+      this.#startAgentRun(agentRunId, "thread-maintainer", now);
       this.#recordTransition(
         "thread_maintenance",
         next.activity_id,
@@ -2153,6 +2356,7 @@ class SqliteRuntime implements Runtime {
       return {
         activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
         observations: JSON.parse(next.observations_json) as ThreadActivityObservation[],
+        agentRunId,
         attemptNumber,
         fencingToken: token.value,
       };
@@ -2160,7 +2364,7 @@ class SqliteRuntime implements Runtime {
   }
 
   #finishThreadMaintenance(
-    claimed: { activity: FrozenActivity; attemptNumber: number; fencingToken: number },
+    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
     result: ThreadMaintenanceResult,
   ): void {
     this.#transaction(() => {
@@ -2182,6 +2386,7 @@ class SqliteRuntime implements Runtime {
       if (changed.changes !== 1) {
         throw new Error(`Thread maintenance ${claimed.activity.segmentId} no longer accepts completion`);
       }
+      this.#finishAgentRun(claimed.agentRunId, "succeeded", result.outcome, now);
       this.#recordTransition(
         "thread_maintenance",
         claimed.activity.segmentId,
@@ -2195,7 +2400,7 @@ class SqliteRuntime implements Runtime {
   }
 
   #failThreadMaintenance(
-    claimed: { activity: FrozenActivity; attemptNumber: number; fencingToken: number },
+    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
     error: unknown,
   ): void {
     this.#transaction(() => {
@@ -2215,6 +2420,13 @@ class SqliteRuntime implements Runtime {
         this.#ownerId,
       );
       if (changed.changes !== 1) return;
+      this.#finishAgentRun(
+        claimed.agentRunId,
+        "failed",
+        undefined,
+        now,
+        agentFailureCategory(error),
+      );
       this.#recordTransition(
         "thread_maintenance",
         claimed.activity.segmentId,
@@ -2305,6 +2517,7 @@ class SqliteRuntime implements Runtime {
           fencing_token, started_at
         ) VALUES (?, ?, ?, 'recording', ?, ?, ?)
       `).run(attemptId, next.id, attemptNumber, this.#ownerId, tokenRow.value, now.toISOString());
+      this.#startAgentRun(attemptId, "life-recorder", now);
       this.#recordTransition("activity", next.id, "pending", "recording", "recording_claimed", now, tokenRow.value);
       return {
         activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
@@ -2343,6 +2556,7 @@ class SqliteRuntime implements Runtime {
         SET status = 'recorded', ended_at = ?, receipt_json = ?
         WHERE id = ? AND status = 'recording' AND fencing_token = ?
       `).run(now.toISOString(), JSON.stringify(receipt), claimed.attemptId, claimed.fencingToken);
+      this.#finishAgentRun(claimed.attemptId, "succeeded", "recorded", now);
       this.#recordTransition(
         "activity",
         claimed.activity.segmentId,
@@ -2381,6 +2595,13 @@ class SqliteRuntime implements Runtime {
         SET status = 'failed', ended_at = ?, error = ?
         WHERE id = ? AND status = 'recording' AND fencing_token = ?
       `).run(now.toISOString(), detail, claimed.attemptId, claimed.fencingToken);
+      this.#finishAgentRun(
+        claimed.attemptId,
+        "failed",
+        undefined,
+        now,
+        agentFailureCategory(error),
+      );
       this.#recordTransition(
         "activity",
         claimed.activity.segmentId,
@@ -2451,6 +2672,7 @@ class SqliteRuntime implements Runtime {
         now.toISOString(),
         recordingDay,
       );
+      this.#startAgentRun(turnId, "main-agent", now);
       this.#database.prepare(`
         INSERT INTO turn_inputs (
           turn_id, input_id, position, inclusion_status
@@ -2552,6 +2774,7 @@ class SqliteRuntime implements Runtime {
         WHERE active_turn_id = ? AND status = 'active'
       `).run(turnId);
       this.#recordTransition("turn", turnId, "running", "completed", result.outcome, now, fencingToken);
+      this.#finishAgentRun(turnId, "succeeded", result.outcome, now);
       for (const input of activeInputs) {
         this.#recordTransition("input", input.id, "active", "consumed", "turn_completed", now, fencingToken);
       }
@@ -2725,6 +2948,7 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).run(now.toISOString(), error instanceof Error ? error.message : String(error), turnId, fencingToken, this.#ownerId);
       if (changed.changes !== 1) return;
+      this.#finishAgentRun(turnId, "failed", undefined, now, agentFailureCategory(error));
       if (!this.#turnBeginsWithContinuation(turnId)) this.#touchSegmentForTurn(turnId, now);
       this.#recordTransition("turn", turnId, "running", "failed", "execution_failed", now, fencingToken);
       this.#settleInputsAfterStoppedTurn(turnId, "failed", now, fencingToken);
@@ -3335,6 +3559,40 @@ class SqliteRuntime implements Runtime {
       throw error;
     }
   }
+}
+
+function agentRunSummary(row: AgentRunRow): RuntimeAgentRunSummary {
+  return {
+    runId: row.id,
+    name: row.agent_name,
+    startedAt: row.started_at,
+    ...(row.ended_at ? { endedAt: row.ended_at } : {}),
+    result: row.status,
+    ...(row.outcome ? { outcome: row.outcome } : {}),
+    ...(row.failure_category ? { failureCategory: row.failure_category } : {}),
+  };
+}
+
+function agentState(summary: RuntimeAgentRunSummary): "running" | "succeeded" | "failed" {
+  if (summary.result === "running") return "running";
+  if (summary.result === "succeeded") return "succeeded";
+  return "failed";
+}
+
+function agentFailureCategory(error: unknown): string {
+  const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/timeout|timed out/i.test(message)) return "timeout";
+  if (/abort|interrupt/i.test(message)) return "interrupted";
+  if (/auth|credential|token|401|403/i.test(message)) return "authentication";
+  if (/transcript|anchor|invalid|requires/i.test(message)) return "invalid_result";
+  if (/workspace|mutation|file|directory/i.test(message)) return "workspace";
+  if (/provider|model|network|connect|429|5\d\d/i.test(message)) return "provider";
+  return "unknown";
+}
+
+function isIsoTimestamp(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value));
 }
 
 function assertPositiveDuration(value: number, label: string): void {

@@ -498,6 +498,10 @@ test("schedules Attention maintenance with a durable successful Activity cursor"
     activityIds: [activityId],
   }]);
   assert.deepEqual(runtime.status().attentionMaintenance?.pendingActivityIds, []);
+  assert.equal(
+    runtime.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")?.latest?.outcome,
+    "no_change",
+  );
 });
 
 test("retries the same frozen Attention evidence window after failure", async () => {
@@ -528,6 +532,13 @@ test("retries the same frozen Attention evidence window after failure", async ()
     reason: "attention_maintenance_failed",
     nextRunAt: "2026-07-21T08:01:30.000Z",
   });
+  assert.deepEqual(
+    failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer") && {
+      state: failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")!.state,
+      nextRunAt: failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")!.nextRunAt,
+    },
+    { state: "retrying", nextRunAt: "2026-07-21T08:01:30.000Z" },
+  );
 
   await failing.acceptInput({ source: "test", sourceId: "second", kind: "interaction", payload: {} });
   await firstScheduler.runOnce(now);
@@ -623,6 +634,10 @@ test("reflects one complete logical day and slices a cross-day Activity by Turn"
     }]);
     assert.equal(runtime.status().memoryReflection?.lastCompletedDay, "2026-07-21");
     assert.equal(runtime.status().memoryReflection?.nextDay, "2026-07-22");
+    assert.equal(
+      runtime.operationalStatus().agents.find(agent => agent.name === "memory-reflector")?.latest?.result,
+      "succeeded",
+    );
   } finally {
     runtime.close();
   }
@@ -657,6 +672,13 @@ test("keeps a failed Memory reflection day pending across restart", async () => 
     reason: "memory_reflection_failed",
     nextRunAt: "2026-07-22T03:00:30.000Z",
   });
+  assert.deepEqual(
+    first.operationalStatus().agents.find(agent => agent.name === "memory-reflector") && {
+      state: first.operationalStatus().agents.find(agent => agent.name === "memory-reflector")!.state,
+      nextRunAt: first.operationalStatus().agents.find(agent => agent.name === "memory-reflector")!.nextRunAt,
+    },
+    { state: "retrying", nextRunAt: "2026-07-22T03:00:30.000Z" },
+  );
   first.close();
 
   now = new Date("2026-07-22T03:00:30.000Z");
@@ -852,6 +874,9 @@ test("retries pending Activity recording through Scheduler after restart", async
     assert.deepEqual(recorded, [activityId]);
     assert.equal(recovered.status().activities.length, 1);
     assert.equal(recovered.status().activities[0]?.status, "recorded");
+    const life = recovered.operationalStatus({ since: "2026-07-21T00:00:00.000Z" })
+      .agents.find(agent => agent.name === "life-recorder");
+    assert.deepEqual(life?.history?.map(run => run.result), ["failed", "succeeded"]);
   } finally {
     recovered.close();
   }
@@ -962,6 +987,10 @@ test("maintains changed Thread material once after Activity recording", async t 
   assert.equal(runtime.status().activities[0]?.status, "recorded");
   assert.deepEqual(maintained, [runtime.status().activities[0]!.id]);
   assert.equal(runtime.status().threadMaintenance[0]?.status, "completed");
+  assert.equal(
+    runtime.operationalStatus().agents.find(agent => agent.name === "thread-maintainer")?.latest?.outcome,
+    "no_change",
+  );
 
   await scheduler.runOnce(now);
   assert.equal(maintained.length, 1);

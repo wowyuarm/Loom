@@ -237,6 +237,10 @@ test("creates no Input when Orientation finds no grounded Opportunity", async t 
   });
   assert.deepEqual(runtime.status().inputs, []);
   assert.equal(acknowledged, true);
+  assert.deepEqual(runtime.operationalStatus().agents.find(agent => agent.name === "orientation")?.latest && {
+    result: runtime.operationalStatus().agents.find(agent => agent.name === "orientation")!.latest!.result,
+    outcome: runtime.operationalStatus().agents.find(agent => agent.name === "orientation")!.latest!.outcome,
+  }, { result: "succeeded", outcome: "none" });
 });
 
 test("freezes a standalone proactive tool activity immediately after its Turn", async t => {

@@ -51,7 +51,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 
 ```bash
 npm run build
-node dist/src/cli.js init --root /path/to/.loom
+node dist/src/cli.js init
 ```
 
 `init` 写入 `configuration/instance.yaml`（默认启用 Local）、两份 Harness 默认 Behavior 和 Pi 配置目录，不覆盖已有文件。它返回需要由 Individual 提供的 active material：
@@ -77,12 +77,29 @@ models:
 运行 Instance：
 
 ```bash
-node dist/src/cli.js run --root /path/to/.loom
+node dist/src/cli.js run
 ```
 
 该入口保持前台运行，在 `SIGINT` 或 `SIGTERM` 后等待当前工作自然结束。缺少必要 Workspace 材料或配置损坏时会直接拒绝打开；模型或认证尚未就绪时，Host 保持运行并把 agent work 标记为 blocked。
 
-默认 Instance Root 是 `~/.loom`，可省略 `--root`。在仓库开发期可 `npm link` 后直接用 `loom init / run / chat / history`；`chat` 和 `history` 通过 Local 的 Unix socket 作为客户端读写由 Runtime 事实重建的统一互动视图。
+默认 Instance Root 是 `~/.loom`。只有维护非默认实例或测试时才需要
+`--root`。在仓库开发期可 `npm link` 后直接使用 `loom`：
+
+```bash
+loom init
+loom run
+loom chat "hello"
+loom history
+loom status
+loom status --json
+loom status --since 2026-08-03T00:00:00Z
+```
+
+`chat` 和 `history` 通过启用的 Local Unix socket 读写互动视图；`status`
+通过独立的本机只读 socket 查询正在运行的 Host，因此在 Raft-only 或
+Weixin-only 实例上同样可用。Host 不在时返回 `unavailable`，不会直接打开
+Runtime Store 猜测当前状态，并以退出码 1 结束。`--since` 只增加该时间后的
+无内容 Agent 运行摘要。
 
 Instance Root 布局：
 
@@ -98,6 +115,7 @@ Instance Root 布局：
 │   └── daily/  episodes/  threads/  skills/
 ├── runtime/                   Harness 拥有
 │   ├── host-lock.db           Host 独占锁
+│   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
 │   └── integrations/          local.sock · weixin.db · attachments/
 ├── transcripts/{main,organs}/

@@ -58,6 +58,99 @@ Runtime owner or private history store. `loom run` accepts `SIGTERM` and waits
 for current work to finish, so an external supervisor owns boot startup and
 restart rather than Loom growing its own daemon manager.
 
+## Operating One Instance
+
+An Operator Agent works from small, independently checkable actions. It must
+state both the evidence it obtained and the conclusion that evidence supports;
+it must not turn an unknown state into a healthy one by inference.
+
+| Need | Current action | What its result proves | What it does not prove |
+| --- | --- | --- | --- |
+| Is the Host process supervised? | Inspect `loom@<instance>.service` with systemd. | The service process is active, inactive, or has failed. | That the model, an Integration, or a Cognitive Organ is healthy. |
+| What is the live Instance state? | Run `loom status` as the Instance account; use `--json` for structured output. | The running Host's current model, Runtime, Agent and enabled Integration state. | Why an unavailable Host stopped, or private activity content. |
+| What happened during a period? | Read the matching service journal, with an explicit time range. | Content-free lifecycle, Runtime transition, model and tool events that the running Host emitted. | A complete history, a current Integration state, or an Agent's successful work when no event says so. |
+| Can the Local channel answer? | Run `loom chat` or `loom history` as the Instance account when Local is enabled. | The Local client reached the running Host and received the requested result. | That another enabled Integration is connected, or that the Instance has no pending work. |
+| Is a configured Raft bridge connected? | Read the Raft entry in `loom status`, then use Raft-specific acceptance checks when behavior must be proved. | The bridge's current live state and bounded failure category. | That DM, thread, ambient and replay behavior have all passed acceptance. |
+
+Never open `runtime.db`, an Integration database, or a transcript as an
+operator shortcut. They are private state, not an operator query interface.
+Never start a second Host for the same Instance Root in order to inspect it.
+If the available evidence is insufficient, report that state as `unknown` and
+ask whether the user authorizes a restart, an Integration-specific check, or
+further investigation.
+
+### Loom Status
+
+`loom status` queries a Host-owned, read-only local endpoint. It does not open a
+second Instance, connect an Integration, or infer live state from files. The
+default output is concise and human-readable; `loom status --json` returns the
+same evidence with a versioned schema. `loom status --since <ISO timestamp>`
+also returns content-free Agent run summaries that overlap the requested time
+range.
+
+The snapshot distinguishes Host, Model Runtime, pending Runtime work, each
+Agent's latest result and every enabled Integration's live state. It contains
+no message, prompt, tool trace, Workspace content, Effect payload, credential,
+path, remote object id or raw provider error. A stopped or unreachable Host is
+explicitly `unavailable`; use systemd and the service journal to determine why.
+`operational-events` remains diagnostic output rather than a status fact source.
+
+### Diagnosis And Recovery
+
+For an incident, preserve the smallest useful evidence first: the Instance
+name, root path, service state, time window, command result and relevant
+content-free journal events. Do not include credentials, message bodies,
+transcripts, or attachment contents in tickets or summaries.
+
+When the service has failed or an enabled Integration is degraded, first read
+the journal and identify whether the failure was during Host startup, model
+work, Runtime work, or the Integration. A service restart is an authorized
+recovery action, not proof of the cause. `SIGTERM` is graceful: the Host waits
+for active work to finish and reconstructs durable pending Runtime work on its
+next start. Do not delete a socket, database, replay data, or Workspace file to
+make a restart appear clean.
+
+An Integration can fail while the Host process remains active. In particular,
+a Raft bridge becoming `degraded` is recovered by the external supervisor
+restarting the Host; Loom does not create a replacement bridge in the existing
+Host. An Operator Agent must obtain authorization before intentionally
+interrupting a live Individual, and report the interruption's scope.
+
+## Manual Whole-Instance Backup And Restore
+
+This is an Operator procedure, not a Loom command or scheduled Harness job.
+It protects against host loss only when the resulting copy is kept away from
+that host. GitHub review history is separate: it may contain selected Workspace
+materials, but it never replaces a complete Instance backup.
+
+The backup unit is the complete Instance Root. It includes the Workspace,
+Runtime and Integration state, transcripts, configuration, credentials,
+attachments and protected Workspace-write recovery material. Do not select
+subdirectories and do not copy the root while its Host is running: Loom has
+SQLite WAL databases and ordinary files that must describe one point in time.
+
+Before any backup or restore, the Operator Agent obtains the user's explicit
+authorization for the affected Instance, host interruption, destination and
+access to private material. It records the service name and root path, then
+performs this procedure:
+
+1. Gracefully stop the matching `loom@<instance>.service` and verify that it
+   is inactive before copying any data.
+2. Run the authorized external backup tool against the entire stopped Instance
+   Root. The tool, destination, encryption, retention and scheduling policy
+   belong to the deployment; Loom does not choose or manage them.
+3. Verify the artifact using that tool's own verification mechanism, then
+   start the service again and record the backup time, artifact identifier and
+   verification result without recording secrets.
+
+A successful archive is not a tested recovery. A restore always begins with a
+stopped target Host and a fresh target directory; it restores the complete
+root, preserves its owner and permissions, and never mixes files from two
+Instance revisions. Do not run both the original and restored Instance with
+the same external channel credentials at once: that can create duplicate
+external activity. The specific isolated-host restore drill remains a required
+deployment decision until Loom has a read-only restore-validation primitive.
+
 ## Multiple Individuals on One VPS
 
 Use one Runtime Instance, Unix account and service instance per Agent
@@ -124,5 +217,6 @@ journalctl -u loom@hal.service -f
 When updating the shared checkout, first stop each affected service, update and
 build `/opt/loom`, then start it again. A service restart intentionally waits
 for current work to end. Instance Roots and their credentials are not replaced
-by a code update. Backing up and restoring an Instance is a separate Loom work
-item; do not claim this recipe provides that guarantee.
+by a code update. Backing up and restoring an Instance follows the procedure
+above; do not claim this recipe provides a tested off-host recovery guarantee
+until an actual restore drill has succeeded.

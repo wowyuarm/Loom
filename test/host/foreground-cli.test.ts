@@ -49,6 +49,39 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
   );
 });
 
+test("reports an unavailable Host as structured status without opening Instance state", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "loom-cli-status-"));
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const result = await runCli(cli, ["status", "--json"], { ...process.env, HOME: home });
+
+  assert.equal(result.code, 1, result.stderr);
+  const status = JSON.parse(result.stdout) as Record<string, unknown>;
+  assert.equal(status.schemaVersion, 1);
+  assert.match(String(status.observedAt), /^\d{4}-\d{2}-\d{2}T/);
+  assert.deepEqual(status.host, { state: "unavailable" });
+  assert.deepEqual(status.agents, []);
+  assert.deepEqual(status.integrations, []);
+  assert.equal(result.stderr, "");
+
+  const human = await runCli(cli, ["status"], { ...process.env, HOME: home });
+  assert.equal(human.code, 1);
+  assert.equal(human.stdout.trim(), "Loom Host unavailable");
+  assert.equal(human.stderr, "");
+});
+
+test("rejects an invalid status history timestamp before contacting the Host", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "loom-cli-status-since-"));
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const result = await runCli(cli, ["status", "--json", "--since", "yesterday"], {
+    ...process.env,
+    HOME: home,
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /Usage: loom status/);
+});
+
 test("runs one prepared Instance until a termination signal requests graceful stop", async t => {
   const root = await preparedInstanceRoot();
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
@@ -126,6 +159,42 @@ test("chats through the running Local channel and rebuilds history in another cl
   assert.equal(history.code, 0, history.stderr);
   assert.match(history.stdout, /human \[local\]: hello from the human/);
   assert.match(history.stdout, /individual \[local\]: hello through Loom/);
+
+  const statusJson = await runCli(cli, [
+    "status",
+    "--json",
+    "--since",
+    "2026-01-01T00:00:00.000Z",
+  ], env);
+  assert.equal(statusJson.code, 0, statusJson.stderr);
+  const status = JSON.parse(statusJson.stdout) as {
+    host: { state: string };
+    agents: Array<{ name: string; state: string; history?: unknown[] }>;
+    integrations: Array<{ name: string; state: string }>;
+  };
+  assert.equal(status.host.state, "running");
+  assert.equal(status.agents.find(agent => agent.name === "main-agent")?.state, "succeeded");
+  assert.equal(status.agents.find(agent => agent.name === "main-agent")?.history?.length, 1);
+  assert.deepEqual(status.integrations, [{ name: "local", state: "listening" }]);
+  assert.doesNotMatch(statusJson.stdout, /hello from the human|hello through Loom|\.loom/);
+
+  const historicalStatus = await runCli(cli, [
+    "status",
+    "--since",
+    "2026-01-01T00:00:00.000Z",
+  ], env);
+  assert.equal(historicalStatus.code, 0, historicalStatus.stderr);
+  assert.match(historicalStatus.stdout, /^Agent runs since /m);
+  assert.match(historicalStatus.stdout, /^  Main Agent: 1$/m);
+  assert.match(historicalStatus.stdout, /^    .* succeeded \(completed\)$/m);
+
+  const humanStatus = await runCli(cli, ["status"], env);
+  assert.equal(humanStatus.code, 0, humanStatus.stderr);
+  assert.match(humanStatus.stdout, /^Host: running/m);
+  assert.match(humanStatus.stdout, /^Model: active/m);
+  assert.match(humanStatus.stdout, /^  Main Agent: succeeded/m);
+  assert.match(humanStatus.stdout, /^  Local: listening/m);
+  assert.doesNotMatch(humanStatus.stdout, /\{|"schemaVersion"|hello from the human/);
 
   const exited = once(host, "exit");
   host.kill("SIGTERM");

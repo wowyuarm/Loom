@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { openLoomHost } from "./host/index.js";
+import { openLoomHost, readLoomStatus, type LoomStatusReport } from "./host/index.js";
 import { initializeLoomInstance } from "./instance/index.js";
 import { resolveInstanceLayout } from "./instance/layout.js";
 import {
@@ -20,7 +20,7 @@ import {
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  if (command !== "init" && command !== "run" && command !== "chat" && command !== "history") {
+  if (command !== "init" && command !== "run" && command !== "chat" && command !== "history" && command !== "status") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -52,6 +52,15 @@ async function main(argv: string[]): Promise<void> {
     for (const entry of entries) {
       console.log(`${entry.at} ${entry.actorRef} [${entry.source}]: ${interactionText(entry.content) ?? JSON.stringify(entry.content)}`);
     }
+    return;
+  }
+  if (command === "status") {
+    const options = readStatusArguments(args);
+    const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath, {
+      ...(options.since ? { since: options.since } : {}),
+    });
+    console.log(options.json ? JSON.stringify(report) : formatStatus(report, options.since));
+    if (report.host.state === "unavailable") process.exitCode = 1;
     return;
   }
   const observe: OperationalEventObserver = event => writeOperationalEvent(event);
@@ -91,11 +100,98 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
+function readStatusArguments(args: string[]): { json: boolean; since?: string } {
+  let json = false;
+  let since: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    if (argument === "--root") {
+      index += 1;
+      continue;
+    }
+    if (argument === "--json") {
+      json = true;
+      continue;
+    }
+    if (argument === "--since") {
+      const value = args[index + 1];
+      if (!value || value.startsWith("--") || !isIsoTimestamp(value)) {
+        throw new Error(usage("status"));
+      }
+      since = value;
+      index += 1;
+      continue;
+    }
+    throw new Error(`Unknown argument: ${argument}`);
+  }
+  return { json, ...(since ? { since } : {}) };
+}
+
+function formatStatus(report: LoomStatusReport, since?: string): string {
+  if (!("runId" in report)) return "Loom Host unavailable";
+  const modelDetail = report.model.state === "active"
+    ? report.model.revisionId
+    : report.model.state === "degraded"
+      ? `${report.model.revisionId}, ${report.model.failureCategory}`
+      : report.model.failureCategory;
+  const lines = [
+    `Host: ${report.host.state} (Loom ${report.host.version}, started ${report.host.startedAt})`,
+    `Model: ${report.model.state} (${modelDetail})`,
+    `Runtime: active turn ${report.runtime.activeTurn ? "yes" : "no"}; ${report.runtime.pendingInputs} pending Inputs; ${report.runtime.pendingEffects} pending Effects; ${report.runtime.deliveriesNeedingAttention} Deliveries need attention`,
+    "Agents:",
+  ];
+  for (const agent of report.agents) {
+    const latestAt = agent.latest?.endedAt ?? agent.latest?.startedAt;
+    const outcome = agent.latest?.outcome ? `, ${agent.latest.outcome}` : "";
+    const retry = agent.nextRunAt ? `, next ${agent.nextRunAt}` : "";
+    lines.push(`  ${agentLabel(agent.name)}: ${agent.state}${latestAt ? ` at ${latestAt}` : ""}${outcome}${retry}`);
+  }
+  lines.push("Integrations:");
+  if (report.integrations.length === 0) lines.push("  None enabled");
+  for (const integration of report.integrations) {
+    const failure = integration.lastFailure ? ` (${integration.lastFailure.category})` : "";
+    lines.push(`  ${integrationLabel(integration.name)}: ${integration.state}${failure}`);
+  }
+  if (since) {
+    lines.push(`Agent runs since ${since}:`);
+    for (const agent of report.agents) {
+      const history = agent.history ?? [];
+      lines.push(`  ${agentLabel(agent.name)}: ${history.length}`);
+      for (const run of history) {
+        const at = run.endedAt ?? run.startedAt;
+        lines.push(`    ${at} ${run.result}${run.outcome ? ` (${run.outcome})` : ""}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+function agentLabel(name: string): string {
+  return ({
+    "main-agent": "Main Agent",
+    orientation: "Orientation",
+    "life-recorder": "Life Recorder",
+    "attention-maintainer": "Attention Maintainer",
+    "memory-reflector": "Memory Reflector",
+    "thread-maintainer": "Thread Maintainer",
+  } as Record<string, string>)[name] ?? name;
+}
+
+function integrationLabel(name: string): string {
+  if (name === "nmem") return "nmem";
+  return `${name.slice(0, 1).toUpperCase()}${name.slice(1)}`;
+}
+
+function isIsoTimestamp(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
 function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-function readRoot(args: string[], command: "init" | "run" | "chat" | "history"): string {
+function readRoot(args: string[], command: "init" | "run" | "chat" | "history" | "status"): string {
   const name = "--root";
   const index = args.indexOf(name);
   if (index < 0) return path.join(homedir(), ".loom");
@@ -104,7 +200,9 @@ function readRoot(args: string[], command: "init" | "run" | "chat" | "history"):
     throw new Error(usage(command));
   }
   const remaining = remainingArguments(args, name);
-  if (command !== "chat" && remaining.length > 0) throw new Error(`Unknown argument: ${remaining[0]}`);
+  if (command !== "chat" && command !== "status" && remaining.length > 0) {
+    throw new Error(`Unknown argument: ${remaining[0]}`);
+  }
   return value;
 }
 
@@ -114,8 +212,11 @@ function remainingArguments(args: string[], flag: string): string[] {
   return args.filter((_, candidate) => candidate !== index && candidate !== index + 1);
 }
 
-function usage(command?: "init" | "run" | "chat" | "history"): string {
+function usage(command?: "init" | "run" | "chat" | "history" | "status"): string {
   if (command === "chat") return "Usage: loom chat [--root <instance-root>] <text>";
+  if (command === "status") {
+    return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
+  }
   if (command) return `Usage: loom ${command} [--root <instance-root>]`;
   return [
     "Usage:",
@@ -123,6 +224,7 @@ function usage(command?: "init" | "run" | "chat" | "history"): string {
     "  loom run [--root <instance-root>]",
     "  loom chat [--root <instance-root>] <text>",
     "  loom history [--root <instance-root>]",
+    "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
     "",
     "The default Instance Root is ~/.loom.",
   ].join("\n");
