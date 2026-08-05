@@ -194,8 +194,12 @@ class DefaultRaftCliRemote implements RaftRemote {
     }
 
     const receiptIds = new Set(spool.map(entry => entry.receiptId));
+    const messages = new Map<string, InboxSpoolEntry>();
+    for (const entry of spool) {
+      if (!messages.has(entry.messageId!)) messages.set(entry.messageId!, entry);
+    }
     return {
-      entries: spool.map(entry => ({
+      entries: [...messages.values()].map(entry => ({
         receiptId: entry.receiptId,
         messageId: entry.messageId!,
         receivedAt: entry.receivedAt,
