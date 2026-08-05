@@ -382,12 +382,17 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),
         }));
       }
+      const channelTools = this.channelAgentSurface?.tools.create({
+        prepareEffect: effect => lifecycle.control(request.turnId).prepareEffect(effect),
+      }) ?? [];
+      assertChannelTools(this.channelAgentSurface?.tools.names ?? [], channelTools);
+      turnTools.push(...channelTools);
       const preparedSession = await this.createSession(
         systemPrompt,
         turnTools,
         toolActivityExtension(
           lifecycle.control(request.turnId),
-          this.ordinaryToolNames,
+          new Set([...this.ordinaryToolNames, ...channelTools.map(tool => tool.name)]),
           this.observe,
         ),
         lifecycle,
@@ -533,10 +538,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 }
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
-  const additionalTools = [
-    ...(options.additionalTools ?? []),
-    ...(options.channelAgentSurface?.tools ?? []),
-  ];
+  const additionalTools = options.additionalTools ?? [];
   const reservedTools = new Set<string>([
     ...MAIN_AGENT_BUILTIN_TOOLS,
     "expand_tool_result",
@@ -552,6 +554,17 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       throw new Error(`Additional tool ${tool.name} is duplicated`);
     }
     additionalToolNames.add(tool.name);
+  }
+  const channelToolNames = new Set<string>();
+  for (const name of options.channelAgentSurface?.tools.names ?? []) {
+    if (reservedTools.has(name)) {
+      throw new Error(`${name} is maintained by Loom and cannot be supplied by an Interaction Channel`);
+    }
+    if (additionalToolNames.has(name)) {
+      throw new Error(`Interaction Channel tool ${name} duplicates an additional tool`);
+    }
+    if (channelToolNames.has(name)) throw new Error(`Interaction Channel tool ${name} is duplicated`);
+    channelToolNames.add(name);
   }
   if (options.defaultInteractionRoute !== undefined && !options.defaultInteractionRoute.trim()) {
     throw new Error("Default Interaction Route cannot be blank");
@@ -650,6 +663,16 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     ]),
     options.observe,
   );
+}
+
+function assertChannelTools(names: readonly string[], tools: ToolDefinition[]): void {
+  const actual = tools.map(tool => tool.name);
+  if (new Set(actual).size !== actual.length) {
+    throw new Error("Interaction Channel tools contain a duplicate name");
+  }
+  if (actual.length !== names.length || actual.some((name, index) => name !== names[index])) {
+    throw new Error("Interaction Channel tool names do not match the declared action surface");
+  }
 }
 
 function compareSkills(left: Skill, right: Skill): number {

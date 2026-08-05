@@ -9,7 +9,7 @@ import {
   openRaftChannel,
   type RaftRemote,
 } from "../../src/integrations/raft/index.js";
-import type { RuntimeInput } from "../../src/runtime/index.js";
+import type { EffectRequest, RuntimeInput } from "../../src/runtime/index.js";
 
 const activationTime = () => new Date("2026-08-03T04:59:00.000Z");
 
@@ -226,7 +226,7 @@ test("delivers a persisted message through its opaque Destination and preserves 
   });
 });
 
-test("offers four bounded read tools that keep Raft targets behind opaque refs", async t => {
+test("offers bounded Raft tools that keep remote targets behind opaque refs", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-tools-"));
   const opened: Array<{ kind: string; value: string }> = [];
   const activityRequests: Array<{ after?: string }> = [];
@@ -294,12 +294,14 @@ test("offers four bounded read tools that keep Raft targets behind opaque refs",
     remote,
   });
   t.after(() => channel.stop());
-  const tools = channel.agentTools();
+  const tools = channel.agentTools({ prepareEffect: () => ({ effectId: "unused" }) });
   assert.deepEqual(tools.map(tool => tool.name), [
     "raft_places",
     "raft_activity",
     "raft_search",
     "raft_open",
+    "raft_task",
+    "raft_attention",
   ]);
 
   const places = await executeTool(tools, "raft_places", { scope: "discoverable", limit: 10 });
@@ -341,6 +343,302 @@ test("offers four bounded read tools that keep Raft targets behind opaque refs",
   assert.equal(activityRequests.length, 1);
   assert.ok(activityRequests[0]!.after);
   assert.ok(!Number.isNaN(Date.parse(activityRequests[0]!.after!)));
+});
+
+test("prepares and delivers one task claim through an opaque task ref", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-task-claim-"));
+  const taskActions: unknown[] = [];
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no ingress expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    readActivity: async () => ({
+      items: [{
+        signal: "task",
+        occurredAt: "2026-08-05T01:00:00.000Z",
+        place: { target: "#work", kind: "channel", visibility: "public", label: "work" },
+        references: [{
+          kind: "task",
+          value: JSON.stringify({ target: "#work", number: 17, messageId: "task-message-17" }),
+        }],
+        summary: "Review the rollout [task #17 status=todo]",
+      }],
+    }),
+    openReference: async request => {
+      assert.equal(request.kind, "task");
+      assert.deepEqual(JSON.parse(request.value), {
+        target: "#work",
+        number: 17,
+        messageId: "task-message-17",
+      });
+      return {
+        objectKind: "task",
+        evidence: { number: 17, status: "todo", content: "Review the rollout" },
+        references: [{ kind: "message", value: "task-message-17" }],
+      };
+    },
+    mutateTask: async request => {
+      taskActions.push(request);
+      return { disposition: "succeeded", remoteId: "task-17-claimed" };
+    },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const effects: EffectRequest[] = [];
+  const tools = channel.agentTools({
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-task-claim" };
+    },
+  });
+  const activity = await executeTool(tools, "raft_activity", { signals: ["task"], limit: 10 });
+  const taskRef = (activity.details as {
+    items: Array<{ references: Array<{ kind: string; ref: string }> }>;
+  }).items[0]!.references.find(reference => reference.kind === "task")!.ref;
+
+  const opened = await executeTool(tools, "raft_open", { ref: taskRef });
+  assert.equal((opened.details as { objectKind: string }).objectKind, "task");
+  assert.doesNotMatch(JSON.stringify(opened.details), /#work|task-message-17/);
+
+  await executeTool(tools, "raft_task", { action: "claim", taskRef });
+  assert.deepEqual(effects, [{
+    kind: "raft_task",
+    payload: { action: "claim", taskRef },
+    routeRef: "raft-primary",
+  }]);
+  assert.deepEqual(await channel.deliver({
+    attemptId: "delivery-task-claim",
+    effectId: "effect-task-claim",
+    kind: "raft_task",
+    payload: effects[0]!.payload,
+    routeRef: "raft-primary",
+    idempotencyKey: "effect-task-claim:1",
+  }), { status: "delivered", remoteId: "task-17-claimed" });
+  assert.deepEqual(taskActions, [{
+    action: "claim",
+    target: "#work",
+    number: 17,
+    messageId: "task-message-17",
+  }]);
+});
+
+test("prepares and delivers one thread unfollow through an opaque place ref", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-thread-unfollow-"));
+  const attentionActions: unknown[] = [];
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no ingress expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    readActivity: async () => ({
+      items: [{
+        signal: "thread_reply",
+        occurredAt: "2026-08-05T01:00:00.000Z",
+        place: {
+          target: "#work:abcd1234",
+          kind: "reply_thread",
+          visibility: "public",
+          label: "work reply thread",
+        },
+        references: [{ kind: "message", value: "thread-message-1" }],
+        summary: "The discussion is complete.",
+      }],
+    }),
+    mutateAttention: async request => {
+      attentionActions.push(request);
+      return { disposition: "succeeded", remoteId: "thread-unfollowed" };
+    },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const effects: EffectRequest[] = [];
+  const tools = channel.agentTools({
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-thread-unfollow" };
+    },
+  });
+  const activity = await executeTool(tools, "raft_activity", { limit: 10 });
+  const placeRef = (activity.details as { items: Array<{ place: { placeRef: string } }> }).items[0]!.place.placeRef;
+
+  await executeTool(tools, "raft_attention", {
+    action: "unfollow_thread",
+    placeRef,
+    reason: "The accepted task is complete.",
+  });
+  assert.deepEqual(effects, [{
+    kind: "raft_attention",
+    payload: {
+      action: "unfollow_thread",
+      placeRef,
+      reason: "The accepted task is complete.",
+    },
+    routeRef: "raft-primary",
+  }]);
+  assert.deepEqual(await channel.deliver({
+    attemptId: "delivery-thread-unfollow",
+    effectId: "effect-thread-unfollow",
+    kind: "raft_attention",
+    payload: effects[0]!.payload,
+    routeRef: "raft-primary",
+    idempotencyKey: "effect-thread-unfollow:1",
+  }), { status: "delivered", remoteId: "thread-unfollowed" });
+  assert.deepEqual(attentionActions, [{
+    action: "unfollow_thread",
+    target: "#work:abcd1234",
+    reason: "The accepted task is complete.",
+  }]);
+});
+
+test("mutes and unmutes only a regular channel place ref", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-channel-attention-"));
+  const attentionActions: unknown[] = [];
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no ingress expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    listPlaces: async () => ({
+      items: [{ target: "#work", kind: "channel", visibility: "public", label: "work", joined: true }],
+    }),
+    readActivity: async () => ({
+      items: [{
+        signal: "thread_reply",
+        occurredAt: "2026-08-05T01:00:00.000Z",
+        place: { target: "#work:abcd1234", kind: "reply_thread", visibility: "public" },
+        references: [],
+      }],
+    }),
+    mutateAttention: async request => {
+      attentionActions.push(request);
+      return { disposition: "succeeded", remoteId: `attention-${request.action}` };
+    },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const effects: EffectRequest[] = [];
+  const tools = channel.agentTools({
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: `effect-${effects.length}` };
+    },
+  });
+  const places = await executeTool(tools, "raft_places", { scope: "joined" });
+  const channelRef = (places.details as { items: Array<{ placeRef: string }> }).items[0]!.placeRef;
+  const activity = await executeTool(tools, "raft_activity", { limit: 10 });
+  const threadRef = (activity.details as { items: Array<{ place: { placeRef: string } }> }).items[0]!.place.placeRef;
+
+  await assert.rejects(executeTool(tools, "raft_attention", {
+    action: "unfollow_thread",
+    placeRef: channelRef,
+  }), /requires a reply-thread placeRef/);
+  await assert.rejects(executeTool(tools, "raft_attention", {
+    action: "mute_channel",
+    placeRef: threadRef,
+  }), /requires a regular-channel placeRef/);
+  assert.equal(effects.length, 0);
+
+  await executeTool(tools, "raft_attention", { action: "mute_channel", placeRef: channelRef });
+  await executeTool(tools, "raft_attention", { action: "unmute_channel", placeRef: channelRef });
+  assert.equal(effects.length, 2);
+  for (const [index, effect] of effects.entries()) {
+    assert.deepEqual(await channel.deliver({
+      attemptId: `delivery-channel-attention-${index}`,
+      effectId: `effect-${index + 1}`,
+      kind: effect.kind,
+      payload: effect.payload,
+      routeRef: "raft-primary",
+      idempotencyKey: `effect-${index + 1}:1`,
+    }), {
+      status: "delivered",
+      remoteId: `attention-${index === 0 ? "mute_channel" : "unmute_channel"}`,
+    });
+  }
+  assert.deepEqual(attentionActions, [
+    { action: "mute_channel", target: "#work" },
+    { action: "unmute_channel", target: "#work" },
+  ]);
+});
+
+test("keeps rejected and unknown Raft actions distinct without retrying", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-action-outcomes-"));
+  let attempts = 0;
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no ingress expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    readActivity: async () => ({
+      items: [{
+        signal: "task",
+        occurredAt: "2026-08-05T01:00:00.000Z",
+        place: { target: "#work", kind: "channel", visibility: "public" },
+        references: [{
+          kind: "task",
+          value: JSON.stringify({ target: "#work", number: 17, messageId: "task-message-17" }),
+        }],
+      }],
+    }),
+    mutateTask: async () => {
+      attempts += 1;
+      if (attempts === 1) return { disposition: "rejected", error: "Task is already assigned to another member" };
+      throw new Error("connection ended before Raft confirmed the action");
+    },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const tools = channel.agentTools({ prepareEffect: () => ({ effectId: "unused" }) });
+  const activity = await executeTool(tools, "raft_activity", { signals: ["task"], limit: 10 });
+  const taskRef = (activity.details as {
+    items: Array<{ references: Array<{ kind: string; ref: string }> }>;
+  }).items[0]!.references.find(reference => reference.kind === "task")!.ref;
+  const request = {
+    attemptId: "delivery-task-action",
+    effectId: "effect-task-action",
+    kind: "raft_task",
+    payload: { action: "claim", taskRef },
+    routeRef: "raft-primary",
+    idempotencyKey: "effect-task-action:1",
+  };
+
+  assert.deepEqual(await channel.deliver(request), {
+    status: "not_sent",
+    error: "Task is already assigned to another member",
+  });
+  assert.deepEqual(await channel.deliver({ ...request, attemptId: "delivery-task-action-2" }), {
+    status: "unknown",
+    error: "connection ended before Raft confirmed the action",
+  });
+  assert.equal(attempts, 2);
 });
 
 test("stops accepting new wakes while an in-flight wake reaches its Runtime boundary", async t => {

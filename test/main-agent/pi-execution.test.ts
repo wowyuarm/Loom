@@ -544,7 +544,7 @@ test("places enabled Interaction Channel Guidance after Long-term Memory", async
     harnessSystemPrompt: "harness guidance",
     channelAgentSurface: {
       guidance: "Raft is an external shared collaboration place.",
-      tools: [],
+      tools: { names: [], create: () => [] },
     },
   });
   t.after(() => execution.close());
@@ -555,6 +555,76 @@ test("places enabled Interaction Channel Guidance after Long-term Memory", async
     recordingDay: "2026-08-03",
     inputs: [executionInput("input-channel-guidance", "hello")],
   }, noEffectControl()).result;
+});
+
+test("lets an Interaction Channel action tool prepare one durable Effect", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-channel-action-effect-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("raft_task", {
+      action: "claim",
+      taskRef: "raft:task:opaque-task",
+    }, { id: "raft-task-claim" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("The task is claimed."),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    channelAgentSurface: {
+      guidance: "Raft is an external shared collaboration place.",
+      tools: {
+        names: ["raft_task"],
+        create: control => [defineTool({
+          name: "raft_task",
+          label: "Raft Task",
+          description: "Claim one known external task.",
+          parameters: Type.Object({
+            action: Type.Literal("claim"),
+            taskRef: Type.String(),
+          }),
+          execute: async (_toolCallId, params) => {
+            const receipt = control.prepareEffect({
+              kind: "raft_task",
+              payload: { action: params.action, taskRef: params.taskRef },
+              routeRef: "raft:server-1",
+            });
+            return {
+              content: [{ type: "text" as const, text: `Effect ${receipt.effectId} accepted.` }],
+              details: { effectId: receipt.effectId },
+            };
+          },
+        })],
+      },
+    },
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-channel-action-effect",
+    leaseToken: 1,
+    recordingDay: "2026-08-05",
+    inputs: [executionInput("input-channel-action-effect", "Claim the task you chose.")],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-task-claim" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "raft_task",
+    payload: { action: "claim", taskRef: "raft:task:opaque-task" },
+    routeRef: "raft:server-1",
+  }]);
 });
 
 test("keeps the complete Current Attention when normal Context material is over budget", async t => {
@@ -1699,7 +1769,7 @@ test("uses only the configured principal DM for a proactive message with no curr
     defaultInteractionRoute: "raft:server-1",
     channelAgentSurface: {
       guidance: "Raft is an external shared collaboration place.",
-      tools: [],
+      tools: { names: [], create: () => [] },
       defaultDestination: {
         destinationRef: "raft:server-1:principal-dm",
         routeRef: "raft:server-1",

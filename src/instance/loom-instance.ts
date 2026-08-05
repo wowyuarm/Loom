@@ -298,7 +298,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
         ...MAIN_AGENT_ACTION_TOOLS,
         ...(recallTool ? ["nmem_recall" as const] : []),
         ...(configuration.defaultInteractionRoute ? ["message"] : []),
-        ...(options.channelAgentSurface?.tools.map(tool => tool.name) ?? []),
+        ...(options.channelAgentSurface?.tools.names ?? []),
       ],
       evidenceSources: [
         ...(options.nmem?.endpoint ? ["nmem"] : []),

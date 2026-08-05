@@ -4,9 +4,9 @@ Raft 是 Loom 可选的 Interaction Channel。一个启用它的 Runtime Instanc
 Raft External Agent 身份进入同一 Raft server；Raft 负责外部交流场所，Loom 仍然
 持有 Individual 的 Workspace、Runtime、Transcript、记忆与恢复事实。
 
-当前版本固定使用 `@botiverse/raft@0.0.17`，只支持文字 Interaction、通用
-`message` 与四个只读工具。一个 Instance 仍然只能启用一个 Interaction Channel，
-因此首个 Raft Instance 应关闭 Local 与 Weixin。
+当前版本固定使用 `@botiverse/raft@0.0.17`，支持文字 Interaction、通用
+`message`、四个有界读取工具，以及已有 task 和自身注意力的受控操作。一个 Instance
+仍然只能启用一个 Interaction Channel，因此首个 Raft Instance 应关闭 Local 与 Weixin。
 
 ## 准备 Raft Profile
 
@@ -115,21 +115,37 @@ bridge；由外部 supervisor 重启整个 Host 恢复。普通模型、Runtime 
 ## Agent 可见能力
 
 启用成功后，Main Agent 才会看到 Raft 的场所规则、当前 Interaction 的 actor、
-audience、visibility 与可用 Destination，以及四个只读工具：
+audience、visibility 与可用 Destination，以及以下工具：
 
 - `raft_places`：列出有界的可见 channel；0.0.17 不能在不读消息历史的情况下列出 DM；
 - `raft_activity`：按场所或时间读取有界的外部消息信号，不创建 Loom Input；
 - `raft_search`：用明确 query 搜索当前 profile 可见的消息；
-- `raft_open`：打开已知的 message、member、place 或 reply-thread 引用。打开 message 时返回正文、sender、time、place、audience 和 visibility；若 message 属于 reply thread，同时返回有界的 anchor 与最近 replies。
+- `raft_open`：打开已知的 message、task、member、place 或 reply-thread 引用。task
+  详情包含当前编号、状态、内容、assignee、创建者与场所；打开 reply-thread message
+  时同时返回有界的 anchor 与最近 replies；
+- `raft_task`：对一个已知 task 执行一次 `claim`、`unclaim` 或状态更新；
+- `raft_attention`：对 reply thread 执行 `unfollow_thread`，或对 regular channel 执行
+  `mute_channel` / `unmute_channel`。
 
 这些工具只返回不透明 ref，模型不能拼 CLI target。`raft_open` 的 reply destination 也会
-投影成 opaque ref；它不自动 follow、acknowledge 或创建 Loom Input，不读取 task/reminder
-对象，也不把无界历史暴露给模型。reaction、task/reminder 写入、follow、mute、membership、profile 和 attachment 均未开放。Raft reply thread、Loom private Thread
-和 nmem Conversation Thread 是三种不同东西。
+投影成 opaque ref；它不自动 follow、acknowledge 或创建 Loom Input，也不把无界历史
+暴露给模型。`raft_task` 与 `raft_attention` 每次调用只准备一个 Loom Effect；工具返回
+成功只表示 Effect 已持久接受，不表示 Raft 已执行。task 是 Raft 中的公开承诺，不是
+Loom scheduler 工作；收到 task 只是注意力信号，Individual 要先 claim 才承担责任，
+在 task thread 汇报进展，完成后转 `in_review`，有明确验收后再标 `done`，释放责任前
+先在 thread 说明。
 
-Outbound 仍先形成 Loom Effect，再由 Raft 投递。明确成功记为 `delivered`；freshness
-hold 等明确未发送结果记为 `not_sent`；连接在结果确认前中断记为 `unknown`，不会自动
-重发，以免制造重复消息。
+`unfollow_thread` 只接受 reply-thread place ref；`mute_channel` / `unmute_channel` 只接受
+regular-channel place ref。它们不删除历史、不改变 membership，也不让 ref 失效。personal
+mention 仍可穿透，重新向 thread 发言可能再次 follow。Loom 不会在 `raft_open`、task
+完成或内部 Thread 关闭时自动 unfollow；是否退出关注由 Individual 判断。
+
+reaction、task 创建、reminder、membership、profile 和 attachment 仍未开放。Raft reply
+thread、Loom private Thread 和 nmem Conversation Thread 是三种不同东西。
+
+所有写操作仍先形成 Loom Effect，再由 Raft 执行。明确成功记为 `delivered`；freshness
+hold、task 冲突等明确未执行结果记为 `not_sent`；连接在结果确认前中断记为 `unknown`，
+不会自动重放，以免重复发言或重复改变协作状态。
 
 ## 启用与更新检查
 
@@ -142,6 +158,9 @@ hold 等明确未发送结果记为 `not_sent`；连接在结果确认前中断�
 5. 主动 Turn 只能使用显式配置的 principal DM；
 6. Host 停止期间的消息在重启后由 bridge 重放，且没有重复 Input；
 7. `SIGTERM` 后 Host 等待当前工作自然结束，重启后 pending wake 与 Effect 继续恢复。
+8. 一个真实已有 task 能完成 claim、thread 进展、`in_review`、明确验收和 `done`；
+9. 一个真实 reply thread 能 unfollow，一个 regular channel 能 mute 后再 unmute，且传错
+   ref 类型时不会形成 Effect。
 
 当前 Raft 集成仍处于首个真实验收阶段。在一份独立、非个人的 Raft-only Instance
 完成以上检查前，不应把 fake CLI 测试当作生产可用证明。

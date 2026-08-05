@@ -97,13 +97,82 @@ test("validates a pinned Raft profile and resolves and sends through the 0.0.17 
   });
 
   assert.ok(remote.readActivity);
-  assert.equal((await remote.readActivity({
-    signals: ["channel_activity"],
+  const taskActivity = await remote.readActivity({
+    signals: ["task"],
     after: "2026-08-03T00:00:00.000Z",
     limit: 10,
-  })).items[0]?.signal, "channel_activity");
+  });
+  assert.equal(taskActivity.items[0]?.signal, "task");
+  const taskValue = taskActivity.items[0]?.references.find(reference => reference.kind === "task")?.value;
+  assert.ok(taskValue);
 
   assert.ok(remote.openReference);
+  const openedTask = await remote.openReference({
+    kind: "task",
+    value: taskValue,
+    before: 0,
+    after: 0,
+    limit: 1,
+  });
+  assert.equal(openedTask.objectKind, "task");
+  assert.deepEqual(openedTask.evidence, {
+    number: 13,
+    status: "todo",
+    content: "Update",
+    assignee: { handle: "@loom" },
+    createdBy: { kind: "agent", handle: "@alex", displayName: "Alex Agent" },
+    place: { kind: "channel", visibility: "public", label: "commons" },
+    visibility: "public",
+  });
+
+  assert.ok(remote.mutateTask);
+  assert.deepEqual(await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 13,
+    messageId: "bbbbbbbb-1111-2222-3333-444444444444",
+  }), { disposition: "succeeded", remoteId: "raft-task:#commons:13:claim" });
+  assert.deepEqual(await remote.mutateTask({
+    action: "unclaim",
+    target: "#commons",
+    number: 13,
+    messageId: "bbbbbbbb-1111-2222-3333-444444444444",
+  }), { disposition: "succeeded", remoteId: "raft-task:#commons:13:unclaim" });
+  assert.deepEqual(await remote.mutateTask({
+    action: "update",
+    target: "#commons",
+    number: 13,
+    messageId: "bbbbbbbb-1111-2222-3333-444444444444",
+    status: "in_review",
+  }), { disposition: "succeeded", remoteId: "raft-task:#commons:13:update:in_review" });
+  assert.deepEqual(await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 99,
+    messageId: "conflicting-task-message",
+  }), { disposition: "rejected", error: "Task is already assigned" });
+  await assert.rejects(remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 98,
+    messageId: "unknown-task-message",
+  }), /Raft service did not confirm the action/);
+
+  assert.ok(remote.mutateAttention);
+  assert.deepEqual(await remote.mutateAttention({
+    action: "unfollow_thread",
+    target: "#commons:cccccccc",
+    reason: "The discussion is complete.",
+  }), { disposition: "succeeded", remoteId: "raft-attention:unfollow_thread:#commons:cccccccc" });
+  assert.deepEqual(await remote.mutateAttention({
+    action: "mute_channel",
+    target: "#commons",
+  }), { disposition: "succeeded", remoteId: "raft-attention:mute_channel:#commons" });
+  assert.deepEqual(await remote.mutateAttention({
+    action: "unmute_channel",
+    target: "#commons",
+  }), { disposition: "succeeded", remoteId: "raft-attention:unmute_channel:#commons" });
+
   const opened = await remote.openReference({
     kind: "message",
     value: "cccccccc-1111-2222-3333-444444444444",
@@ -187,7 +256,7 @@ if (command[0] === "--version") {
 } else if (command[0] === "message" && command[1] === "resolve") {
   const id = command[2];
   if (id.startsWith("aaaaaaaa")) process.stdout.write("[target=#commons msg=aaaaaaaa time=2026-08-03 05:01:00 type=agent] @alex — Another agent: Update [task #12 status=todo assignee=agent:agent-other]\\n");
-  else if (id.startsWith("bbbbbbbb")) process.stdout.write("[target=#commons msg=bbbbbbbb time=2026-08-03 05:02:00 type=agent] @alex — Another agent: Update [task #13 status=todo assignee=agent:agent-loom]\\n");
+  else if (id.startsWith("bbbbbbbb")) process.stdout.write("[target=#commons msg=bbbbbbbb time=2026-08-03 05:02:00 type=agent] @alex — Another agent: Update [task #13 status=todo assignee=@loom]\\n");
   else if (id.startsWith("cccccccc")) process.stdout.write("[target=#commons:cccccccc msg=cccccccc time=2026-08-03 05:03:00 type=agent] @alex — Another agent: An unfollowed reply\\n");
   else if (id.startsWith("dddddddd")) process.stdout.write("[target=#commons:dddddddd msg=dddddddd time=2026-08-03 05:04:00 type=agent] @alex — Another agent: A followed reply\\n");
   else process.stdout.write("[target=dm:@yu msg=12345678 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: Can we inspect this: carefully?\\n");
@@ -203,7 +272,21 @@ if (command[0] === "--version") {
   const followed = command[2].endsWith(":dddddddd");
   process.stdout.write("## Channel Members\\n\\n### Agents\\n" + (followed ? "  - @loom (active)\\n" : "  - @alex (active)\\n") + "\\n### Humans\\n  (none)\\n");
 } else if (command[0] === "message" && command[1] === "search") {
-  process.stdout.write('Search results for: "durable" (1 result)\\n\\n<result ref="msg:bbbbbbbb-1111-2222-3333-444444444444">\\nSource: channel:commons\\nSender: alex (agent)\\nTime: 2026-08-03 04:55:00\\n\\n<preview>\\nA durable <match>result</match>.\\n</preview>\\n</result>\\n');
+  if (command.includes("--query")) process.stdout.write('Search results for: "durable" (1 result)\\n\\n<result ref="msg:bbbbbbbb-1111-2222-3333-444444444444">\\nSource: channel:commons\\nSender: alex (agent)\\nTime: 2026-08-03 04:55:00\\n\\n<preview>\\nA durable <match>result</match>.\\n</preview>\\n</result>\\n');
+  else process.stdout.write('Search results (1 result)\\n\\n<result ref="msg:bbbbbbbb-1111-2222-3333-444444444444">\\nSource: channel:commons\\nSender: alex (agent)\\nTime: 2026-08-03 05:02:00\\n\\n<preview>\\nUpdate [task #13 status=todo assignee=@loom]\\n</preview>\\n</result>\\n');
+} else if (command[0] === "task" && ["claim", "unclaim", "update"].includes(command[1])) {
+  const number = command[command.indexOf("--number") + 1];
+  if (number === "99") {
+    process.stderr.write("Error: Task is already assigned\\nCode: TASK_CLAIM_FAILED\\n");
+    process.exitCode = 1;
+  } else if (number === "98") {
+    process.stderr.write("Error: Raft service did not confirm the action\\nCode: SERVER_5XX\\n");
+    process.exitCode = 1;
+  } else process.stdout.write("Task action completed.\\n");
+} else if (command[0] === "thread" && command[1] === "unfollow") {
+  process.stdout.write("Thread unfollowed.\\n");
+} else if (command[0] === "channel" && ["mute", "unmute"].includes(command[1])) {
+  process.stdout.write("Channel attention changed.\\n");
 } else if (command[0] === "message" && command[1] === "send") {
   let body = "";
   process.stdin.setEncoding("utf8");

@@ -24,9 +24,9 @@ layer rather than for that Individual.
   Effect before Raft delivery.
 - The first acceptance Instance makes Raft its only enabled interaction channel. Local, Weixin and
   multi-route selection remain outside this work rather than hidden scope for the Adapter.
-- Research and product design are complete. Ticket 04 is the single active implementation unit;
-  its mechanical code, public tests and necessary docs are committed as one coherent work unit,
-  while real Raft evidence remains the sole acceptance and closure gate.
+- The initial Interaction Channel and bounded thread context are accepted. Ticket 05 is the single
+  active implementation unit for existing-task actions and explicit attention management; its
+  mechanical code, public tests, necessary docs and real HaL acceptance form one coherent unit.
 
 ## Confirmed Design Decisions
 
@@ -107,6 +107,7 @@ second Workspace, memory store, scheduler or transcript owner.
 | [02 - map Raft CLI and model context](issues/02-map-raft-cli-and-model-context.md) | resolved | Established the CLI reliability facts and three model-visible context layers. |
 | [03 - design Individual Raft interaction](issues/03-design-individual-raft-interaction.md) | resolved | Accepted the actor, attention, tool, reply and activation model. |
 | [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | resolved | Implementation, deployment and HaL's real multi-reply thread acceptance are complete. |
+| [05 - implement Raft task and attention actions](issues/05-implement-task-and-attention-actions.md) | active | Add existing-task and explicit unfollow/mute actions through durable Effects. |
 
 ## Accepted Implementation Evidence
 

@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-import type { InteractionDestination } from "../runtime/index.js";
+import type { EffectReceipt, EffectRequest, InteractionDestination } from "../runtime/index.js";
 
 export interface ExternalAttentionEvidence {
   source: string;
@@ -14,6 +14,15 @@ export interface InteractionChannelAttentionSource {
   markPresented(revision: string): Promise<void>;
 }
 
+export interface InteractionChannelEffectControl {
+  prepareEffect(effect: EffectRequest): EffectReceipt;
+}
+
+export interface InteractionChannelTools {
+  names: readonly string[];
+  create(control: InteractionChannelEffectControl): ToolDefinition[];
+}
+
 /**
  * The model-facing part of an enabled Interaction Channel. Protocol, ingress,
  * delivery and recovery stay behind the channel adapter; Main Agent only sees
@@ -21,7 +30,7 @@ export interface InteractionChannelAttentionSource {
  */
 export interface InteractionChannelAgentSurface {
   guidance: string;
-  tools: ToolDefinition[];
+  tools: InteractionChannelTools;
   defaultDestination?: InteractionDestination;
   attentionSource?: InteractionChannelAttentionSource;
 }

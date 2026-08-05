@@ -173,6 +173,7 @@ class DefaultRaftCliRemote implements RaftRemote {
     if (sender && sender.kind !== senderKind) throw new Error("Raft message sender kind disagrees with its profile");
     const content = resolvedContent(remainder!, sender?.description);
     const place = await this.#placeFor(target!);
+    const task = taskAssignment(content);
     return {
       messageId: canonicalId,
       occurredAt: localTimestamp(localTime!),
@@ -185,6 +186,7 @@ class DefaultRaftCliRemote implements RaftRemote {
         ...(sender?.displayName?.trim() ? { displayName: sender.displayName.trim() } : {}),
       },
       place,
+      ...(task ? { task } : {}),
     };
   }
 
@@ -326,6 +328,46 @@ class DefaultRaftCliRemote implements RaftRemote {
           { kind: "place", value: message.place.target },
           ...(parsedTarget.thread ? [{ kind: "destination" as const, value: message.place.target }] : []),
           ...(message.sender.handle ? [{ kind: "member" as const, value: message.sender.handle }] : []),
+        ],
+      };
+    }
+    if (request.kind === "task") {
+      const reference = parseTaskReference(request.value);
+      const message = await this.resolveMessage(reference.messageId);
+      if (!message.task || message.task.number !== reference.number) {
+        throw new Error("Raft task ref no longer identifies the expected task");
+      }
+      if (parseTarget(message.place.target).base !== parseTarget(reference.target).base) {
+        throw new Error("Raft task ref resolved in a different place");
+      }
+      return {
+        objectKind: "task",
+        evidence: {
+          number: message.task.number,
+          status: message.task.status,
+          content: taskContent(message.content),
+          ...(message.task.assigneeType || message.task.assigneeId || message.task.assigneeHandle ? {
+            assignee: {
+              ...(message.task.assigneeType ? { kind: message.task.assigneeType } : {}),
+              ...(message.task.assigneeId ? { memberId: message.task.assigneeId } : {}),
+              ...(message.task.assigneeHandle ? { handle: message.task.assigneeHandle } : {}),
+            },
+          } : {}),
+          createdBy: {
+            kind: message.sender.kind,
+            ...(message.sender.handle ? { handle: `@${message.sender.handle.replace(/^@/, "")}` } : {}),
+            ...(message.sender.displayName ? { displayName: message.sender.displayName } : {}),
+          },
+          place: {
+            kind: message.place.kind,
+            visibility: message.place.visibility,
+            ...(message.place.label ? { label: safePlaceLabel(message.place.target, message.place.label) } : {}),
+          },
+          visibility: message.place.visibility,
+        },
+        references: [
+          { kind: "message", value: message.messageId },
+          { kind: "place", value: message.place.target },
         ],
       };
     }
@@ -483,6 +525,8 @@ class DefaultRaftCliRemote implements RaftRemote {
       const sender = match[4] === "system" ? undefined : await this.#profileFor(match[3]!);
       if (sender && sender.kind !== match[4]) throw new Error("Raft search sender kind disagrees with its profile");
       const place = await this.#searchPlace(match[2]!);
+      const preview = decodeXml(match[6]!.trim());
+      const task = taskAssignment(preview);
       return {
         messageId: match[1]!,
         occurredAt: localTimestamp(match[5]!),
@@ -493,13 +537,85 @@ class DefaultRaftCliRemote implements RaftRemote {
           handle: sender?.name ?? match[3]!,
           ...(sender?.displayName?.trim() ? { displayName: sender.displayName.trim() } : {}),
         },
-        preview: decodeXml(match[6]!.trim()),
-        references: [{ kind: "message" as const, value: match[1]! }],
+        preview,
+        references: [
+          { kind: "message" as const, value: match[1]! },
+          ...(task ? [{
+            kind: "task" as const,
+            value: JSON.stringify({
+              target: parseTarget(place.target).base,
+              number: task.number,
+              messageId: match[1]!,
+            }),
+          }] : []),
+        ],
       } satisfies RaftRemoteSearchResult;
     }));
     return {
       items,
       ...(items.length === request.limit ? { nextCursor: String(offset + request.limit) } : {}),
+    };
+  }
+
+  async mutateTask(request: {
+    action: "claim" | "unclaim" | "update";
+    target: string;
+    number: number;
+    messageId: string;
+    status?: "in_progress" | "in_review" | "done";
+  }): Promise<
+    | { disposition: "succeeded"; remoteId: string }
+    | { disposition: "rejected"; error: string }
+  > {
+    const target = required(request.target, "Raft task target");
+    if (!Number.isInteger(request.number) || request.number < 1) throw new Error("Raft task number must be positive");
+    required(request.messageId, "Raft task message id");
+    const args = ["task", request.action, "--target", target, "--number", String(request.number)];
+    if (request.action === "update") {
+      if (!request.status) throw new Error("Raft task update requires status");
+      args.push("--status", request.status);
+    }
+    try {
+      await this.#run(args);
+    } catch (error) {
+      const rejected = rejectedMutation(error);
+      if (rejected) return { disposition: "rejected", error: rejected };
+      throw error;
+    }
+    return {
+      disposition: "succeeded",
+      remoteId: `raft-task:${target}:${request.number}:${request.action}${request.status ? `:${request.status}` : ""}`,
+    };
+  }
+
+  async mutateAttention(request: {
+    action: "unfollow_thread" | "mute_channel" | "unmute_channel";
+    target: string;
+    reason?: string;
+  }): Promise<
+    | { disposition: "succeeded"; remoteId: string }
+    | { disposition: "rejected"; error: string }
+  > {
+    const target = required(request.target, "Raft attention target");
+    const reason = request.reason?.trim();
+    let args: string[];
+    if (request.action === "unfollow_thread") {
+      args = ["thread", "unfollow", "--target", target];
+      if (reason) args.push("--reason", reason);
+    } else {
+      if (reason) throw new Error(`Raft ${request.action} does not accept reason`);
+      args = ["channel", request.action === "mute_channel" ? "mute" : "unmute", "--target", target];
+    }
+    try {
+      await this.#run(args);
+    } catch (error) {
+      const rejected = rejectedMutation(error);
+      if (rejected) return { disposition: "rejected", error: rejected };
+      throw error;
+    }
+    return {
+      disposition: "succeeded",
+      remoteId: `raft-attention:${request.action}:${target}`,
     };
   }
 
@@ -588,14 +704,17 @@ class DefaultRaftCliRemote implements RaftRemote {
   }
 
   async #signalFor(target: string, content: string): Promise<RaftRemoteMessage["signal"]> {
+    const task = taskAssignment(content);
+    const taskAssignedToSelf = task?.assigneeType === "agent" && task.assigneeId === this.options.expectedSelfMemberId
+      || task?.assigneeHandle?.replace(/^@/, "").toLowerCase() === this.#selfProfile.name.toLowerCase();
+    if (taskAssignedToSelf) return "task";
+
     const mentionsSelf = new RegExp(
       `(^|\\W)@${escapeRegExp(this.#selfProfile.name)}(?:\\W|$)`,
       "i",
     ).test(content);
     if (mentionsSelf) return "mention";
 
-    const task = taskAssignment(content);
-    if (task?.assigneeType === "agent" && task.assigneeId === this.options.expectedSelfMemberId) return "task";
     if (target.startsWith("dm:@")) return "direct_message";
     if (task) return "channel_activity";
     if (parseTarget(target).thread) {
@@ -627,7 +746,7 @@ class DefaultRaftCliRemote implements RaftRemote {
       child.on("error", reject);
       child.on("close", code => {
         if (code === 0) resolve({ stdout, stderr });
-        else reject(new Error(cliFailure(stderr, stdout, code)));
+        else reject(new RaftCliCommandError(stderr, stdout, code));
       });
       child.stdin.end(options.stdin ?? "");
     });
@@ -828,13 +947,39 @@ function resolvedContent(remainder: string, description: string | null | undefin
   return content;
 }
 
-function taskAssignment(content: string): { assigneeType?: string; assigneeId?: string } | undefined {
-  const match = /\[task #[0-9]+ status=[^\]\s]+(?: assignee=([^:\]\s]+):([^\]\s]+))?\]/i.exec(content);
+function taskAssignment(content: string): RaftRemoteMessage["task"] {
+  const match = /\[task #([0-9]+) status=(todo|in_progress|in_review|done|closed)(?: assignee=([^\]\s]+))?\]/i.exec(content);
   if (!match) return undefined;
+  const assignee = match[3];
+  const typed = assignee ? /^([^:]+):(.+)$/.exec(assignee) : undefined;
   return {
-    ...(match[1] ? { assigneeType: match[1] } : {}),
-    ...(match[2] ? { assigneeId: match[2] } : {}),
+    number: Number(match[1]),
+    status: match[2]!.toLowerCase() as NonNullable<RaftRemoteMessage["task"]>["status"],
+    ...(typed ? { assigneeType: typed[1], assigneeId: typed[2] } : {}),
+    ...(assignee?.startsWith("@") ? { assigneeHandle: assignee } : {}),
   };
+}
+
+function taskContent(content: string): string {
+  return content.replace(/\s*\[task #[0-9]+ status=[^\]\s]+(?: assignee=[^\]\s]+)?\]\s*$/i, "").trim();
+}
+
+function parseTaskReference(value: string): { target: string; number: number; messageId: string } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Raft task ref is malformed");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Raft task ref is malformed");
+  const fields = parsed as Record<string, unknown>;
+  const target = typeof fields.target === "string" ? required(fields.target, "Raft task target") : "";
+  const number = fields.number;
+  const messageId = typeof fields.messageId === "string" ? required(fields.messageId, "Raft task message id") : "";
+  if (!target || !Number.isInteger(number) || Number(number) < 1 || !messageId) {
+    throw new Error("Raft task ref is malformed");
+  }
+  return { target, number: Number(number), messageId };
 }
 
 function safePlaceLabel(target: string, provided?: string): string {
@@ -902,6 +1047,26 @@ function escapeRegExp(value: string): string {
 function cliFailure(stderr: string, stdout: string, code: number | null): string {
   const detail = stderr.trim() || stdout.trim() || `exit code ${code ?? "unknown"}`;
   return `Raft CLI command failed: ${detail.slice(0, 2_000)}`;
+}
+
+class RaftCliCommandError extends Error {
+  readonly raftCode: string | undefined;
+  readonly summary: string | undefined;
+
+  constructor(stderr: string, stdout: string, exitCode: number | null) {
+    super(cliFailure(stderr, stdout, exitCode));
+    const detail = stderr.trim() || stdout.trim();
+    this.raftCode = /^Code:\s*(\S+)$/m.exec(detail)?.[1];
+    this.summary = /^Error:\s*(.+)$/m.exec(detail)?.[1]?.trim();
+  }
+}
+
+function rejectedMutation(error: unknown): string | undefined {
+  if (!(error instanceof RaftCliCommandError) || !error.raftCode) return undefined;
+  if (!error.raftCode.endsWith("_FAILED")
+    && !error.raftCode.startsWith("MISSING_")
+    && !error.raftCode.startsWith("TOKEN_")) return undefined;
+  return error.summary ?? error.message;
 }
 
 function errorMessage(error: unknown): string {
