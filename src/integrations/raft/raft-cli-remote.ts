@@ -181,6 +181,11 @@ class DefaultRaftCliRemote implements RaftRemote {
 
     for (const entry of spool) {
       if (entry.messageId) continue;
+      const resolved = parseResolvedMessageHeader(
+        (await this.#run(["message", "resolve", entry.shortId])).stdout.trimEnd(),
+      );
+      entry.target = resolved.target;
+      await this.#writeInboxSpool(spool);
       const history = await this.#readHistory(entry.target, entry.shortId, 1);
       const match = history.find(row => row.messageId.toLowerCase().startsWith(entry.shortId.toLowerCase()));
       if (!match) throw new Error(`Raft inbox message ${entry.shortId} was not found in its history`);
@@ -205,9 +210,7 @@ class DefaultRaftCliRemote implements RaftRemote {
   async resolveMessage(messageId: string): Promise<RaftRemoteMessage> {
     const canonicalId = required(messageId, "Raft message id");
     const output = (await this.#run(["message", "resolve", canonicalId])).stdout.trimEnd();
-    const header = /^\[target=(\S+) msg=([^\s]+) time=(.+?) type=(human|agent|system)\] @([A-Za-z0-9_-]+)([\s\S]*)$/.exec(output);
-    if (!header) throw new Error("Raft message resolve returned an unsupported 0.0.17 format");
-    const [, target, shortId, localTime, senderKind, senderHandle, remainder] = header;
+    const { target, shortId, localTime, senderKind, senderHandle, remainder } = parseResolvedMessageHeader(output);
     if (!canonicalId.toLowerCase().startsWith(shortId!.toLowerCase())) {
       throw new Error("Raft message resolve returned a different message id");
     }
@@ -892,6 +895,27 @@ class DefaultRaftCliRemote implements RaftRemote {
       }));
     }
   }
+}
+
+function parseResolvedMessageHeader(output: string): {
+  target: string;
+  shortId: string;
+  localTime: string;
+  senderKind: "human" | "agent" | "system";
+  senderHandle: string;
+  remainder: string;
+} {
+  const header = /^\[target=(\S+) msg=([^\s]+) time=(.+?) type=(human|agent|system)\] @([A-Za-z0-9_-]+)([\s\S]*)$/.exec(output);
+  if (!header) throw new Error("Raft message resolve returned an unsupported 0.0.17 format");
+  const [, target, shortId, localTime, senderKind, senderHandle, remainder] = header;
+  return {
+    target: target!,
+    shortId: shortId!,
+    localTime: localTime!,
+    senderKind: senderKind as "human" | "agent" | "system",
+    senderHandle: senderHandle!,
+    remainder: remainder!,
+  };
 }
 
 export async function openRaftCliRemote(options: OpenRaftCliRemoteOptions): Promise<RaftRemote> {

@@ -45,7 +45,7 @@ test("validates a pinned Raft profile and resolves and sends through the 0.0.17 
   assert.ok(remote.drainInbox);
   const inbox = await remote.drainInbox();
   assert.deepEqual(inbox.entries, [{
-    receiptId: "dm:@yu:87654321",
+    receiptId: "dm:@loom:87654321",
     messageId: "87654321-1234-1234-1234-123456789abc",
     receivedAt: "2026-08-03T04:59:59.000Z",
   }]);
@@ -274,7 +274,7 @@ if (command[0] === "--version") {
   else if (id.startsWith("dddddddd")) process.stdout.write("[target=#commons:dddddddd msg=dddddddd time=2026-08-03 05:04:00 type=agent] @alex — Another agent: A followed reply\\n");
   else process.stdout.write("[target=dm:@yu msg=12345678 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: Can we inspect this: carefully?\\n");
 } else if (command[0] === "message" && command[1] === "check") {
-  process.stdout.write("[target=dm:@yu msg=87654321 time=2026-08-03 04:59:59 type=human] @yu: A missed message.\\n\\nNo more new messages.\\n");
+  process.stdout.write("[target=dm:@loom msg=87654321 time=2026-08-03 04:59:59 type=human] @yu: A missed message.\\n\\nNo more new messages.\\n");
 } else if (command[0] === "message" && command[1] === "read") {
   const target = command[command.indexOf("--target") + 1];
   const around = command[command.indexOf("--around") + 1];
