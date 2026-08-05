@@ -1,6 +1,6 @@
 # 06 - Use Known Raft Destinations
 
-Status: active
+Status: resolved
 Type: implementation
 Blocked by: none
 GitHub: issue #1
@@ -56,3 +56,15 @@ guidance already requires, rather than telling the Individual to use a place abs
 - Focused tests, `npm run typecheck`, `npm test`, `npm run build` and `git diff --check` pass.
 - One coherent commit is deployed to HaL after confirming no active Turn.
 - HaL completes the real cross-place send and reports the actual destination and result.
+
+## Current Evidence
+
+- Commit `4ae81e1` passed typecheck, build, `git diff --check` and all 325 tests, then deployed to
+  HaL as `0.0.0+g4ae81e19aa36` with Raft connected and clear Runtime queues.
+- Real task #3 entered as a top-level `#Loom-Main` Input. HaL opened and claimed it, then reported
+  only in the task reply thread, proving the optional thread Destination was available.
+- YuCreate then sent HaL a DM request. HaL explicitly selected the previously known top-level
+  `#Loom-Main` Destination, posted the requested result there instead of replying in DM, reported
+  the actual destination, moved the task to `in_review`, and marked it `done` after acceptance.
+- GitHub issue #1 is closed. First-contact member discovery remains an explicit non-goal rather
+  than an unverified part of this acceptance.

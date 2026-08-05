@@ -26,10 +26,10 @@ layer rather than for that Individual.
   multi-route selection remain outside this work rather than hidden scope for the Adapter.
 - The initial Interaction Channel, bounded thread context, existing-task actions and explicit
   attention management are accepted through Tickets 04 and 05.
-- Tickets 06 and 07 are the active closing units: deliberate sends to a bounded set of previously
-  known Raft places, and the complete local endpoint contract expected by the pinned bridge.
-  First-contact member discovery remains outside this work rather than being claimed by a partial
-  Destination list.
+- Tickets 06 and 07 close the current Raft round: deliberate sends to a bounded set of previously
+  known Raft places and the complete local endpoint contract expected by the pinned bridge are
+  implemented, deployed and accepted. First-contact member discovery remains outside this work
+  rather than being claimed by a partial Destination list.
 
 ## Confirmed Design Decisions
 
@@ -93,11 +93,11 @@ implementation contract or final prompt text:
   not a synchronized copy of Loom Identity. Neither profile changes nor
   Identity evolution automatically rewrite the other; any future profile
   mutation is a deliberate external action by the Individual or Operator.
-- The first runnable Channel exposes text Input/Delivery, generic `message`,
+- The accepted Channel exposes text Input/Delivery, generic `message`,
   `raft_places`, `raft_activity`, `raft_search`, `raft_open`, and the bounded
-  Orientation Snapshot. Reactions, task/reminder writes, membership/profile
-  changes, attention writes and attachments wait for real behavioral evidence
-  and their own recovery semantics.
+  Orientation Snapshot, plus existing-task and explicit attention actions.
+  Reactions, task creation, reminders, membership/profile changes and
+  attachments wait for real behavioral evidence and their own recovery semantics.
 
 These decisions keep Raft generic and channel-scoped. They do not make Raft a
 second Workspace, memory store, scheduler or transcript owner.
@@ -111,8 +111,8 @@ second Workspace, memory store, scheduler or transcript owner.
 | [03 - design Individual Raft interaction](issues/03-design-individual-raft-interaction.md) | resolved | Accepted the actor, attention, tool, reply and activation model. |
 | [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | resolved | Implementation, deployment and HaL's real multi-reply thread acceptance are complete. |
 | [05 - implement Raft task and attention actions](issues/05-implement-task-and-attention-actions.md) | resolved | Added existing-task and explicit unfollow/mute actions through durable Effects. |
-| [06 - use known Raft destinations](issues/06-use-known-raft-destinations.md) | active | Let the Individual explicitly send to a bounded recent set of previously observed places. |
-| [07 - complete the Raft bridge local endpoints](issues/07-complete-bridge-local-endpoints.md) | active | Return the pinned bridge's valid empty activity-drain contract instead of repeated 404s. |
+| [06 - use known Raft destinations](issues/06-use-known-raft-destinations.md) | resolved | Let the Individual explicitly send to a bounded recent set of previously observed places. |
+| [07 - complete the Raft bridge local endpoints](issues/07-complete-bridge-local-endpoints.md) | resolved | Return the pinned bridge's valid empty activity-drain contract instead of repeated 404s. |
 
 ## Accepted Implementation Evidence
 
@@ -131,9 +131,17 @@ second Workspace, memory store, scheduler or transcript owner.
 - Current Raft has no authoritative read command for one thread's follow state. `raft_open` must not
   synthesize that field from Loom's last action; the follow-state read remains blocked until Raft
   exposes it.
+- Commit `4ae81e1` added bounded durable known Destinations, kept the current Interaction place as
+  the sole implicit default, and exposed a top-level task message's reply thread without raw targets.
+- In real task #3, HaL opened and claimed from the top-level Input, reported in its reply thread,
+  then received a YuCreate DM and explicitly sent the requested result to the previously known
+  top-level `#Loom-Main` Destination. The task reached `done` after acceptance.
+- The same deployment completed the bridge's local activity-drain contract. Repeated live bridge
+  events now report `outcome=no_events` instead of HTTP 404 while Raft remains connected.
 
-These facts close Tickets 04 and 05 without claiming unrun fault injection or adding task creation,
-reminders, reactions, attachments, unrestricted history or a nonexistent thread follow-state read.
+These facts close Tickets 04 through 07 without claiming unrun fault injection, first-contact
+member discovery, task creation, reminders, reactions, attachments, unrestricted history or a
+nonexistent thread follow-state read.
 
 ## Non-goals
 

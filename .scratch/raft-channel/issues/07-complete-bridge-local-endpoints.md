@@ -1,6 +1,6 @@
 # 07 - Complete The Raft Bridge Local Endpoints
 
-Status: active
+Status: resolved
 Type: implementation
 Blocked by: none
 GitHub: issue #3
@@ -33,3 +33,11 @@ a wake.
 
 - Focused tests and the repository's complete checks pass.
 - Deployment removes new `agent_comms.activity_drain` failures while Raft messaging remains healthy.
+
+## Current Evidence
+
+- Commit `4ae81e1` passed the pinned bridge test and the repository's complete 325-test suite, then
+  deployed to HaL as `0.0.0+g4ae81e19aa36`.
+- After restart, repeated `agent_comms.activity_drain` bridge events reported `outcome=no_events`,
+  `drainedCount=0` and no error. Raft remained connected and normal wake/message work continued.
+- GitHub issue #3 is closed.
