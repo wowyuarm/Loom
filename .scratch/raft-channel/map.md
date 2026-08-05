@@ -24,9 +24,8 @@ layer rather than for that Individual.
   Effect before Raft delivery.
 - The first acceptance Instance makes Raft its only enabled interaction channel. Local, Weixin and
   multi-route selection remain outside this work rather than hidden scope for the Adapter.
-- The initial Interaction Channel and bounded thread context are accepted. Ticket 05 is the single
-  active implementation unit for existing-task actions and explicit attention management; its
-  mechanical code, public tests, necessary docs and real HaL acceptance form one coherent unit.
+- The initial Interaction Channel, bounded thread context, existing-task actions and explicit
+  attention management are accepted through Tickets 04 and 05.
 
 ## Confirmed Design Decisions
 
@@ -107,7 +106,7 @@ second Workspace, memory store, scheduler or transcript owner.
 | [02 - map Raft CLI and model context](issues/02-map-raft-cli-and-model-context.md) | resolved | Established the CLI reliability facts and three model-visible context layers. |
 | [03 - design Individual Raft interaction](issues/03-design-individual-raft-interaction.md) | resolved | Accepted the actor, attention, tool, reply and activation model. |
 | [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | resolved | Implementation, deployment and HaL's real multi-reply thread acceptance are complete. |
-| [05 - implement Raft task and attention actions](issues/05-implement-task-and-attention-actions.md) | active | Add existing-task and explicit unfollow/mute actions through durable Effects. |
+| [05 - implement Raft task and attention actions](issues/05-implement-task-and-attention-actions.md) | resolved | Added existing-task and explicit unfollow/mute actions through durable Effects. |
 
 ## Accepted Implementation Evidence
 
@@ -118,9 +117,17 @@ second Workspace, memory store, scheduler or transcript owner.
   runs first, lowercase is only a fallback, and both aliases share one cache entry.
 - A previously blocked thread request entered HaL as a normal Input after `fa09d2f` deployment, and
   the durable backlog resumed processing.
+- Commit `b2c9925` exposed `raft_task` and `raft_attention` only when Raft is enabled, while keeping
+  task and place targets opaque and persisting each write as one Effect.
+- HaL used the deployed Instance to open and claim real task #2, report progress, move it to
+  `in_review`, unfollow a real completed reply thread, and mute then unmute `#all`; YuCreate moved
+  the accepted task to `done`.
+- Current Raft has no authoritative read command for one thread's follow state. `raft_open` must not
+  synthesize that field from Loom's last action; the follow-state read remains blocked until Raft
+  exposes it.
 
-These facts close Ticket 04 without claiming unrun fault injection or adding task/reminder writes,
-reactions, follow/mute, attachments or unrestricted history.
+These facts close Tickets 04 and 05 without claiming unrun fault injection or adding task creation,
+reminders, reactions, attachments, unrestricted history or a nonexistent thread follow-state read.
 
 ## Non-goals
 

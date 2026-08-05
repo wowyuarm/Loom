@@ -1,6 +1,6 @@
 # 05 - Implement Raft Task and Attention Actions
 
-Status: active
+Status: resolved
 Type: implementation
 Blocked by: none
 
@@ -76,7 +76,7 @@ claim judgment quality. Implementation proceeds as vertical TDD slices.
 
 ## Current Evidence
 
-Mechanical implementation is complete pending deployment and real-use acceptance:
+Implementation, deployment and real-use acceptance are complete:
 
 - Main Agent creates the enabled Channel's six Raft tools per Turn and gives them only Effect
   preparation, while Orientation receives the same declared tool names.
@@ -87,5 +87,15 @@ Mechanical implementation is complete pending deployment and real-use acceptance
 - Pinned CLI and public Channel tests distinguish confirmed success, confirmed rejection and
   unknown outcomes; unknown remains on Runtime's existing reconciliation path.
 - `npm run typecheck`, all 319 tests, `npm run build`, and `git diff --check` passed locally.
+- Commit `b2c9925` was deployed to HaL's Raft-only Instance as
+  `0.0.0+gb2c9925c11d7`; the Host reported Raft connected with clear queues.
+- In real task #2, HaL opened and claimed the task, reported progress, moved it to `in_review`,
+  unfollowed a completed reply thread, and muted then unmuted `#all`. YuCreate accepted the result
+  and moved the task to `done`.
 
-No deployed or real HaL acceptance claim is made yet.
+The pinned Raft CLI has no read operation for one reply thread's current follow state:
+`thread` exposes only `unfollow`, `channel info` rejects thread targets, and `channel members`
+reports access/post authority rather than followers. Consequently `raft_open` does not claim a
+`follow` field. Adding that field is blocked until Raft exposes an authoritative single-thread
+follow query; Loom must not infer remote state from its last Effect because mentions or later posts
+can follow the thread again outside that Effect.

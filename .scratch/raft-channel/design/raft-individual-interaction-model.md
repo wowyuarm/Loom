@@ -503,30 +503,31 @@ CLI 已有命令整体暴露给 Main Agent；“Raft 能做”不等于“Loom �
 | 能力 | 当前状态 | 后续进入 Loom 前要解决什么 |
 | --- | --- | --- |
 | 发消息/回复 | 已实现，统一走 `message` | 继续以 Effect 固定 audience/destination；Raft 没有幂等键，`unknown` 不自动重发 |
-| task 读取与管理 | 未实现 | `raft_task` 需区分 list/claim/create/update，保存 owner/status 冲突和恢复事实；公共承诺不能退化成普通消息 |
+| task 读取与管理 | 已实现已有 task 的详情、claim/unclaim/status update | 创建与更广列表仍需独立需求；公共承诺保持 owner/status 冲突和恢复事实，不退化成普通消息 |
 | reminder | 未实现 | `raft_reminder` 要保持 Raft 外部时钟语义，不能接管 Loom scheduler；需定义触发、snooze/cancel 与重复处理 |
 | reaction | 未实现 | `raft_react` 是轻量但外部可见的 Effect，需明确授权、撤销和未知结果 |
-| 外部注意力管理 | 未实现 | `raft_attention` 的 join/leave/mute/unmute/unfollow 会改变未来可见内容，需定义 visibility 与恢复 |
+| 外部注意力管理 | 已实现 reply-thread unfollow 与 regular-channel mute/unmute | join/leave 未开放；单 thread follow 状态需等待 Raft 提供权威读口，不能从 Loom 最近 Effect 推断 |
 | profile / presence | 只在启动和读取时核验 | profile 是公开投影，不自动同步 Workspace Identity；修改必须是显式外部行动 |
 | membership / channel 管理 | 未实现 | 涉及 audience 与 server 权限，需独立授权，不能从普通 Interaction 推导管理员意图 |
 | attachment | 未实现 | 上传会把 Workspace 内容持久暴露给特定 audience，需复用不可变快照、大小限制与未知投递处理 |
 | 第三方 app / integration actions | 未实现 | 来自外部的内容仍是不可信 evidence；登录、approval card 和外部 action 需要另一层权限模型 |
 
-只读面也仍有扩展空间：当前 `raft_open` 不读取 task/reminder 对象，不展开 message 周边窗口，
-`raft_places` 不能无副作用列出 DM。未来应在真实 CLI 提供稳定读取合同后加深这四个工具，
+只读面也仍有扩展空间：当前 `raft_open` 已读取 task 对象与有界 reply-thread 上下文，但不读取
+reminder 对象或提供无界分页，`raft_places` 不能无副作用列出 DM。Raft 也尚未提供单 thread 的
+follow 状态读口。未来应在真实 CLI 提供稳定读取合同后加深这些工具，
 而不是让模型绕过 Adapter 直接运行带 credential 的完整 CLI。
 
 这些能力按真实需求逐项进入新的 ticket。真实运行可以优先观察 Individual 是否需要认领
 task、轻量确认、降低 thread/channel 噪音或分享文件，再分别设计参数、visibility、冲突、
 持久 Effect 和失败恢复；不能用“模型再调用一次”代替工程合同。
 
-## 11. 首版范围与回复落点
+## 11. 当前范围与回复落点
 
-首个可运行版本只包含：text Interaction、通用 `message`、`raft_places`、`raft_activity`、
-`raft_search`、`raft_open` 与 bounded Orientation Snapshot。`raft_open` 只读取当前 CLI 可可靠
-解析的 message、member 和 place 类引用，不提供统一 task/reminder 对象读取或消息周边分页。
-reaction、task/reminder writes、join/leave、mute/unmute、unfollow、profile changes、member
-management 和 attachments 均不开放。
+当前版本包含 text Interaction、通用 `message`、`raft_places`、`raft_activity`、
+`raft_search`、`raft_open`、`raft_task`、`raft_attention` 与 bounded Orientation Snapshot。
+`raft_open` 可读取当前 CLI 能可靠解析的 message、task、member、place 与有界 reply-thread
+上下文；不提供 reminder 读取、无界历史分页或 thread follow 状态。reaction、task 创建、
+reminder writes、join/leave、profile changes、member management 和 attachments 均不开放。
 
 回复落点遵循外部场所本身，而不是 Harness 的社交偏好：
 

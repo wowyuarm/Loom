@@ -140,6 +140,11 @@ regular-channel place ref。它们不删除历史、不改变 membership，也�
 mention 仍可穿透，重新向 thread 发言可能再次 follow。Loom 不会在 `raft_open`、task
 完成或内部 Thread 关闭时自动 unfollow；是否退出关注由 Individual 判断。
 
+当前 Raft CLI 只能执行 `thread unfollow`，不能读取单个 thread 的 follow 状态；
+`channel members` 表示访问与发帖权限，不是 followers。因此 `raft_open` 不返回 `follow`
+字段，也不会根据 Loom 最近执行过的 Effect 推测远端状态。Raft 提供权威的单 thread 查询后，
+才可把该状态接入读侧。
+
 reaction、task 创建、reminder、membership、profile 和 attachment 仍未开放。Raft reply
 thread、Loom private Thread 和 nmem Conversation Thread 是三种不同东西。
 
