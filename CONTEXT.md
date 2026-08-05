@@ -78,6 +78,10 @@ _Avoid_: runtime store transaction, workspace history, main-agent transaction, f
 Runtime 已持久接受、可以交给主 Agent 处理的一份外部来信或主动机会。它不是 prompt；一次处理失败后是否还能继续，取决于已经发生的事实。
 _Avoid_: message, prompt, queue item
 
+**Interaction Wave**:
+来自同一 Interaction Place、会被 Agent Individual 一起听完再回应的一组有界直接互动 Input。波次关闭后到达的 Input 属于下一波，Ambient channel activity 不属于 Interaction Wave。
+_Avoid_: message batch, debounce window, Turn
+
 **Active Segment**:
 Agent Individual 一段连续且仍可能继续变化的实际活动范围。它可以包含多个 Input 与 Turn，直到 Runtime 将其冻结为 Frozen Activity。
 _Avoid_: turn, context window, transcript branch

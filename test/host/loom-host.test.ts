@@ -98,6 +98,56 @@ test("accepts channel Input only through a running Host", async t => {
   assert.equal(host.status().instance.runtime.inputs[0]?.status, "pending");
 });
 
+test("groups the same interaction wave independently of channel source", async t => {
+  const root = await preparedInstanceRoot();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const host = await openLoomHost({
+    root,
+    machineTimeZone: "UTC",
+    now: () => new Date(now),
+  });
+  t.after(() => host.stop());
+  await host.start();
+
+  const interaction = {
+    routeRef: "shared-route",
+    signal: "direct_message" as const,
+    actor: { actorRef: "human" as const, kind: "human" as const },
+    place: {
+      placeRef: "shared-direct-place",
+      kind: "direct" as const,
+      visibility: "private" as const,
+    },
+    audience: { visibility: "private" as const, description: "private conversation" },
+    references: [],
+    destinations: [{
+      destinationRef: "shared-direct-place:top-level",
+      routeRef: "shared-route",
+      kind: "top_level" as const,
+    }],
+    defaultDestinationRef: "shared-direct-place:top-level",
+  };
+  await host.acceptInput({
+    source: "local",
+    sourceId: "local-message",
+    kind: "interaction",
+    payload: { text: "first" },
+    interaction,
+  });
+  now += 500;
+  await host.acceptInput({
+    source: "raft",
+    sourceId: "raft-message",
+    kind: "interaction",
+    payload: { text: "second" },
+    interaction,
+  });
+
+  const [first, second] = host.status().instance.runtime.inputs;
+  assert.ok(first?.interactionWaveId);
+  assert.equal(second?.interactionWaveId, first.interactionWaveId);
+});
+
 test("releases Instance Root ownership when Instance opening fails", async () => {
   const root = await preparedInstanceRoot();
   const configuration = path.join(root, "configuration", "instance.yaml");
@@ -305,6 +355,7 @@ test("runs one configured Weixin route through Host ingress and graceful stop", 
     sourceId: "91",
     kind: "interaction",
     payload: { text: "hello through Host" },
+    interactionWaveId: host.status().instance.runtime.inputs[0]?.interactionWaveId,
     status: "pending",
   });
   assert.equal(host.status().integrations?.weixin?.state, "connected");

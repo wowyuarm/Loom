@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js";
 import { initializeRuntimeSchema } from "./schema.js";
@@ -29,6 +30,8 @@ import type {
   ExecutionResult,
   FormOpportunityResult,
   InputKind,
+  InteractionDecisionReceipt,
+  InteractionDecisionRequest,
   InteractionViewOptions,
   InteractionViewPage,
   FrozenActivity,
@@ -77,6 +80,7 @@ interface InputRow {
   kind: InputKind;
   payload_json: string;
   interaction_json: string | null;
+  interaction_wave_id: string | null;
   occurred_at: string;
   status: RuntimeInputStatus["status"];
 }
@@ -200,6 +204,8 @@ const AFTER_CHAT_DELAY_MS = 5 * 60 * 1_000;
 const AFTER_CHAT_EXPIRY_MS = 20 * 60 * 1_000;
 const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
 const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
+const INTERACTION_WAVE_QUIET_MS = 1_500;
+const INTERACTION_WAVE_MAX_MS = 6_000;
 
 const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
   "main-agent",
@@ -224,6 +230,7 @@ interface ActiveExecution {
   execution: RunningExecution;
   finishing: boolean;
   steeringTail: Promise<void>;
+  interactionWaveId: string | undefined;
 }
 
 interface ActiveOrientation {
@@ -294,11 +301,14 @@ class SqliteRuntime implements Runtime {
       const existing = this.#findInput(input.source, input.sourceId);
       if (existing) return { disposition: "duplicate", inputId: existing.id } as const;
       const now = this.#now();
+      const interactionWaveId = input.kind === "interaction"
+        ? this.#joinInteractionWave(input, now, id)
+        : undefined;
       const result = this.#database.prepare(`
         INSERT OR IGNORE INTO inputs (
           id, source, source_id, kind, payload_json, interaction_json,
-          occurred_at, accepted_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+          interaction_wave_id, occurred_at, accepted_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
       `).run(
         id,
         input.source,
@@ -306,6 +316,7 @@ class SqliteRuntime implements Runtime {
         input.kind,
         JSON.stringify(input.payload),
         input.interaction ? JSON.stringify(input.interaction) : null,
+        interactionWaveId ?? null,
         input.occurredAt ?? now.toISOString(),
         now.toISOString(),
       );
@@ -315,7 +326,7 @@ class SqliteRuntime implements Runtime {
           this.#discardUnclaimedOpportunities(now);
         }
         this.#recordTransition("input", id, null, "pending", "accepted", now, null);
-        return { disposition: "accepted", inputId: id } as const;
+        return { disposition: "accepted", inputId: id, interactionWaveId } as const;
       }
       const duplicate = this.#findInput(input.source, input.sourceId);
       if (!duplicate) throw new Error("Input dedupe conflict did not preserve an existing input");
@@ -323,18 +334,82 @@ class SqliteRuntime implements Runtime {
     });
 
     if (accepted.disposition === "accepted") {
-      const accepted = { disposition: "accepted", inputId: id } as const;
       if (input.kind === "interaction") this.#activeOrientation?.supersede();
       const active = this.#active;
-      if (active && !active.finishing) {
+      if (active && !active.finishing
+        && input.kind === "interaction"
+        && (active.interactionWaveId === undefined
+          || active.interactionWaveId === accepted.interactionWaveId)) {
+        active.interactionWaveId ??= accepted.interactionWaveId;
         const steering = active.steeringTail.then(async () => {
           await this.#steerInput(active, id);
         });
         active.steeringTail = steering.catch(() => {});
       }
-      return accepted;
+      return { disposition: "accepted", inputId: id };
     }
     return accepted;
+  }
+
+  #joinInteractionWave(input: RuntimeInput, now: Date, inputId: string): string {
+    const scopeKey = JSON.stringify([
+      input.interaction?.routeRef ?? input.source,
+      input.interaction?.place.placeRef ?? input.source,
+    ]);
+    const open = this.#database.prepare(`
+      SELECT id, quiet_seal_at, max_seal_at
+      FROM interaction_waves
+      WHERE scope_key = ? AND status = 'open'
+    `).get(scopeKey) as unknown as {
+      id: string;
+      quiet_seal_at: string;
+      max_seal_at: string;
+    } | undefined;
+    if (open) {
+      const quietSealAt = Date.parse(open.quiet_seal_at);
+      const maxSealAt = Date.parse(open.max_seal_at);
+      if (now.getTime() < quietSealAt && now.getTime() < maxSealAt) {
+        const nextQuietSealAt = new Date(Math.min(
+          now.getTime() + INTERACTION_WAVE_QUIET_MS,
+          maxSealAt,
+        ));
+        this.#database.prepare(`
+          UPDATE interaction_waves
+          SET last_input_at = ?, quiet_seal_at = ?
+          WHERE id = ? AND status = 'open'
+        `).run(now.toISOString(), nextQuietSealAt.toISOString(), open.id);
+        return open.id;
+      }
+      this.#sealInteractionWave(open.id, now);
+    }
+
+    const waveId = `wave:${inputId}`;
+    const maxSealAt = new Date(now.getTime() + INTERACTION_WAVE_MAX_MS);
+    const quietSealAt = new Date(Math.min(
+      now.getTime() + INTERACTION_WAVE_QUIET_MS,
+      maxSealAt.getTime(),
+    ));
+    this.#database.prepare(`
+      INSERT INTO interaction_waves (
+        id, scope_key, opened_at, last_input_at, quiet_seal_at, max_seal_at, status
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open')
+    `).run(
+      waveId,
+      scopeKey,
+      now.toISOString(),
+      now.toISOString(),
+      quietSealAt.toISOString(),
+      maxSealAt.toISOString(),
+    );
+    return waveId;
+  }
+
+  #sealInteractionWave(waveId: string, now: Date): void {
+    this.#database.prepare(`
+      UPDATE interaction_waves
+      SET status = 'sealed', sealed_at = ?
+      WHERE id = ? AND status = 'open'
+    `).run(now.toISOString(), waveId);
   }
 
   async formOpportunity(): Promise<FormOpportunityResult> {
@@ -623,6 +698,11 @@ class SqliteRuntime implements Runtime {
               activity,
             ),
             prepareEffect: effect => this.#prepareEffect(claimed.turnId, claimed.fencingToken, effect),
+            commitInteractionDecision: decision => this.#commitInteractionDecision(
+              claimed.turnId,
+              claimed.fencingToken,
+              decision,
+            ),
           });
           const active = {
             turnId: claimed.turnId,
@@ -630,8 +710,20 @@ class SqliteRuntime implements Runtime {
             execution: running,
             finishing: false,
             steeringTail: Promise.resolve(),
+            interactionWaveId: claimed.interactionWaveId,
           };
           this.#active = active;
+          if (claimed.interactionWaveId) {
+            for (const inputId of this.#pendingInteractionWaveInputs(
+              claimed.interactionWaveId,
+              claimed.input.id,
+            )) {
+              const steering = active.steeringTail.then(async () => {
+                await this.#steerInput(active, inputId);
+              });
+              active.steeringTail = steering.catch(() => {});
+            }
+          }
           this.#startHeartbeat("turn", claimed.turnId, claimed.fencingToken);
           const result = await running.result;
           active.finishing = true;
@@ -992,7 +1084,7 @@ class SqliteRuntime implements Runtime {
 
   status(): RuntimeStatus {
     const rows = this.#database.prepare(`
-      SELECT id, source, source_id, kind, payload_json, interaction_json, status
+      SELECT id, source, source_id, kind, payload_json, interaction_json, interaction_wave_id, status
       FROM inputs
       ORDER BY accepted_at, id
     `).all() as unknown as InputRow[];
@@ -1045,6 +1137,7 @@ class SqliteRuntime implements Runtime {
         ...(row.interaction_json
           ? { interaction: JSON.parse(row.interaction_json) as NonNullable<RuntimeInputStatus["interaction"]> }
           : {}),
+        ...(row.interaction_wave_id ? { interactionWaveId: row.interaction_wave_id } : {}),
         status: row.status,
       })),
       turns: turnRows.map(row => {
@@ -2619,6 +2712,7 @@ class SqliteRuntime implements Runtime {
     fencingToken: number;
     recordingDay: string;
     input: ExecutionInput;
+    interactionWaveId?: string;
     executionState?: JsonValue;
   } | undefined {
     return this.#transaction(() => {
@@ -2626,12 +2720,14 @@ class SqliteRuntime implements Runtime {
       const existingSegment = this.#readActiveSegment();
       if (existingSegment?.status === "closing") return undefined;
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json, interaction_json, occurred_at
+        SELECT id, kind, payload_json, interaction_json, interaction_wave_id, occurred_at
         FROM inputs
         WHERE status = 'pending'
         ORDER BY accepted_at, id
         LIMIT 1
-      `).get() as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "interaction_json" | "occurred_at"> | undefined;
+      `).get() as unknown as Pick<InputRow,
+        "id" | "kind" | "payload_json" | "interaction_json" | "interaction_wave_id" | "occurred_at"
+      > | undefined;
       if (!input) return undefined;
 
       const now = this.#now();
@@ -2694,6 +2790,7 @@ class SqliteRuntime implements Runtime {
           occurredAt: input.occurred_at,
           inclusionPosition: 1,
         },
+        ...(input.interaction_wave_id ? { interactionWaveId: input.interaction_wave_id } : {}),
         ...this.#readExecutionState(),
       };
     });
@@ -2956,41 +3053,135 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #prepareEffect(turnId: string, fencingToken: number, effect: EffectRequest): EffectReceipt {
-    if (!effect.kind) throw new Error("Effect requires a kind");
+  async #commitInteractionDecision(
+    turnId: string,
+    fencingToken: number,
+    decision: InteractionDecisionRequest,
+  ): Promise<InteractionDecisionReceipt> {
+    let observedAt = this.#now().getTime();
+    while (true) {
+      observedAt = Math.max(observedAt, this.#now().getTime());
+      const waitUntil = this.#transaction(() => {
+        const wave = this.#database.prepare(`
+          SELECT interaction_waves.id, interaction_waves.quiet_seal_at,
+                 interaction_waves.max_seal_at, interaction_waves.status
+          FROM turn_inputs
+          JOIN inputs ON inputs.id = turn_inputs.input_id
+          JOIN interaction_waves ON interaction_waves.id = inputs.interaction_wave_id
+          WHERE turn_inputs.turn_id = ?
+          ORDER BY turn_inputs.position
+          LIMIT 1
+        `).get(turnId) as unknown as {
+          id: string;
+          quiet_seal_at: string;
+          max_seal_at: string;
+          status: "open" | "sealed";
+        } | undefined;
+        if (!wave || wave.status === "sealed") return undefined;
+        const dueAt = Math.min(Date.parse(wave.quiet_seal_at), Date.parse(wave.max_seal_at));
+        if (observedAt >= dueAt) {
+          this.#sealInteractionWave(wave.id, new Date(observedAt));
+          return undefined;
+        }
+        return dueAt;
+      });
+      if (waitUntil === undefined) break;
+      await delay(Math.max(0, waitUntil - observedAt));
+      observedAt = waitUntil;
+    }
+
+    const active = this.#active;
+    if (active?.turnId === turnId) await active.steeringTail;
+
     return this.#transaction(() => {
       const turn = this.#database.prepare(`
         SELECT id FROM turns
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
       `).get(turnId, fencingToken, this.#ownerId);
-      if (!turn) throw new Error(`Turn ${turnId} no longer accepts Effects from lease ${fencingToken}`);
-      const position = this.#database.prepare(`
-        SELECT MAX(position) AS position
+      if (!turn) {
+        throw new Error(`Turn ${turnId} no longer accepts an interaction decision from lease ${fencingToken}`);
+      }
+      const wave = this.#database.prepare(`
+        SELECT interaction_waves.id, interaction_waves.status
         FROM turn_inputs
-        WHERE turn_id = ? AND inclusion_status = 'included'
-      `).get(turnId) as unknown as { position: number | null };
-      if (position.position === null) throw new Error(`Turn ${turnId} has no included Input`);
-      const now = this.#now();
-      const effectId = this.#nextId();
-      this.#database.prepare(`
-        INSERT INTO effects (
-          id, turn_id, kind, payload_json, route_ref, destination_ref,
-          input_position, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-      `).run(
-        effectId,
-        turnId,
-        effect.kind,
-        JSON.stringify(effect.payload),
-        effect.routeRef ?? null,
-        effect.destinationRef ?? null,
-        position.position,
-        now.toISOString(),
-      );
-      this.#touchSegmentForTurn(turnId, now);
-      this.#recordTransition("effect", effectId, null, "pending", "accepted", now, fencingToken);
-      return { effectId };
+        JOIN inputs ON inputs.id = turn_inputs.input_id
+        JOIN interaction_waves ON interaction_waves.id = inputs.interaction_wave_id
+        WHERE turn_inputs.turn_id = ?
+        ORDER BY turn_inputs.position
+        LIMIT 1
+      `).get(turnId) as unknown as { id: string; status: "open" | "sealed" } | undefined;
+      if (wave) {
+        if (wave.status !== "sealed") throw new Error("Interaction wave is not sealed");
+        const coverage = this.#database.prepare(`
+          SELECT
+            COUNT(*) AS total,
+            SUM(CASE
+              WHEN inputs.status = 'consumed' OR EXISTS (
+                SELECT 1
+                FROM turn_inputs
+                WHERE turn_inputs.input_id = inputs.id
+                  AND turn_inputs.turn_id = ?
+                  AND turn_inputs.inclusion_status = 'included'
+              ) THEN 1
+              ELSE 0
+            END) AS included
+          FROM inputs
+          WHERE inputs.interaction_wave_id = ?
+        `).get(turnId, wave.id) as unknown as { total: number; included: number };
+        if (coverage.included !== coverage.total) {
+          throw new Error("Interaction wave has newer Inputs; review them before replying");
+        }
+      }
+      if (decision.outcome === "no_reply") return { outcome: "no_reply" };
+      return {
+        outcome: "send",
+        effect: this.#prepareEffectInTransaction(turnId, fencingToken, decision.effect),
+      };
     });
+  }
+
+  #prepareEffect(turnId: string, fencingToken: number, effect: EffectRequest): EffectReceipt {
+    if (!effect.kind) throw new Error("Effect requires a kind");
+    return this.#transaction(() => this.#prepareEffectInTransaction(turnId, fencingToken, effect));
+  }
+
+  #prepareEffectInTransaction(
+    turnId: string,
+    fencingToken: number,
+    effect: EffectRequest,
+  ): EffectReceipt {
+    if (!effect.kind) throw new Error("Effect requires a kind");
+    const turn = this.#database.prepare(`
+      SELECT id FROM turns
+      WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+    `).get(turnId, fencingToken, this.#ownerId);
+    if (!turn) throw new Error(`Turn ${turnId} no longer accepts Effects from lease ${fencingToken}`);
+    const position = this.#database.prepare(`
+      SELECT MAX(position) AS position
+      FROM turn_inputs
+      WHERE turn_id = ? AND inclusion_status = 'included'
+    `).get(turnId) as unknown as { position: number | null };
+    if (position.position === null) throw new Error(`Turn ${turnId} has no included Input`);
+    const now = this.#now();
+    const effectId = this.#nextId();
+    this.#database.prepare(`
+      INSERT INTO effects (
+        id, turn_id, kind, payload_json, route_ref, destination_ref,
+        input_position, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+    `).run(
+      effectId,
+      turnId,
+      effect.kind,
+      JSON.stringify(effect.payload),
+      effect.routeRef ?? null,
+      effect.destinationRef ?? null,
+      position.position,
+      now.toISOString(),
+    );
+    this.#touchSegmentForTurn(turnId, now);
+    this.#recordTransition("effect", effectId, null, "pending", "accepted", now, fencingToken);
+    return { effectId };
   }
 
   #recordToolActivity(
@@ -3319,6 +3510,15 @@ class SqliteRuntime implements Runtime {
     } catch {
       this.#rejectPreparedSteer(active.turnId, inputId);
     }
+  }
+
+  #pendingInteractionWaveInputs(waveId: string, firstInputId: string): string[] {
+    return (this.#database.prepare(`
+      SELECT id
+      FROM inputs
+      WHERE interaction_wave_id = ? AND status = 'pending' AND id <> ?
+      ORDER BY accepted_at, id
+    `).all(waveId, firstInputId) as unknown as Array<{ id: string }>).map(input => input.id);
   }
 
   #rejectPreparedSteer(turnId: string, inputId: string): void {

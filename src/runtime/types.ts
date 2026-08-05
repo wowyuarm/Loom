@@ -300,6 +300,14 @@ export interface EffectReceipt {
   effectId: string;
 }
 
+export type InteractionDecisionRequest =
+  | { outcome: "send"; effect: EffectRequest }
+  | { outcome: "no_reply" };
+
+export type InteractionDecisionReceipt =
+  | { outcome: "send"; effect: EffectReceipt }
+  | { outcome: "no_reply" };
+
 export interface VerifiedToolActivity {
   toolCallId: string;
   toolName: string;
@@ -313,6 +321,9 @@ export interface TurnControl {
   replaceExecutionState(expected: JsonValue, replacement: JsonValue): void;
   recordToolActivity(activity: VerifiedToolActivity): void;
   prepareEffect(effect: EffectRequest): EffectReceipt;
+  commitInteractionDecision?(
+    decision: InteractionDecisionRequest,
+  ): Promise<InteractionDecisionReceipt>;
 }
 
 export interface DeliveryAttemptRequest {
@@ -355,6 +366,7 @@ export interface RuntimeInputStatus {
   kind: InputKind;
   payload: JsonValue;
   interaction?: InteractionContext;
+  interactionWaveId?: string;
   status: "pending" | "active" | "consumed" | "blocked";
 }
 

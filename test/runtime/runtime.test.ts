@@ -15,6 +15,7 @@ import {
   type EffectRequest,
   type JsonValue,
   type FrozenActivity,
+  type InteractionContext,
   type OutboundDelivery,
   type RunningExecution,
   type TranscriptAnchor,
@@ -34,6 +35,23 @@ function readTestExecutionState(value: JsonValue | undefined): TestExecutionStat
 
 function writeTestExecutionState(value: TestExecutionState): JsonValue {
   return JSON.parse(JSON.stringify(value)) as JsonValue;
+}
+
+function interactionContext(placeRef: string): InteractionContext {
+  return {
+    routeRef: "test-route",
+    signal: "direct_message",
+    actor: { actorRef: "human", kind: "human" },
+    place: { placeRef, kind: "direct", visibility: "private" },
+    audience: { visibility: "private", description: "private conversation" },
+    references: [],
+    destinations: [{
+      destinationRef: `${placeRef}:top-level`,
+      routeRef: "test-route",
+      kind: "top_level",
+    }],
+    defaultDestinationRef: `${placeRef}:top-level`,
+  };
 }
 
 function deferred<T>(): {
@@ -105,6 +123,16 @@ class HeldExecution implements AgentExecution {
   }
 }
 
+class InteractionDecisionExecution extends HeldExecution {
+  readonly control = deferred<TurnControl>();
+
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    this.control.resolve(control);
+    return running;
+  }
+}
+
 class NotStartedExecution implements AgentExecution {
   readonly started = deferred<TurnRequest>();
   readonly finished = deferred<Awaited<RunningExecution["result"]>>();
@@ -147,9 +175,11 @@ class ToolThenHoldExecution extends HeldExecution {
 class SlowSteeringExecution extends HeldExecution {
   readonly steeringStarted = deferred<Parameters<RunningExecution["steer"]>[0]>();
   readonly steeringFinished = deferred<Awaited<ReturnType<RunningExecution["steer"]>>>();
+  readonly control = deferred<TurnControl>();
 
   override start(request: TurnRequest, control: TurnControl): RunningExecution {
     const running = super.start(request, control);
+    this.control.resolve(control);
     return {
       ...running,
       steer: async input => {
@@ -157,6 +187,23 @@ class SlowSteeringExecution extends HeldExecution {
         this.steeringStarted.resolve(input);
         await this.steeringFinished.promise;
         control.includeInput(input.id);
+      },
+    };
+  }
+}
+
+class QueuedSteeringExecution extends HeldExecution {
+  readonly queued = deferred<Parameters<RunningExecution["steer"]>[0]>();
+  readonly control = deferred<TurnControl>();
+
+  override start(request: TurnRequest, control: TurnControl): RunningExecution {
+    const running = super.start(request, control);
+    this.control.resolve(control);
+    return {
+      ...running,
+      steer: async input => {
+        this.steered.push(input);
+        this.queued.resolve(input);
       },
     };
   }
@@ -919,6 +966,7 @@ test("accepts a source input exactly once", async t => {
       sourceId: "message-1",
       kind: "interaction",
       payload: { text: "hello" },
+      interactionWaveId: "wave:input-1",
       status: "pending",
     },
   ]);
@@ -1461,7 +1509,7 @@ test("renews the lease while a main Agent Turn is still running", async t => {
 test("accepts a live Input without waiting for Agent Execution to include it", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-"));
   const execution = new SlowSteeringExecution();
-  let now = new Date("2026-07-20T02:59:00.000Z");
+  let now = new Date("2026-07-20T02:59:59.750Z");
   const runtime = openRuntime({
     root,
     execution,
@@ -1478,7 +1526,7 @@ test("accepts a live Input without waiting for Agent Execution to include it", a
   });
   const advance = runtime.advance();
   const turn = await execution.started.promise;
-  now = new Date("2026-07-20T03:01:00.000Z");
+  now = new Date("2026-07-20T03:00:00.250Z");
 
   const acceptance = runtime.acceptInput({
     source: "test-channel",
@@ -1499,6 +1547,388 @@ test("accepts a live Input without waiting for Agent Execution to include it", a
 
   assert.equal(observed, "accepted");
   assert.equal(turn.recordingDay, "2026-07-19");
+});
+
+test("commits a reply only after every Input in the current interaction wave is included", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 500;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(second.inputId) === true);
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: {
+      kind: "message",
+      payload: { text: "reply to both" },
+      routeRef: "default",
+    },
+  });
+
+  assert.equal(decision.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("waits for the 1.5 second quiet window before committing a reply", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-wait-"));
+  const execution = new InteractionDecisionExecution();
+  const now = new Date("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => now });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  const control = await execution.control.promise;
+  const decision = control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "default" },
+  });
+
+  assert.equal(await Promise.race([
+    decision.then(() => "committed" as const),
+    delay(50).then(() => "waiting" as const),
+  ]), "waiting");
+  assert.equal((await decision).outcome, "send");
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("steers same-wave Inputs that were already pending when the Turn starts", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-pending-interaction-wave-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  const first = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  now += 500;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(second.inputId) === true);
+  assert.deepEqual(runtime.status().turns[0]?.inputIds, [first.inputId, second.inputId]);
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "default" },
+  });
+  assert.equal(decision.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("commits a wave after retrying an Input from a failed Turn", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-retried-interaction-wave-"));
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const failing = openRuntime({
+    root,
+    now: () => new Date(now),
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.reject(new Error("provider failed")),
+          steer: async input => control.includeInput(input.id),
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  await failing.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "retry me" },
+  });
+  await assert.rejects(failing.advance(), /provider failed/);
+  failing.close();
+
+  now += 2_000;
+  const execution = new InteractionDecisionExecution();
+  const recovered = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => recovered.close());
+  const advancing = recovered.advance();
+  const turn = await execution.started.promise;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "recovered" }, routeRef: "default" },
+  });
+  assert.equal(decision.outcome, "send");
+  assert.equal(recovered.status().effects[0]?.coveredInputPosition, 1);
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("commits the unfinished part of a wave after an earlier Input has durable coverage", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-partly-covered-interaction-wave-"));
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const started = deferred<TurnRequest>();
+  const failed = deferred<Awaited<RunningExecution["result"]>>();
+  const firstRuntime = openRuntime({
+    root,
+    now: () => new Date(now),
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        control.recordToolActivity({
+          toolCallId: "durable-action",
+          toolName: "write",
+          callArguments: { path: "notes/result.md" },
+          result: { content: [{ type: "text", text: "wrote file" }] },
+        });
+        started.resolve(request);
+        return {
+          result: failed.promise,
+          steer: async input => control.includeInput(input.id),
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  await firstRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "do the work" },
+  });
+  const firstAdvance = firstRuntime.advance();
+  await started.promise;
+  now += 500;
+  const second = await firstRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "one more detail" },
+  });
+  await waitUntil(() => firstRuntime.status().inputs.find(input => input.id === second.inputId)?.status === "active");
+  failed.reject(new Error("provider failed after the durable action"));
+  await assert.rejects(firstAdvance, /provider failed after the durable action/);
+  firstRuntime.close();
+
+  now += 1_500;
+  const execution = new InteractionDecisionExecution();
+  const recovered = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => recovered.close());
+  const advancing = recovered.advance();
+  const turn = await execution.started.promise;
+  assert.deepEqual(turn.inputs.map(input => input.id), [second.inputId]);
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "finished" }, routeRef: "default" },
+  });
+  assert.equal(decision.outcome, "send");
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("rejects a stale reply while a newer Input in the same wave is still queued", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-stale-interaction-reply-"));
+  const execution = new QueuedSteeringExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  now += 500;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await execution.queued.promise;
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  await assert.rejects(control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "stale" }, routeRef: "default" },
+  }), /review them before replying/);
+  assert.equal(runtime.status().effects.length, 0);
+
+  control.includeInput(second.inputId);
+  await waitUntil(() => runtime.status().inputs.find(input => input.id === second.inputId)?.status === "active");
+  const committed = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "fresh" }, routeRef: "default" },
+  });
+  assert.equal(committed.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("starts a new wave after 1.5 seconds of quiet", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-quiet-"));
+  const execution = new HeldExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 1_499;
+  const sameWave = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(sameWave.inputId) === true);
+
+  now += 1_500;
+  const nextWave = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-3",
+    kind: "interaction",
+    payload: { text: "third" },
+  });
+  await delay(10);
+  assert.equal(runtime.status().turns[0]?.inputIds.includes(nextWave.inputId), false);
+  assert.equal(runtime.status().inputs.find(input => input.id === nextWave.inputId)?.status, "pending");
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("seals a continuously extended wave after 6 seconds", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-maximum-"));
+  const execution = new HeldExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-0",
+    kind: "interaction",
+    payload: { text: "start" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  for (let index = 1; index <= 5; index += 1) {
+    now += 1_000;
+    const accepted = await runtime.acceptInput({
+      source: "test-channel",
+      sourceId: `message-${index}`,
+      kind: "interaction",
+      payload: { text: `part ${index}` },
+    });
+    await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(accepted.inputId) === true);
+  }
+
+  now += 1_000;
+  const nextWave = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-6",
+    kind: "interaction",
+    payload: { text: "after maximum" },
+  });
+  await delay(10);
+  assert.equal(runtime.status().turns[0]?.inputIds.includes(nextWave.inputId), false);
+  assert.equal(runtime.status().inputs.find(input => input.id === nextWave.inputId)?.status, "pending");
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("does not merge simultaneous Inputs from different interaction places", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-place-"));
+  const execution = new HeldExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first place" },
+    interaction: interactionContext("place-1"),
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 500;
+  const otherPlace = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "other place" },
+    interaction: interactionContext("place-2"),
+  });
+  await delay(10);
+  assert.equal(runtime.status().turns[0]?.inputIds.includes(otherPlace.inputId), false);
+  assert.equal(runtime.status().inputs.find(input => input.id === otherPlace.inputId)?.status, "pending");
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
 test("does not replay an input after its Turn created an Effect", async t => {

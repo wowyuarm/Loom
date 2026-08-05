@@ -12,11 +12,27 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (interactionMigrated.user_version === 14) migrateVersion14(database);
   const statusMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (statusMigrated.user_version === 15) migrateVersion15(database);
+  const waveMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (waveMigrated.user_version === 16) migrateVersion16(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
+
+    CREATE TABLE IF NOT EXISTS interaction_waves (
+      id TEXT PRIMARY KEY,
+      scope_key TEXT NOT NULL,
+      opened_at TEXT NOT NULL,
+      last_input_at TEXT NOT NULL,
+      quiet_seal_at TEXT NOT NULL,
+      max_seal_at TEXT NOT NULL,
+      sealed_at TEXT,
+      status TEXT NOT NULL CHECK (status IN ('open', 'sealed'))
+    ) STRICT;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS one_open_interaction_wave_per_scope
+    ON interaction_waves (scope_key) WHERE status = 'open';
 
     CREATE TABLE IF NOT EXISTS inputs (
       id TEXT PRIMARY KEY,
@@ -25,6 +41,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       kind TEXT NOT NULL CHECK (kind IN ('interaction', 'opportunity', 'continuation')),
       payload_json TEXT NOT NULL,
       interaction_json TEXT,
+      interaction_wave_id TEXT REFERENCES interaction_waves(id),
       occurred_at TEXT NOT NULL,
       accepted_at TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'consumed', 'blocked')),
@@ -249,9 +266,62 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 16;
+    PRAGMA user_version = 17;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion16(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS interaction_waves (
+        id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        opened_at TEXT NOT NULL,
+        last_input_at TEXT NOT NULL,
+        quiet_seal_at TEXT NOT NULL,
+        max_seal_at TEXT NOT NULL,
+        sealed_at TEXT,
+        status TEXT NOT NULL CHECK (status IN ('open', 'sealed'))
+      ) STRICT;
+      CREATE UNIQUE INDEX IF NOT EXISTS one_open_interaction_wave_per_scope
+      ON interaction_waves (scope_key) WHERE status = 'open';
+    `);
+    const hasWaveColumn = (database.prepare("PRAGMA table_info(inputs)").all() as unknown as Array<{
+      name: string;
+    }>).some(column => column.name === "interaction_wave_id");
+    if (!hasWaveColumn) {
+      database.exec(`
+        ALTER TABLE inputs
+        ADD COLUMN interaction_wave_id TEXT REFERENCES interaction_waves(id)
+      `);
+    }
+    database.exec(`
+      INSERT OR IGNORE INTO interaction_waves (
+        id, scope_key, opened_at, last_input_at, quiet_seal_at, max_seal_at, sealed_at, status
+      )
+      SELECT
+        'legacy:' || id,
+        'legacy:' || id,
+        accepted_at,
+        accepted_at,
+        accepted_at,
+        accepted_at,
+        accepted_at,
+        'sealed'
+      FROM inputs
+      WHERE kind = 'interaction' AND interaction_wave_id IS NULL;
+      UPDATE inputs
+      SET interaction_wave_id = 'legacy:' || id
+      WHERE kind = 'interaction' AND interaction_wave_id IS NULL;
+      PRAGMA user_version = 17;
+      COMMIT;
+    `);
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion15(database: DatabaseSync): void {

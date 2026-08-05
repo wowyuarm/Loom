@@ -79,6 +79,7 @@ export function createMessageTool(options: {
         if (params.after_send === "continue") {
           throw new Error("message no_reply cannot continue the Turn");
         }
+        await options.control.commitInteractionDecision?.({ outcome: "no_reply" });
         options.decision.noReply = true;
         return {
           content: [{ type: "text" as const, text: "No outbound Effect was created." }],
@@ -108,7 +109,7 @@ export function createMessageTool(options: {
         options.interactionDefaultDestination?.(),
         options.defaultDestination,
       );
-      const receipt = options.control.prepareEffect({
+      const effect = {
         kind: "message",
         payload: {
           ...(text ? { text } : {}),
@@ -116,7 +117,12 @@ export function createMessageTool(options: {
         },
         routeRef: destination?.routeRef ?? options.routeRef,
         ...(destination ? { destinationRef: destination.destinationRef } : {}),
-      });
+      };
+      const committed = options.control.commitInteractionDecision
+        ? await options.control.commitInteractionDecision({ outcome: "send", effect })
+        : { outcome: "send" as const, effect: options.control.prepareEffect(effect) };
+      if (committed.outcome !== "send") throw new Error("Message send was not committed");
+      const receipt = committed.effect;
       options.decision.sent += 1;
       const afterSend = params.after_send ?? "end_turn";
       return {

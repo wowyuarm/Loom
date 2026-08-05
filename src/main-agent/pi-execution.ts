@@ -651,6 +651,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
       sessionManager,
       settingsManager,
     });
+    session.agent.steeringMode = "all";
     await session.bindExtensions({});
     const finalSkills = resourceLoader.getSkills();
     return {
