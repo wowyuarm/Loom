@@ -77,3 +77,34 @@ Loom 为 Turn 和 Delivery 存 lease owner、fencing token 和过期时间。[`s
 
 - 没有证据表明 Loom 应与 Xi 保持同一个 JSONL 文件结构、队列 ID 格式或 daemon tick 实现；Loom 的 ADR 已明确否定这种兼容目标。
 - 没有证据表明 Xi 的单独 outbox `failed` 状态等价于 Loom 的 `unknown`。Xi 的 `failed` 覆盖 sink 缺失和异常；Loom 由 Integration 明确报告 `not_sent` 或 `unknown`。[`src/channels/outbound.ts:93`](/home/yu/projects/Xi/src/channels/outbound.ts:93)、[`src/channels/outbound.ts:120`](/home/yu/projects/Xi/src/channels/outbound.ts:120)、[`src/runtime/types.ts:328`](/home/yu/projects/Loom/src/runtime/types.ts:328)。
+
+## GitHub Issue #4 延伸：器官、来信与外部系统的先后关系
+
+Issue [#4](https://github.com/wowyuarm/Loom/issues/4) 记录的不是单独的冻结问题。顺着当前执行路径看，能确认以下链条。
+
+### 已确认：来信不会丢，但不能抢占已经开始的器官
+
+Host 收到 channel 来信时先调用 `Runtime.acceptInput()`，持久写入后立刻唤醒 Process Driver。[`src/instance/process-driver.ts:76`](/home/yu/projects/Loom/src/instance/process-driver.ts:76)、[`src/instance/process-driver.ts:77`](/home/yu/projects/Loom/src/instance/process-driver.ts:77)。但 wake 只能取消 Driver 的等待；Driver 正在 `await instance.runOnce()` 时不会被取消。[`src/instance/process-driver.ts:120`](/home/yu/projects/Loom/src/instance/process-driver.ts:120)、[`src/instance/process-driver.ts:130`](/home/yu/projects/Loom/src/instance/process-driver.ts:130)、[`src/instance/process-driver.ts:171`](/home/yu/projects/Loom/src/instance/process-driver.ts:171)。
+
+Life Recorder 被领取后会在同一个 `runOnce()` 内等待完整的模型执行；失败才把 Activity 从 `recording` 还原为 `pending`。[`src/runtime/runtime.ts:2450`](/home/yu/projects/Loom/src/runtime/runtime.ts:2450)、[`src/runtime/runtime.ts:2462`](/home/yu/projects/Loom/src/runtime/runtime.ts:2462)、[`src/runtime/runtime.ts:2574`](/home/yu/projects/Loom/src/runtime/runtime.ts:2574)。因此：
+
+- 已开始的 Recorder、Thread Maintainer 或其他维护运行可以让新来信等待；这正是 [#2](https://github.com/wowyuarm/Loom/issues/2) 要解决的执行顺序。
+- 来信在等待期间仍是 durable `pending` Input，维护运行结束后 `advance()` 会先领取 Input，后处理 Activity/Thread maintenance。[`src/runtime/runtime.ts:550`](/home/yu/projects/Loom/src/runtime/runtime.ts:550)、[`src/runtime/runtime.ts:563`](/home/yu/projects/Loom/src/runtime/runtime.ts:563)、[`src/runtime/runtime.ts:594`](/home/yu/projects/Loom/src/runtime/runtime.ts:594)、[`src/runtime/runtime.ts:685`](/home/yu/projects/Loom/src/runtime/runtime.ts:685)。
+
+这是**交互延迟风险，不是丢消息或重复消息的证据**。当前需要决定的是：维护运行是否应有独立时限、何时可中断，以及中断后什么 evidence 可以保留并安全重试。不能仅靠增加 worker 或缩短全局 Activity 上限来替代这项决定。
+
+### 已确认：Activity 上限不能绕过同一执行通道的忙碌状态
+
+`closeActivity()` 在 Main Agent、Delivery、冻结、Recorder、Thread Maintainer、运行中的 Turn 或 pending Input 任一存在时只返回 `busy`。[`src/runtime/runtime.ts:824`](/home/yu/projects/Loom/src/runtime/runtime.ts:824)、[`src/runtime/runtime.ts:829`](/home/yu/projects/Loom/src/runtime/runtime.ts:829)。Scheduler 到达 idle/max 时间后收到 `busy` 会直接结束本轮。[`src/runtime/scheduler.ts:207`](/home/yu/projects/Loom/src/runtime/scheduler.ts:207)、[`src/runtime/scheduler.ts:226`](/home/yu/projects/Loom/src/runtime/scheduler.ts:226)。
+
+所以 #4 的表象会连带影响后续 Attention 和 Memory Reflection：它们只在 Runtime 确认空闲、没有 Active Segment、pending Input、pending Delivery 或待记录 Activity 时开始。[`src/runtime/runtime.ts:704`](/home/yu/projects/Loom/src/runtime/runtime.ts:704)、[`src/runtime/runtime.ts:1451`](/home/yu/projects/Loom/src/runtime/runtime.ts:1451)。这条严格的先后关系保护材料不被半段活动污染，但当前没有说明“是谁在占用”或“预计何时释放”。
+
+### 已确认：状态不是完全没有，但缺少占用原因
+
+`loom status` 已经给出每个 Agent 的最近运行状态和 Runtime 中 pending Input/Effect 的数量。[`src/host/loom-host.ts:122`](/home/yu/projects/Loom/src/host/loom-host.ts:122)、[`src/runtime/runtime.ts:1191`](/home/yu/projects/Loom/src/runtime/runtime.ts:1191)、[`docs/operations/reference/status-and-diagnosis.md:23`](/home/yu/projects/Loom/docs/operations/reference/status-and-diagnosis.md:23)。但它没有把 `closeActivity: busy` 拆成具体原因，也没有给正在运行的器官一个预算/超时信息。这比“没有 status”窄得多，也更适合作为 #4 的验收边界。
+
+### 外部系统的边界
+
+Raft 等 channel 可以在 Driver 被维护工作占住时完成来信的 durable accept；它们不能让 Input 立即开始处理。nmem 的投影在 scheduler 返回后才运行，且只投影本地已成立的 evidence，失败不应改变本地 Activity 或 Turn 的成立。[`src/instance/loom-instance.ts:139`](/home/yu/projects/Loom/src/instance/loom-instance.ts:139)、[`src/instance/loom-instance.ts:144`](/home/yu/projects/Loom/src/instance/loom-instance.ts:144)、[`CONTEXT.md:126`](/home/yu/projects/Loom/CONTEXT.md:126)。
+
+因此后续设计应保持三条不变：外部系统不能抢走 Runtime 的事实权；新来信可持久接受；任何对器官的中断都不能让半写入材料、未确认 Delivery 或未说明的 Input 状态被当作完成。
