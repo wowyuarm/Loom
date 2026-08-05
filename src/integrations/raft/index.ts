@@ -6,6 +6,8 @@ export {
   type RaftChannel,
   type RaftChannelStatus,
   type RaftRemoteActivity,
+  type RaftInboxBatch,
+  type RaftInboxEntry,
   type RaftRemoteOpenResult,
   type RaftRemotePage,
   type RaftRemotePlace,

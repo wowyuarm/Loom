@@ -1,10 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 import type {
+  RaftInboxBatch,
   RaftRemote,
   RaftRemoteActivity,
   RaftRemoteMessage,
@@ -37,10 +39,19 @@ interface RaftProfile {
 }
 
 interface HistoryMessage {
+  messageId: string;
   occurredAt: string;
   senderName: string;
   senderType: "human" | "agent" | "system";
   remainder: string;
+}
+
+interface InboxSpoolEntry {
+  receiptId: string;
+  target: string;
+  shortId: string;
+  receivedAt: string;
+  messageId?: string;
 }
 
 class DefaultRaftCliRemote implements RaftRemote {
@@ -157,6 +168,37 @@ class DefaultRaftCliRemote implements RaftRemote {
       serverId: this.options.expectedServerId,
       selfMemberId: this.options.expectedSelfMemberId,
       ...(this.#bridgeError ? { lastError: this.#bridgeError } : {}),
+    };
+  }
+
+  async drainInbox(): Promise<RaftInboxBatch> {
+    const prior = await this.#readInboxSpool();
+    const output = (await this.#run(["message", "check"])).stdout;
+    const merged = new Map(prior.map(entry => [entry.receiptId, entry]));
+    for (const entry of parseInboxNotices(output)) merged.set(entry.receiptId, entry);
+    const spool = [...merged.values()];
+    await this.#writeInboxSpool(spool);
+
+    for (const entry of spool) {
+      if (entry.messageId) continue;
+      const history = await this.#readHistory(entry.target, entry.shortId, 1);
+      const match = history.find(row => row.messageId.toLowerCase().startsWith(entry.shortId.toLowerCase()));
+      if (!match) throw new Error(`Raft inbox message ${entry.shortId} was not found in its history`);
+      entry.messageId = match.messageId;
+      await this.#writeInboxSpool(spool);
+    }
+
+    const receiptIds = new Set(spool.map(entry => entry.receiptId));
+    return {
+      entries: spool.map(entry => ({
+        receiptId: entry.receiptId,
+        messageId: entry.messageId!,
+        receivedAt: entry.receivedAt,
+      })),
+      acknowledge: async () => {
+        const current = await this.#readInboxSpool();
+        await this.#writeInboxSpool(current.filter(entry => !receiptIds.has(entry.receiptId)));
+      },
     };
   }
 
@@ -440,6 +482,29 @@ class DefaultRaftCliRemote implements RaftRemote {
   async #readHistory(target: string, around: string, limit: number): Promise<HistoryMessage[]> {
     const output = (await this.#run(["message", "read", "--target", target, "--around", around, "--limit", String(limit)])).stdout;
     return parseHistory(output);
+  }
+
+  async #readInboxSpool(): Promise<InboxSpoolEntry[]> {
+    try {
+      const value = JSON.parse(await readFile(this.#inboxSpoolFile(), "utf8")) as unknown;
+      if (!Array.isArray(value)) throw new Error("Raft inbox spool is not an array");
+      return value.map(parseInboxSpoolEntry);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  async #writeInboxSpool(entries: InboxSpoolEntry[]): Promise<void> {
+    await mkdir(this.options.bridgeStateDirectory, { recursive: true });
+    const file = this.#inboxSpoolFile();
+    const temporary = `${file}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(entries)}\n`, { mode: 0o600 });
+    await rename(temporary, file);
+  }
+
+  #inboxSpoolFile(): string {
+    return path.join(this.options.bridgeStateDirectory, "loom-inbox-spool.json");
   }
 
   async #historyEvidence(message: HistoryMessage, place: RaftRemoteMessage["place"]): Promise<JsonValue> {
@@ -933,10 +998,11 @@ function parseHistory(output: string): HistoryMessage[] {
   const rows: HistoryMessage[] = [];
   for (const line of output.split("\n")) {
     if (!line.startsWith("[seq=")) continue;
-    const match = /^\[seq=\S+ msg=\S+ time=(.+?) type=(human|agent|system)(?: [^\]]+)?\] @([A-Za-z0-9_-]+)([\s\S]*)$/.exec(line);
+    const match = /^\[seq=\S+ msg=([0-9a-f-]+) time=(.+?) type=(human|agent|system)(?: [^\]]+)?\] @([A-Za-z0-9_-]+)([\s\S]*)$/.exec(line);
     if (!match) throw new Error("Raft message read returned an unsupported 0.0.17 history format");
-    const [, localTime, senderType, senderName, remainder] = match;
+    const [, messageId, localTime, senderType, senderName, remainder] = match;
     rows.push({
+      messageId: messageId!,
       occurredAt: localTimestamp(localTime!),
       senderName: senderName!,
       senderType: senderType as HistoryMessage["senderType"],
@@ -944,6 +1010,38 @@ function parseHistory(output: string): HistoryMessage[] {
     });
   }
   return rows;
+}
+
+function parseInboxNotices(output: string): InboxSpoolEntry[] {
+  const entries: InboxSpoolEntry[] = [];
+  for (const line of output.split("\n")) {
+    if (!line.startsWith("[target=")) continue;
+    const match = /^\[target=(\S+) msg=([0-9a-f]{8}) time=(.+?) type=(?:human|agent|system)\]/i.exec(line);
+    if (!match) continue;
+    const [, target, shortId, localTime] = match;
+    entries.push({
+      receiptId: `${target}:${shortId!.toLowerCase()}`,
+      target: target!,
+      shortId: shortId!.toLowerCase(),
+      receivedAt: localTimestamp(localTime!),
+    });
+  }
+  return entries;
+}
+
+function parseInboxSpoolEntry(value: unknown): InboxSpoolEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Raft inbox spool contains an invalid entry");
+  }
+  const entry = value as Partial<InboxSpoolEntry>;
+  if (typeof entry.receiptId !== "string" || !entry.receiptId
+    || typeof entry.target !== "string" || !entry.target
+    || typeof entry.shortId !== "string" || !/^[0-9a-f]{8}$/i.test(entry.shortId)
+    || typeof entry.receivedAt !== "string" || Number.isNaN(Date.parse(entry.receivedAt))
+    || (entry.messageId !== undefined && (typeof entry.messageId !== "string" || !entry.messageId))) {
+    throw new Error("Raft inbox spool contains an invalid entry");
+  }
+  return entry as InboxSpoolEntry;
 }
 
 function resolvedContent(remainder: string, description: string | null | undefined): string {

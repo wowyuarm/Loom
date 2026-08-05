@@ -137,6 +137,127 @@ test("persists a content-free wake before resolving and completing its Runtime I
   assert.equal(recovered.status().pendingWakes, 0);
 });
 
+test("drains the authoritative inbox when an old wake is replayed and preserves Raft order", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-inbox-drain-"));
+  let exposeInbox = false;
+  let acknowledged = 0;
+  const inbox = [
+    { receiptId: "receipt-missed", messageId: "message-missed", receivedAt: "2026-08-03T05:00:00.000Z" },
+    { receiptId: "receipt-later", messageId: "message-later", receivedAt: "2026-08-03T05:00:01.000Z" },
+  ];
+  const remote: RaftRemote = {
+    async drainInbox() {
+      const entries = exposeInbox ? inbox : [];
+      exposeInbox = false;
+      return {
+        entries,
+        acknowledge: async () => { acknowledged += entries.length; },
+      };
+    },
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: messageId === "message-missed"
+        ? "2026-08-03T05:00:00.000Z"
+        : "2026-08-03T05:00:01.000Z",
+      signal: "direct_message",
+      content: messageId === "message-missed" ? "The missed message." : "The later message.",
+      sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+      place: {
+        target: "dm:@yu",
+        kind: "direct",
+        visibility: "private",
+        audience: "Only this Individual and Yu can see this DM.",
+      },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const accepted: string[] = [];
+  await channel.start(async input => {
+    accepted.push(input.sourceId);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-old",
+    messageId: "message-old",
+    receivedAt: "2026-08-03T04:59:30.000Z",
+  });
+  await eventually(() => accepted.includes("message-old"));
+  accepted.length = 0;
+  exposeInbox = true;
+
+  await channel.acceptWake({
+    attemptId: "attempt-old-replayed",
+    messageId: "message-old",
+    receivedAt: "2026-08-03T05:02:00.000Z",
+  });
+  await eventually(() => accepted.length === 2);
+
+  assert.deepEqual(accepted, ["message-missed", "message-later"]);
+  assert.equal(acknowledged, 2);
+  assert.equal(channel.status().pendingWakes, 0);
+});
+
+test("recovers pending Raft inbox messages at startup without waiting for another wake", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-startup-inbox-"));
+  let acknowledged = false;
+  const remote: RaftRemote = {
+    drainInbox: async () => ({
+      entries: [{
+        receiptId: "receipt-startup",
+        messageId: "message-startup",
+        receivedAt: "2026-08-03T05:00:00.000Z",
+      }],
+      acknowledge: async () => { acknowledged = true; },
+    }),
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2026-08-03T05:00:00.000Z",
+      signal: "direct_message",
+      content: "Recover this without another wake.",
+      sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+      place: {
+        target: "dm:@yu",
+        kind: "direct",
+        visibility: "private",
+        audience: "Only this Individual and Yu can see this DM.",
+      },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const accepted: RuntimeInput[] = [];
+  await channel.start(async input => {
+    accepted.push(input);
+    return { disposition: "accepted", inputId: "input-startup" };
+  });
+
+  await eventually(() => accepted.length === 1);
+  assert.equal(accepted[0]?.sourceId, "message-startup");
+  assert.equal(acknowledged, true);
+});
+
 test("exposes a previously observed Raft place beside the current default Destination", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-known-destinations-"));
   const remote: RaftRemote = {

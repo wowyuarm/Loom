@@ -111,9 +111,19 @@ Raft status 有四种状态：
 status。运行中 bridge 后来失联会反映为 `degraded`，当前不会另外推送一条状态变化
 事件。不要把进程仍在运行当成 Raft 一定 connected。
 
-bridge 会保存并重放尚未成功交给 Loom 的 content-free wake；Loom 按 Raft message
-ID 去重，并在 Runtime 接受后才把自己的 wake 标记完成。若 bridge 进程在 Host 仍
-运行时异常退出，status 会如实变为 `degraded`，当前版本不会在进程内另起一个
+bridge 的 content-free wake 只负责叫醒 Loom，不是权威消息清单。每次启动或收到 wake，
+Loom 都会通过 `raft message check` 拉取完整待处理收件箱；该命令是 0.0.17 对 External
+Agent 提供的正式收件与确认入口。整批结果按 Raft 返回顺序先写入 Loom 的持久队列，
+再清除本地恢复记录，随后才逐条解析并送入 Runtime。因此某一条实时 wake 漏失时，
+后续任一 wake、bridge 补偿唤醒或 Host 重启都能把遗漏消息一起取回；旧 wake 也不会
+永久占住补偿结果。Loom 仍按完整 Raft message ID 与 Runtime source ID 双重去重。
+
+0.0.17 的 `message check` 会在返回消息时推进 Raft 的收件位置，没有提供“等 Runtime
+确认模型已看到后再单条回写”的独立接口。Loom 用本地 spool 覆盖 CLI 返回后到持久
+队列写入前的恢复窗口；Raft 若将来提供单条延后确认，才应把远端确认移动到 Runtime
+实际纳入 Input 之后，不能用私有服务端接口或本地假游标代替。
+
+若 bridge 进程在 Host 仍运行时异常退出，status 会如实变为 `degraded`，当前版本不会在进程内另起一个
 bridge；由外部 supervisor 重启整个 Host 恢复。普通模型、Runtime 与私人活动不会
 因 Raft 暂时不可用而被另一个 Host 接管。
 
@@ -179,6 +189,8 @@ hold、task 冲突等明确未执行结果记为 `not_sent`；连接在结果确
 10. human 在 DM 发出请求后，Individual 能明确选择一个此前已接触的 shared channel；
     顶层 task Input 同时提供 channel 默认位置和该 task thread 的可选位置。
 11. bridge 的 `/activity/drain` 返回合法空结果，日志不再持续出现 HTTP 404。
+12. 停掉 Host 后发送 DM，再启动 Host；无需额外新消息或 wake，旧 DM 也能进入一次且
+    只进入一次，bridge 补偿日志不再反复显示同一批 `handoff_pending`。
 
 当前 Raft 集成仍处于首个真实验收阶段。在一份独立、非个人的 Raft-only Instance
 完成以上检查前，不应把 fake CLI 测试当作生产可用证明。

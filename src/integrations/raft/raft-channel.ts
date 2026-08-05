@@ -59,10 +59,22 @@ export interface RaftRemoteMessage {
   };
 }
 
+export interface RaftInboxEntry {
+  receiptId: string;
+  messageId: string;
+  receivedAt: string;
+}
+
+export interface RaftInboxBatch {
+  entries: RaftInboxEntry[];
+  acknowledge(): Promise<void>;
+}
+
 export interface RaftRemote {
   start?(acceptWake: (wake: RaftWake) => Promise<{ ok: true }>): Promise<void>;
   stop?(): Promise<void>;
   status?(): RaftRemoteStatus;
+  drainInbox?(): Promise<RaftInboxBatch>;
   resolveMessage(messageId: string): Promise<RaftRemoteMessage>;
   sendText(request: { target: string; text: string }): Promise<
     | { disposition: "sent"; remoteId: string }
@@ -217,6 +229,7 @@ class DefaultRaftChannel implements RaftChannel {
   readonly #database: DatabaseSync;
   #acceptInput: ((input: RuntimeInput) => Promise<AcceptedInput>) | undefined;
   #processing: Promise<void> | undefined;
+  #inboxDrainRequested = false;
   #state: RaftChannelStatus["state"] = "stopped";
   #lastError: string | undefined;
   #finalPendingWakes = 0;
@@ -232,6 +245,7 @@ class DefaultRaftChannel implements RaftChannel {
         message_id TEXT PRIMARY KEY,
         attempt_id TEXT NOT NULL,
         received_at TEXT NOT NULL,
+        delivery_order INTEGER,
         status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
         input_id TEXT,
         last_error TEXT
@@ -270,6 +284,10 @@ class DefaultRaftChannel implements RaftChannel {
         activated_at TEXT NOT NULL
       ) STRICT;
     `);
+    const wakeColumns = this.#database.prepare("PRAGMA table_info(wakes)").all() as unknown as Array<{ name: string }>;
+    if (!wakeColumns.some(column => column.name === "delivery_order")) {
+      this.#database.exec("ALTER TABLE wakes ADD COLUMN delivery_order INTEGER");
+    }
     this.#database.prepare(`
       INSERT OR IGNORE INTO integration_state (singleton, activated_at) VALUES (1, ?)
     `).run((options.now?.() ?? new Date()).toISOString());
@@ -282,6 +300,7 @@ class DefaultRaftChannel implements RaftChannel {
     this.#acceptInput = acceptInput;
     this.#state = "connecting";
     await this.options.remote.start?.(wake => this.acceptWake(wake));
+    this.#inboxDrainRequested = Boolean(this.options.remote.drainInbox);
     this.#schedule();
   }
 
@@ -292,6 +311,7 @@ class DefaultRaftChannel implements RaftChannel {
       INSERT OR IGNORE INTO wakes (message_id, attempt_id, received_at, status)
       VALUES (?, ?, ?, 'pending')
     `).run(wake.messageId, wake.attemptId, wake.receivedAt);
+    if (this.options.remote.drainInbox) this.#inboxDrainRequested = true;
     this.#schedule();
     return { ok: true };
   }
@@ -708,12 +728,23 @@ class DefaultRaftChannel implements RaftChannel {
     if (!this.#acceptInput || this.#processing || this.#stopped) return;
     this.#processing = this.#drain().finally(() => {
       this.#processing = undefined;
-      if (!this.#stopped && this.#nextWake()) this.#schedule();
+      if (!this.#stopped && (this.#inboxDrainRequested || this.#nextWake())) this.#schedule();
     });
   }
 
   async #drain(): Promise<void> {
     while (!this.#stopped) {
+      if (this.#inboxDrainRequested && this.options.remote.drainInbox) {
+        this.#inboxDrainRequested = false;
+        try {
+          await this.#drainRemoteInbox();
+        } catch (error) {
+          const message = errorMessage(error);
+          this.#state = "degraded";
+          this.#lastError = message;
+          return;
+        }
+      }
       const wake = this.#nextWake();
       if (!wake) {
         this.#state = "connected";
@@ -759,11 +790,51 @@ class DefaultRaftChannel implements RaftChannel {
     }
   }
 
+  async #drainRemoteInbox(): Promise<void> {
+    const batch = await this.options.remote.drainInbox!();
+    const receiptIds = new Set<string>();
+    const messageIds = new Set<string>();
+    for (const entry of batch.entries) {
+      if (!entry.receiptId.trim()) throw new Error("Raft inbox receiptId cannot be blank");
+      if (!entry.messageId.trim()) throw new Error("Raft inbox messageId cannot be blank");
+      validateIso(entry.receivedAt, "inbox receivedAt");
+      if (receiptIds.has(entry.receiptId)) throw new Error("Raft inbox returned a duplicate receiptId");
+      if (messageIds.has(entry.messageId)) throw new Error("Raft inbox returned a duplicate messageId");
+      receiptIds.add(entry.receiptId);
+      messageIds.add(entry.messageId);
+    }
+
+    this.#database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.#database.prepare(`
+        SELECT COALESCE(MAX(delivery_order), 0) AS value FROM wakes
+      `).get() as unknown as { value: number };
+      let deliveryOrder = row.value;
+      for (const entry of batch.entries) {
+        deliveryOrder += 1;
+        this.#database.prepare(`
+          INSERT OR IGNORE INTO wakes (
+            message_id, attempt_id, received_at, delivery_order, status
+          ) VALUES (?, ?, ?, ?, 'pending')
+        `).run(entry.messageId, `inbox:${entry.receiptId}`, entry.receivedAt, deliveryOrder);
+        this.#database.prepare(`
+          UPDATE wakes SET delivery_order = ?
+          WHERE message_id = ? AND status = 'pending'
+        `).run(deliveryOrder, entry.messageId);
+      }
+      this.#database.exec("COMMIT");
+    } catch (error) {
+      this.#database.exec("ROLLBACK");
+      throw error;
+    }
+    await batch.acknowledge();
+  }
+
   #nextWake(): WakeRow | undefined {
     return this.#database.prepare(`
       SELECT message_id FROM wakes
       WHERE status = 'pending'
-      ORDER BY received_at, message_id
+      ORDER BY delivery_order IS NULL, delivery_order, received_at, message_id
       LIMIT 1
     `).get() as unknown as WakeRow | undefined;
   }
