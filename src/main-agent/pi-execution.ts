@@ -132,6 +132,7 @@ interface ActiveTurn {
   pending: ExecutionInput[];
   annotations: InputAnnotationReference[];
   destinations: Map<string, NonNullable<ExecutionInput["interaction"]>["destinations"][number]>;
+  interactionDefaults: Map<string, NonNullable<ExecutionInput["interaction"]>["destinations"][number]>;
   includedInteraction: boolean;
   presentedInteraction: boolean;
 }
@@ -149,6 +150,7 @@ class InputAnnotationLifecycle {
       pending: [...request.inputs],
       annotations: [],
       destinations: new Map(),
+      interactionDefaults: new Map(),
       includedInteraction: false,
       presentedInteraction: false,
     };
@@ -185,6 +187,13 @@ class InputAnnotationLifecycle {
     for (const destination of input.interaction?.destinations ?? []) {
       active.destinations.set(destination.destinationRef, destination);
     }
+    const defaultDestinationRef = input.interaction?.defaultDestinationRef;
+    const defaultDestination = defaultDestinationRef
+      ? input.interaction?.destinations.find(destination => destination.destinationRef === defaultDestinationRef)
+      : undefined;
+    if (defaultDestination) {
+      active.interactionDefaults.set(defaultDestination.destinationRef, defaultDestination);
+    }
     if (input.kind === "interaction") active.includedInteraction = true;
     active.control.includeInput(input.id);
   }
@@ -210,6 +219,11 @@ class InputAnnotationLifecycle {
 
   destinations(turnId: string) {
     return [...this.#require(turnId).destinations.values()];
+  }
+
+  interactionDefaultDestination(turnId: string): InteractionDestination | undefined {
+    const destinations = [...this.#require(turnId).interactionDefaults.values()];
+    return destinations.length === 1 ? destinations[0] : undefined;
   }
 
   end(turnId: string): void {
@@ -376,6 +390,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           control: lifecycle.control(request.turnId),
           routeRef: this.defaultInteractionRoute,
           destinations: () => lifecycle.destinations(request.turnId),
+          interactionDefaultDestination: () => lifecycle.interactionDefaultDestination(request.turnId),
           ...(defaultDestination ? { defaultDestination } : {}),
           decision: messageDecision,
           workspaceRoot: this.agentWorkspace.root,

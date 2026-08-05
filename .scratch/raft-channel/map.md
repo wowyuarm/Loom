@@ -26,6 +26,10 @@ layer rather than for that Individual.
   multi-route selection remain outside this work rather than hidden scope for the Adapter.
 - The initial Interaction Channel, bounded thread context, existing-task actions and explicit
   attention management are accepted through Tickets 04 and 05.
+- Tickets 06 and 07 are the active closing units: deliberate sends to a bounded set of previously
+  known Raft places, and the complete local endpoint contract expected by the pinned bridge.
+  First-contact member discovery remains outside this work rather than being claimed by a partial
+  Destination list.
 
 ## Confirmed Design Decisions
 
@@ -107,6 +111,8 @@ second Workspace, memory store, scheduler or transcript owner.
 | [03 - design Individual Raft interaction](issues/03-design-individual-raft-interaction.md) | resolved | Accepted the actor, attention, tool, reply and activation model. |
 | [04 - implement the Raft Interaction Channel](issues/04-implement-raft-interaction-channel.md) | resolved | Implementation, deployment and HaL's real multi-reply thread acceptance are complete. |
 | [05 - implement Raft task and attention actions](issues/05-implement-task-and-attention-actions.md) | resolved | Added existing-task and explicit unfollow/mute actions through durable Effects. |
+| [06 - use known Raft destinations](issues/06-use-known-raft-destinations.md) | active | Let the Individual explicitly send to a bounded recent set of previously observed places. |
+| [07 - complete the Raft bridge local endpoints](issues/07-complete-bridge-local-endpoints.md) | active | Return the pinned bridge's valid empty activity-drain contract instead of repeated 404s. |
 
 ## Accepted Implementation Evidence
 

@@ -77,8 +77,9 @@ interaction:
 ```
 
 `principalDmTarget` 必须是顶层 `dm:@handle`。它只给没有当前 Interaction 的主动
-Turn 一个可联系主要关系对象的落点，不会触发消息，也不会改变主动节律。其他 DM、
-channel 与 reply thread 必须来自当次 Interaction 或 Raft 读取工具返回的证据。
+Turn 一个可联系主要关系对象的落点，不会触发消息，也不会改变主动节律。当前
+Interaction 还会带上最多七个最近接触过的其他 Raft 场所；模型可以明确选择其中一个，
+但它们不会替代当前消息的默认回复位置。第一次联系从未接触过的成员仍不在当前能力内。
 
 ## 运行与状态
 
@@ -93,6 +94,10 @@ Host 会自动建立仅监听 loopback 的临时 wake endpoint，并启动固定
 自己的持久重放状态位于 `runtime/integrations/raft-bridge/`，Loom 已接住的 wake、
 不透明引用和 Attention 状态位于 `runtime/integrations/raft.db`。不要手工编辑或只
 复制其中一部分来代替完整 Instance 备份。
+
+固定版本的 bridge 还会从 wake 地址推导本地 `/activity/drain`。Loom 在该地址返回
+合法的空结果，因为它没有要交给 Raft 的 channel plugin activity；这不会读取消息，
+也不会把 Workspace、Transcript、Life Recorder 或私人活动发送给 Raft。
 
 Raft status 有四种状态：
 
@@ -116,6 +121,11 @@ bridge；由外部 supervisor 重启整个 Host 恢复。普通模型、Runtime 
 
 启用成功后，Main Agent 才会看到 Raft 的场所规则、当前 Interaction 的 actor、
 audience、visibility 与可用 Destination，以及以下工具：
+
+当前消息所在场所是唯一默认 Destination；最多七个最近接触过的场所作为可明确选择的
+其他 Destination。顶层 channel 消息还会提供该消息 reply thread 的不透明 Destination，
+因此 task 进展可以直接留在 task thread。多个当前 Interaction 场所同时进入一个 Turn 时，
+仍必须明确选择发送位置。
 
 - `raft_places`：列出有界的可见 channel；0.0.17 不能在不读消息历史的情况下列出 DM；
 - `raft_activity`：按场所或时间读取有界的外部消息信号，不创建 Loom Input；
@@ -166,6 +176,9 @@ hold、task 冲突等明确未执行结果记为 `not_sent`；连接在结果确
 8. 一个真实已有 task 能完成 claim、thread 进展、`in_review`、明确验收和 `done`；
 9. 一个真实 reply thread 能 unfollow，一个 regular channel 能 mute 后再 unmute，且传错
    ref 类型时不会形成 Effect。
+10. human 在 DM 发出请求后，Individual 能明确选择一个此前已接触的 shared channel；
+    顶层 task Input 同时提供 channel 默认位置和该 task thread 的可选位置。
+11. bridge 的 `/activity/drain` 返回合法空结果，日志不再持续出现 HTTP 404。
 
 当前 Raft 集成仍处于首个真实验收阶段。在一份独立、非个人的 Raft-only Instance
 完成以上检查前，不应把 fake CLI 测试当作生产可用证明。

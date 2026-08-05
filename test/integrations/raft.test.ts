@@ -137,6 +137,302 @@ test("persists a content-free wake before resolving and completing its Runtime I
   assert.equal(recovered.status().pendingWakes, 0);
 });
 
+test("exposes a previously observed Raft place beside the current default Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-known-destinations-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => messageId === "message-ops"
+      ? {
+          messageId,
+          occurredAt: "2026-08-03T05:00:00.000Z",
+          signal: "mention",
+          content: "Please keep this operations channel in view.",
+          sender: { memberId: "agent-ops", kind: "agent", handle: "ops" },
+          place: {
+            target: "#operations",
+            kind: "channel",
+            visibility: "public",
+            label: "operations",
+            audience: "Members of #operations can read this channel.",
+          },
+        }
+      : {
+          messageId,
+          occurredAt: "2026-08-03T05:01:00.000Z",
+          signal: "direct_message",
+          content: "Report the result where the team can see it.",
+          sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+          place: {
+            target: "dm:@yu",
+            kind: "direct",
+            visibility: "private",
+            label: "DM with Yu",
+            audience: "Only this Individual and Yu can see this DM.",
+          },
+        },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-ops",
+    messageId: "message-ops",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => inputs.length === 1);
+  await channel.acceptWake({
+    attemptId: "attempt-human",
+    messageId: "message-human",
+    receivedAt: "2026-08-03T05:01:01.000Z",
+  });
+  await eventually(() => inputs.length === 2);
+
+  const current = inputs[1]!.interaction!;
+  assert.equal(current.destinations.length, 2);
+  assert.equal(current.destinations[0]!.label, "DM with Yu");
+  assert.equal(current.defaultDestinationRef, current.destinations[0]!.destinationRef);
+  assert.deepEqual(current.destinations[1], {
+    destinationRef: inputs[0]!.interaction!.destinations[0]!.destinationRef,
+    routeRef: "raft-primary",
+    kind: "top_level",
+    label: "operations",
+  });
+  assert.doesNotMatch(JSON.stringify(current), /#operations|dm:@yu/);
+
+  await channel.stop();
+  const recovered = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => recovered.stop());
+  const recoveredInputs: RuntimeInput[] = [];
+  await recovered.start(async input => {
+    recoveredInputs.push(input);
+    return { disposition: "accepted", inputId: `recovered-${input.sourceId}` };
+  });
+  await recovered.acceptWake({
+    attemptId: "attempt-human-restart",
+    messageId: "message-human-restart",
+    receivedAt: "2026-08-03T05:02:01.000Z",
+  });
+  await eventually(() => recoveredInputs.length === 1);
+  assert.equal(recoveredInputs[0]!.interaction!.destinations[1]!.label, "operations");
+});
+
+test("bounds known Raft Destinations by most recent observation", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-bounded-destinations-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => {
+      const number = Number(messageId.replace("message-channel-", ""));
+      if (Number.isInteger(number)) {
+        return {
+          messageId,
+          occurredAt: `2026-08-03T05:${String(number).padStart(2, "0")}:00.000Z`,
+          signal: "mention",
+          content: `Channel ${number} update.`,
+          sender: { memberId: `agent-${number}`, kind: "agent", handle: `agent-${number}` },
+          place: {
+            target: `#channel-${number}`,
+            kind: "channel",
+            visibility: "public",
+            label: `channel-${number}`,
+            audience: `Members of channel ${number} can read it.`,
+          },
+        };
+      }
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:10:00.000Z",
+        signal: "direct_message",
+        content: "Which known place should receive the report?",
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          label: "DM with Yu",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  for (let number = 1; number <= 9; number += 1) {
+    await channel.acceptWake({
+      attemptId: `attempt-channel-${number}`,
+      messageId: `message-channel-${number}`,
+      receivedAt: `2026-08-03T05:${String(number).padStart(2, "0")}:01.000Z`,
+    });
+    await eventually(() => inputs.length === number);
+  }
+  await channel.acceptWake({
+    attemptId: "attempt-current-dm",
+    messageId: "message-current-dm",
+    receivedAt: "2026-08-03T05:10:01.000Z",
+  });
+  await eventually(() => inputs.length === 10);
+
+  assert.deepEqual(inputs[9]!.interaction!.destinations.map(destination => destination.label), [
+    "DM with Yu",
+    "channel-9",
+    "channel-8",
+    "channel-7",
+    "channel-6",
+    "channel-5",
+    "channel-4",
+    "channel-3",
+  ]);
+});
+
+test("exposes an already registered principal DM beside a current channel Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-registered-destination-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2026-08-03T05:00:00.000Z",
+      signal: "mention",
+      content: "Please answer here or contact Yu deliberately.",
+      sender: { memberId: "agent-ops", kind: "agent", handle: "ops" },
+      place: {
+        target: "#operations",
+        kind: "channel",
+        visibility: "public",
+        label: "operations",
+        audience: "Members of #operations can read this channel.",
+      },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  channel.agentSurface();
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-operations",
+    messageId: "message-operations",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => inputs.length === 1);
+
+  assert.equal(inputs[0]!.interaction!.destinations.length, 2);
+  assert.equal(inputs[0]!.interaction!.destinations[0]!.label, "operations");
+  assert.deepEqual(inputs[0]!.interaction!.destinations[1], {
+    destinationRef: channel.agentSurface().defaultDestination!.destinationRef,
+    routeRef: "raft-primary",
+    kind: "top_level",
+    label: "DM with @yu",
+  });
+});
+
+test("offers a top-level task's reply thread as an opaque optional Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-task-thread-destination-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2026-08-03T05:00:00.000Z",
+      signal: "task",
+      content: "Validate the new Raft behavior.",
+      sender: { memberId: "agent-codex", kind: "agent", handle: "codex" },
+      place: {
+        target: "#Loom-Main",
+        kind: "channel",
+        visibility: "public",
+        label: "Loom-Main",
+        audience: "Members of #Loom-Main can read this channel.",
+      },
+      task: { number: 2, status: "todo", assigneeHandle: "@hal" },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-task-thread",
+    messageId: "aaaaaaaa-1111-2222-3333-444444444444",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => inputs.length === 1);
+
+  const interaction = inputs[0]!.interaction!;
+  assert.equal(interaction.destinations.length, 2);
+  assert.equal(interaction.defaultDestinationRef, interaction.destinations[0]!.destinationRef);
+  assert.equal(interaction.destinations[0]!.kind, "top_level");
+  assert.deepEqual(interaction.destinations[1], {
+    destinationRef: interaction.destinations[1]!.destinationRef,
+    routeRef: "raft-primary",
+    kind: "reply_thread",
+    label: "Loom-Main reply thread",
+  });
+  assert.match(interaction.destinations[1]!.destinationRef, /^raft:destination:/);
+  assert.doesNotMatch(JSON.stringify(interaction), /#Loom-Main:aaaaaaaa/);
+});
+
 test("delivers a persisted message through its opaque Destination and preserves unknown outcomes", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-delivery-"));
   const sends: Array<{ target: string; text: string }> = [];

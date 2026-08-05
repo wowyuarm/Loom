@@ -82,8 +82,10 @@ The following design decisions are accepted for the generic Channel layer:
   reconstruct the destination at Delivery time.
 - A proactive Turn with no current Interaction may use the explicitly bound
   principal relationship actor's top-level DM as the default Raft
-  Destination. Other members, channels and threads require current evidence or
-  a destination returned by a Raft tool.
+  Destination. A current Interaction may also expose bounded recent known
+  places as non-default Destinations and a top-level channel message's reply
+  thread. Other members, channels and threads require current evidence or a
+  destination returned by a Raft tool.
 - First activation fixes the inbound ownership boundary. Pre-activation Raft
   history remains available through read/search tools but is not replayed as
   Loom Inputs; post-activation activity remains Loom-owned ingress across Host

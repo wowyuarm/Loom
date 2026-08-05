@@ -23,6 +23,7 @@ export function createMessageTool(options: {
   control: TurnControl;
   routeRef: string;
   destinations?: () => InteractionDestination[];
+  interactionDefaultDestination?: () => InteractionDestination | undefined;
   defaultDestination?: InteractionDestination;
   decision: MessageTurnDecision;
   attachmentStore?: AttachmentStore;
@@ -104,6 +105,7 @@ export function createMessageTool(options: {
       const destination = selectDestination(
         options.destinations?.() ?? [],
         params.destination_ref,
+        options.interactionDefaultDestination?.(),
         options.defaultDestination,
       );
       const receipt = options.control.prepareEffect({
@@ -138,6 +140,7 @@ export function createMessageTool(options: {
 function selectDestination(
   destinations: InteractionDestination[],
   requested: string | undefined,
+  interactionDefaultDestination: InteractionDestination | undefined,
   defaultDestination: InteractionDestination | undefined,
 ): InteractionDestination | undefined {
   const unique = [...new Map(destinations.map(destination => [destination.destinationRef, destination])).values()];
@@ -146,6 +149,7 @@ function selectDestination(
     if (!selected) throw new Error("message destination_ref is not available in the current Interaction Context");
     return selected;
   }
+  if (interactionDefaultDestination) return interactionDefaultDestination;
   if (unique.length === 0) return defaultDestination;
   if (unique.length === 1) return unique[0];
   throw new Error("message send requires destination_ref when more than one Interaction Destination is available");

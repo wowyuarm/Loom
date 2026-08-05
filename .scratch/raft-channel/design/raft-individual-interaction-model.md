@@ -196,8 +196,9 @@ content: "..."
 
 首轮已确认的默认 proactive Destination 是配置明确绑定的主要关系对象顶层 DM。它只让
 Individual 在没有来信时仍能自然联系主要关系对象，不触发发送、不改变 pulse，也不允许把
-最近联系的其他成员或场所推断成新默认值。其他 DM、channel 与 reply thread 必须来自当前
-evidence 或 Raft 工具返回的 Destination。
+最近联系的其他成员或场所推断成新默认值。当前 Interaction 可提供有界的最近已知场所作为
+非默认 Destination；其他 DM、channel 与 reply thread 必须来自当前 evidence 或 Raft 工具
+返回的 Destination。顶层 channel Input 可同时提供该消息 reply thread 的非默认 Destination。
 
 ### 4.3 Tool result
 

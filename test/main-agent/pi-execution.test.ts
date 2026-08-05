@@ -1750,6 +1750,127 @@ test("sends to the only Destination authorized by the current Interaction", asyn
   }]);
 });
 
+test("uses the current Interaction default when known alternative Destinations are available", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-known-alternative-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I will answer the place that asked.",
+    }, { id: "message-current-default" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+  const current = raftInteractionContext();
+
+  await execution.start({
+    turnId: "turn-known-alternative",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-known-alternative", "Could you review this?"),
+      interaction: {
+        ...current,
+        destinations: [
+          ...current.destinations,
+          {
+            destinationRef: "raft:server-1:channel-8:top-level",
+            routeRef: "raft:server-1",
+            kind: "top_level",
+            label: "#operations",
+          },
+        ],
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-current-default" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I will answer the place that asked." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
+  }]);
+});
+
+test("sends explicitly to a known alternative Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-select-known-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "The operations channel should see this report.",
+      destination_ref: "raft:server-1:channel-8:top-level",
+    }, { id: "message-known-alternative" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+  const current = raftInteractionContext();
+
+  await execution.start({
+    turnId: "turn-select-known-alternative",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-select-known-alternative", "Please report this to operations."),
+      interaction: {
+        ...current,
+        destinations: [
+          ...current.destinations,
+          {
+            destinationRef: "raft:server-1:channel-8:top-level",
+            routeRef: "raft:server-1",
+            kind: "top_level",
+            label: "#operations",
+          },
+        ],
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-known-alternative" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "The operations channel should see this report." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-8:top-level",
+  }]);
+});
+
 test("uses only the configured principal DM for a proactive message with no current Interaction", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-proactive-default-destination-"));
   const { faux, model, modelRuntime } = await createTestPi(root);

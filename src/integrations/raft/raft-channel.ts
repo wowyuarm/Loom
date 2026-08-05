@@ -241,6 +241,12 @@ class DefaultRaftChannel implements RaftChannel {
         kind TEXT NOT NULL CHECK (kind IN ('message', 'place', 'destination', 'thread', 'task', 'member', 'reminder')),
         remote_value TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE IF NOT EXISTS known_destinations (
+        destination_ref TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('top_level', 'reply_thread')),
+        label TEXT,
+        observed_at TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE IF NOT EXISTS ambient_activity (
         revision INTEGER PRIMARY KEY AUTOINCREMENT,
         message_id TEXT NOT NULL UNIQUE,
@@ -267,6 +273,7 @@ class DefaultRaftChannel implements RaftChannel {
     this.#database.prepare(`
       INSERT OR IGNORE INTO integration_state (singleton, activated_at) VALUES (1, ?)
     `).run((options.now?.() ?? new Date()).toISOString());
+    this.#backfillKnownDestinations();
   }
 
   async start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): Promise<void> {
@@ -773,7 +780,12 @@ class DefaultRaftChannel implements RaftChannel {
     const actorRef = this.#actorRef(message.sender.memberId);
     const placeRef = this.#storeRef("place", message.place.target);
     const messageRef = this.#storeRef("message", message.messageId);
-    const destinationRef = this.#storeRef("destination", message.place.target);
+    const destination = this.#rememberDestination(message);
+    const replyThreadDestination = this.#replyThreadDestination(message);
+    const currentDestinations = [
+      destination,
+      ...(replyThreadDestination ? [replyThreadDestination] : []),
+    ];
     const label = memberLabel(message.sender);
     const audienceActorRefs = message.place.kind === "direct"
       ? [...new Set<ActorReference>(["individual", actorRef])]
@@ -814,15 +826,115 @@ class DefaultRaftChannel implements RaftChannel {
             })),
           }] : []),
         ],
-        destinations: [{
-          destinationRef,
-          routeRef: this.options.routeRef,
-          kind: message.place.kind === "reply_thread" ? "reply_thread" : "top_level",
-          ...(message.place.label?.trim() ? { label: message.place.label.trim() } : {}),
-        }],
-        defaultDestinationRef: destinationRef,
+        destinations: [
+          ...currentDestinations,
+          ...this.#otherKnownDestinations(
+            currentDestinations.map(item => item.destinationRef),
+            8 - currentDestinations.length,
+          ),
+        ],
+        defaultDestinationRef: destination.destinationRef,
       },
     };
+  }
+
+  #rememberDestination(message: RaftRemoteMessage): InteractionDestination {
+    const kind = message.place.kind === "reply_thread" ? "reply_thread" : "top_level";
+    const label = message.place.label?.trim();
+    const destination: InteractionDestination = {
+      destinationRef: this.#storeRef("destination", message.place.target, {
+        kind,
+        ...(label ? { label } : {}),
+        observedAt: message.occurredAt,
+      }),
+      routeRef: this.options.routeRef,
+      kind,
+      ...(label ? { label } : {}),
+    };
+    return destination;
+  }
+
+  #replyThreadDestination(message: RaftRemoteMessage): InteractionDestination | undefined {
+    const shortId = /^([0-9a-f]{8})/i.exec(message.messageId)?.[1];
+    if (message.place.kind !== "channel" || !shortId) return undefined;
+    const label = `${message.place.label?.trim() || message.place.target} reply thread`;
+    const destination: InteractionDestination = {
+      destinationRef: this.#storeRef("destination", `${message.place.target}:${shortId}`, {
+        kind: "reply_thread",
+        label,
+        observedAt: message.occurredAt,
+      }),
+      routeRef: this.options.routeRef,
+      kind: "reply_thread",
+      label,
+    };
+    return destination;
+  }
+
+  #upsertKnownDestination(destination: {
+    destinationRef: string;
+    kind: InteractionDestination["kind"];
+    label?: string;
+    observedAt: string;
+  }): void {
+    this.#database.prepare(`
+      INSERT INTO known_destinations (destination_ref, kind, label, observed_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(destination_ref) DO UPDATE SET
+        kind = CASE
+          WHEN excluded.observed_at >= known_destinations.observed_at THEN excluded.kind
+          ELSE known_destinations.kind
+        END,
+        label = CASE
+          WHEN excluded.observed_at >= known_destinations.observed_at THEN excluded.label
+          ELSE known_destinations.label
+        END,
+        observed_at = MAX(known_destinations.observed_at, excluded.observed_at)
+    `).run(
+      destination.destinationRef,
+      destination.kind,
+      destination.label ?? null,
+      destination.observedAt,
+    );
+  }
+
+  #backfillKnownDestinations(): void {
+    const activation = this.#database.prepare(`
+      SELECT activated_at FROM integration_state WHERE singleton = 1
+    `).get() as unknown as { activated_at: string };
+    const rows = this.#database.prepare(`
+      SELECT ref, remote_value FROM refs WHERE kind = 'destination' ORDER BY rowid
+    `).all() as unknown as Array<{ ref: string; remote_value: string }>;
+    for (const row of rows) {
+      const identity = knownDestinationIdentity(row.remote_value);
+      this.#upsertKnownDestination({
+        destinationRef: row.ref,
+        ...identity,
+        observedAt: activation.activated_at,
+      });
+    }
+  }
+
+  #otherKnownDestinations(excludedDestinationRefs: string[], limit: number): InteractionDestination[] {
+    if (limit <= 0) return [];
+    const placeholders = excludedDestinationRefs.map(() => "?").join(", ");
+    const rows = this.#database.prepare(`
+      SELECT destination_ref, kind, label
+      FROM known_destinations
+      WHERE destination_ref NOT IN (${placeholders})
+      ORDER BY observed_at DESC, destination_ref
+      LIMIT ?
+    `).all(...excludedDestinationRefs, limit) as unknown as Array<{
+      destination_ref: string;
+      kind: InteractionDestination["kind"];
+      label: string | null;
+    }>;
+    return rows.map(row => ({
+      destinationRef: row.destination_ref,
+      routeRef: this.options.routeRef,
+      kind: row.kind,
+      ...(row.label?.trim() ? { label: row.label.trim() } : {}),
+    }));
   }
 
   #actorRef(memberId: string): ActorReference {
@@ -831,7 +943,15 @@ class DefaultRaftChannel implements RaftChannel {
     return `external:raft:${refPart(this.options.serverId)}:${refPart(memberId)}`;
   }
 
-  #storeRef(kind: RaftReferenceKind, remoteValue: string): string {
+  #storeRef(
+    kind: RaftReferenceKind,
+    remoteValue: string,
+    destinationObservation?: {
+      kind: InteractionDestination["kind"];
+      label?: string;
+      observedAt: string;
+    },
+  ): string {
     const digest = createHash("sha256")
       .update(`${this.options.serverId}\0${kind}\0${remoteValue}`)
       .digest("hex")
@@ -840,6 +960,15 @@ class DefaultRaftChannel implements RaftChannel {
     this.#database.prepare(`
       INSERT OR IGNORE INTO refs (ref, kind, remote_value) VALUES (?, ?, ?)
     `).run(ref, kind, remoteValue);
+    if (kind === "destination") {
+      this.#upsertKnownDestination({
+        destinationRef: ref,
+        ...(destinationObservation ?? {
+          ...knownDestinationIdentity(remoteValue),
+          observedAt: (this.options.now?.() ?? new Date()).toISOString(),
+        }),
+      });
+    }
     return ref;
   }
 
@@ -1325,6 +1454,30 @@ function attentionAction(value: JsonValue): RaftAttentionAction {
     throw new Error(`Raft attention ${action} Effect does not accept reason`);
   }
   return { action, placeRef, ...(reason ? { reason } : {}) };
+}
+
+function knownDestinationIdentity(target: string): {
+  kind: InteractionDestination["kind"];
+  label: string;
+} {
+  const value = nonEmptyString(target, "Raft destination target");
+  const channel = /^(#[A-Za-z0-9_-]+)(?::[A-Za-z0-9_-]+)?$/i.exec(value);
+  if (channel) {
+    const replyThread = value !== channel[1];
+    return {
+      kind: replyThread ? "reply_thread" : "top_level",
+      label: replyThread ? `${channel[1]} reply thread` : channel[1]!,
+    };
+  }
+  const dm = /^(dm:@([A-Za-z0-9_-]+))(?::[A-Za-z0-9_-]+)?$/i.exec(value);
+  if (dm) {
+    const replyThread = value !== dm[1];
+    return {
+      kind: replyThread ? "reply_thread" : "top_level",
+      label: `DM with @${dm[2]}${replyThread ? " reply thread" : ""}`,
+    };
+  }
+  throw new Error("Raft destination ref contains an unsupported target");
 }
 
 function attentionTarget(action: RaftAttentionAction["action"], target: string): string {

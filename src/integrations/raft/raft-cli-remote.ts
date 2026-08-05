@@ -85,7 +85,7 @@ class DefaultRaftCliRemote implements RaftRemote {
     await mkdir(this.options.bridgeStateDirectory, { recursive: true });
     const token = randomBytes(24).toString("base64url");
     const server = createServer((request, response) => {
-      void this.#handleWake(request, response, token, acceptWake);
+      void this.#handleBridgeRequest(request, response, token, acceptWake);
     });
     this.#bridgeServer = server;
     try {
@@ -768,21 +768,31 @@ class DefaultRaftCliRemote implements RaftRemote {
     });
   }
 
-  async #handleWake(
+  async #handleBridgeRequest(
     request: import("node:http").IncomingMessage,
     response: import("node:http").ServerResponse,
     token: string,
     acceptWake: Parameters<NonNullable<RaftRemote["start"]>>[0],
   ): Promise<void> {
     response.setHeader("content-type", "application/json");
-    if (request.method !== "POST" || request.url !== "/wake") {
-      response.statusCode = 404;
-      response.end(JSON.stringify({ ok: false, reason: "unknown endpoint" }));
-      return;
-    }
     if (request.headers["x-raft-bridge-token"] !== token) {
       response.statusCode = 401;
       response.end(JSON.stringify({ ok: false, reason: "invalid bridge token" }));
+      return;
+    }
+    const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+    if (request.method === "GET" && pathname === "/activity/drain") {
+      response.statusCode = 200;
+      response.end(JSON.stringify({
+        schema: "raft-activity-drain.v1",
+        events: [],
+        dropped: 0,
+      }));
+      return;
+    }
+    if (request.method !== "POST" || pathname !== "/wake") {
+      response.statusCode = 404;
+      response.end(JSON.stringify({ ok: false, reason: "unknown endpoint" }));
       return;
     }
     let payload: Record<string, unknown>;

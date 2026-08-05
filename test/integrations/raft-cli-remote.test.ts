@@ -299,6 +299,13 @@ if (command[0] === "--version") {
   const endpoint = command[command.indexOf("--wake-channel-endpoint") + 1];
   const headers = { "content-type": "application/json", "x-raft-bridge-token": process.env.RAFT_CHANNEL_TOKEN };
   process.stdout.write(JSON.stringify({ type: "bridge_process_started", pid: process.pid, mode: "poll" }) + "\\n");
+  const activityEndpoint = new URL(endpoint);
+  activityEndpoint.pathname = "/activity/drain";
+  const activity = await fetch(activityEndpoint, { headers });
+  const activityResult = await activity.json();
+  if (!activity.ok || activityResult.schema !== "raft-activity-drain.v1" || activityResult.events.length !== 0 || activityResult.dropped !== 0) {
+    throw new Error("Loom did not provide the empty Raft activity drain contract");
+  }
   const invalid = await fetch(endpoint, {
     method: "POST",
     headers,
