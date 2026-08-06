@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import { NmemClient, NmemRequestError } from "./client.js";
+import { type NmemClient, NmemRequestError } from "./client.js";
+import { classifyNmemError, createNmemConnection } from "./connection.js";
 
 export type NmemWorkingMemoryEvidence =
   | {
@@ -83,18 +83,9 @@ class SqliteNmemWorkingMemoryReader implements NmemWorkingMemoryReader {
         updated_at TEXT NOT NULL
       ) STRICT;
     `);
-    this.#connectionHash = createHash("sha256")
-      .update(`${options.endpoint ?? ""}\0${options.apiKey ?? ""}\0${options.spaceId ?? ""}`)
-      .digest("hex");
-    this.#client = options.endpoint
-      ? new NmemClient({
-          endpoint: options.endpoint,
-          ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
-          ...(options.spaceId !== undefined ? { spaceId: options.spaceId } : {}),
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
-        })
-      : undefined;
+    const connection = createNmemConnection(options);
+    this.#connectionHash = connection.connectionHash;
+    this.#client = connection.client;
   }
 
   async read(): Promise<NmemWorkingMemoryEvidence> {
@@ -116,7 +107,7 @@ class SqliteNmemWorkingMemoryReader implements NmemWorkingMemoryReader {
         fetchedAt,
       };
     } catch (error) {
-      const reason = classify(error);
+      const reason = classifyNmemError(error);
       this.#recordFailure(error, failedAt, reason);
       const cached = this.#readCache();
       if (!cached || cached.has_snapshot !== 1 || cached.exists_flag === null
@@ -196,8 +187,4 @@ export function createNmemWorkingMemoryReader(
   options: NmemWorkingMemoryReaderOptions,
 ): NmemWorkingMemoryReader {
   return new SqliteNmemWorkingMemoryReader(options);
-}
-
-function classify(error: unknown): NmemRequestError["kind"] {
-  return error instanceof NmemRequestError ? error.kind : "incompatible";
 }

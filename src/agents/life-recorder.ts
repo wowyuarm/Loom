@@ -14,6 +14,7 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { stringify } from "yaml";
 
 import type {
   ActivityRecorder,
@@ -492,16 +493,19 @@ function formatEpisode(episode: {
   scene: string;
   evidenceEventIds: string[];
 }): string {
+  const frontmatter = stringify({
+    version: 1,
+    id: episode.id,
+    segmentId: episode.segmentId,
+    ordinal: episode.ordinal,
+    occurredAt: episode.occurredAt,
+    importance: episode.importance,
+    labels: episode.labels,
+    evidenceEventIds: episode.evidenceEventIds,
+  }).trimEnd();
   return [
     "---",
-    "version: 1",
-    `id: ${JSON.stringify(episode.id)}`,
-    `segmentId: ${JSON.stringify(episode.segmentId)}`,
-    `ordinal: ${episode.ordinal}`,
-    `occurredAt: ${JSON.stringify(episode.occurredAt)}`,
-    `importance: ${episode.importance}`,
-    `labels: ${JSON.stringify(episode.labels)}`,
-    `evidenceEventIds: ${JSON.stringify(episode.evidenceEventIds)}`,
+    frontmatter,
     "---",
     "",
     `# ${episode.title}`,

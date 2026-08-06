@@ -7,7 +7,8 @@ import { parse } from "yaml";
 
 import type { Runtime } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
-import { NmemClient, NmemRequestError, type NmemMemoryUpsert } from "./client.js";
+import { type NmemClient, type NmemMemoryUpsert } from "./client.js";
+import { classifyNmemError, createNmemConnection } from "./connection.js";
 import { projectionStatus, type NmemProjectionStatus } from "./projection-status.js";
 
 export interface NmemEpisodeReconcileResult {
@@ -85,18 +86,9 @@ class SqliteNmemEpisodeReconciler implements NmemEpisodeReconciler {
         updated_at TEXT NOT NULL
       ) STRICT;
     `);
-    this.#connectionHash = createHash("sha256")
-      .update(`${options.endpoint ?? ""}\0${options.apiKey ?? ""}\0${options.spaceId ?? ""}`)
-      .digest("hex");
-    this.#client = options.endpoint
-      ? new NmemClient({
-          endpoint: options.endpoint,
-          ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
-          ...(options.spaceId !== undefined ? { spaceId: options.spaceId } : {}),
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
-        })
-      : undefined;
+    const connection = createNmemConnection(options);
+    this.#connectionHash = connection.connectionHash;
+    this.#client = connection.client;
   }
 
   async reconcile(): Promise<NmemEpisodeReconcileResult> {
@@ -141,7 +133,7 @@ class SqliteNmemEpisodeReconciler implements NmemEpisodeReconciler {
     } catch (error) {
       for (const episode of candidates) {
         this.#recordFailure(episode.id, episode.path, episode.contentHash, error);
-        classify(error) === "temporary" ? result.pending++ : result.blocked++;
+        classifyNmemError(error) === "temporary" ? result.pending++ : result.blocked++;
       }
       return result;
     }
@@ -154,7 +146,7 @@ class SqliteNmemEpisodeReconciler implements NmemEpisodeReconciler {
         result.imported++;
       } catch (error) {
         this.#recordFailure(reference.id, reference.path, reference.contentHash, error);
-        classify(error) === "temporary" ? result.pending++ : result.blocked++;
+        classifyNmemError(error) === "temporary" ? result.pending++ : result.blocked++;
       }
     }
     return result;
@@ -212,7 +204,7 @@ class SqliteNmemEpisodeReconciler implements NmemEpisodeReconciler {
 
   #recordFailure(episodeId: string, workspacePath: string, contentHash: string, error: unknown): void {
     const now = this.#now();
-    const kind = classify(error);
+    const kind = classifyNmemError(error);
     const current = this.#read(episodeId);
     const attempts = current
       && current.content_hash === contentHash
@@ -316,10 +308,6 @@ function parseEpisode(source: string, expectedId: string, workspacePath: string)
       loom_workspace_path: workspacePath,
     },
   };
-}
-
-function classify(error: unknown): NmemRequestError["kind"] {
-  return error instanceof NmemRequestError ? error.kind : "incompatible";
 }
 
 function retryDelayMs(attempt: number): number {

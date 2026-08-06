@@ -11,6 +11,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { parse } from "yaml";
 
 import { createPiLifeRecorder } from "../../src/agents/life-recorder.js";
 import type { FrozenActivity } from "../../src/runtime/index.js";
@@ -55,7 +56,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       title: "Alex asked for exact attribution",
       occurredAt: "2026-07-19T10:00:00.000Z",
       importance: 0.82,
-      labels: ["calibration"],
+      labels: ["calibration: exact # attribution"],
       scene: "Alex asked Rowan to keep their actions distinct in future memory.",
       evidenceEventIds: ["event-input-1"],
     }, { id: "record-episode" }), { stopReason: "toolUse" }),
@@ -85,8 +86,12 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
     }],
   });
   assert.match(await readFile(path.join(workspaceRoot, receipt.daily.path), "utf8"), /Alex asked Rowan/);
-  assert.match(await readFile(path.join(workspaceRoot, receipt.episodes[0]!.path), "utf8"), /segment-1/);
-  assert.match(await readFile(path.join(workspaceRoot, receipt.episodes[0]!.path), "utf8"), /event-input-1/);
+  const episode = await readFile(path.join(workspaceRoot, receipt.episodes[0]!.path), "utf8");
+  assert.match(episode, /segment-1/);
+  assert.match(episode, /event-input-1/);
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/u.exec(episode)?.[1];
+  assert.ok(frontmatter);
+  assert.deepEqual((parse(frontmatter) as { labels: string[] }).labels, ["calibration: exact # attribution"]);
   assert.deepEqual(await recorder.record(activity()), receipt);
 });
 

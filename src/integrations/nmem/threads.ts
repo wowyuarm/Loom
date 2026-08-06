@@ -5,11 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { FrozenActivity, FrozenActivityEvent, JsonValue, Runtime } from "../../runtime/index.js";
 import {
-  NmemClient,
-  NmemRequestError,
+  type NmemClient,
   type NmemThreadCreate,
   type NmemThreadMessage,
 } from "./client.js";
+import { classifyNmemError, createNmemConnection } from "./connection.js";
 import { projectionStatus, type NmemProjectionStatus } from "./projection-status.js";
 
 const MAX_PRIVATE_ITEM_CHARACTERS = 500;
@@ -86,18 +86,9 @@ class SqliteNmemThreadReconciler implements NmemThreadReconciler {
         updated_at TEXT NOT NULL
       ) STRICT;
     `);
-    this.#connectionHash = createHash("sha256")
-      .update(`${options.endpoint ?? ""}\0${options.apiKey ?? ""}\0${options.spaceId ?? ""}`)
-      .digest("hex");
-    this.#client = options.endpoint
-      ? new NmemClient({
-          endpoint: options.endpoint,
-          ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
-          ...(options.spaceId !== undefined ? { spaceId: options.spaceId } : {}),
-          ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
-          ...(options.fetch !== undefined ? { fetch: options.fetch } : {}),
-        })
-      : undefined;
+    const connection = createNmemConnection(options);
+    this.#connectionHash = connection.connectionHash;
+    this.#client = connection.client;
   }
 
   async reconcile(): Promise<NmemThreadReconcileResult> {
@@ -137,7 +128,7 @@ class SqliteNmemThreadReconciler implements NmemThreadReconciler {
     } catch (error) {
       for (const candidate of candidates) {
         this.#recordFailure(candidate.activity.segmentId, candidate.contentHash, error);
-        classify(error) === "temporary" ? result.pending++ : result.blocked++;
+        classifyNmemError(error) === "temporary" ? result.pending++ : result.blocked++;
       }
       return result;
     }
@@ -150,7 +141,7 @@ class SqliteNmemThreadReconciler implements NmemThreadReconciler {
         result.imported++;
       } catch (error) {
         this.#recordFailure(candidate.activity.segmentId, candidate.contentHash, error);
-        classify(error) === "temporary" ? result.pending++ : result.blocked++;
+        classifyNmemError(error) === "temporary" ? result.pending++ : result.blocked++;
       }
     }
     return result;
@@ -208,7 +199,7 @@ class SqliteNmemThreadReconciler implements NmemThreadReconciler {
 
   #recordFailure(segmentId: string, contentHash: string, error: unknown): void {
     const now = this.#now();
-    const kind = classify(error);
+    const kind = classifyNmemError(error);
     const current = this.#read(segmentId);
     const attempts = current
       && current.activity_hash === contentHash
@@ -416,10 +407,6 @@ function contentText(content: JsonValue): string {
 
 function threadId(segmentId: string): string {
   return `loom-activity-${segmentId}`;
-}
-
-function classify(error: unknown): NmemRequestError["kind"] {
-  return error instanceof NmemRequestError ? error.kind : "incompatible";
 }
 
 function retryDelayMs(attempt: number): number {
