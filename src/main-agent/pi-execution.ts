@@ -311,6 +311,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
             includeMessageReminder: this.interactionEnabled && firstInteraction,
             humanArrivedDuringNonInteraction:
               request.inputs[0]!.kind !== "interaction" && firstInteraction,
+            channelDestinations: this.channelAgentSurface?.destinations ?? [],
           }, this.attachmentStore, this.supportsNativeImages);
           await session.steer(presentation.text, presentation.images);
         } catch (error) {
@@ -438,6 +439,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       const initialInputOptions = {
         structureHumanInput: this.interactionEnabled && firstInteraction,
         includeMessageReminder: this.interactionEnabled && firstInteraction,
+        channelDestinations: this.channelAgentSurface?.destinations ?? [],
       };
       const initialPresentation = await presentInput(
         request.inputs[0]!,
@@ -798,6 +800,7 @@ function inputText(input: ExecutionInput, options: {
   structureHumanInput?: boolean;
   includeMessageReminder?: boolean;
   humanArrivedDuringNonInteraction?: boolean;
+  channelDestinations?: InteractionDestination[];
 } = {}): string {
   if (input.kind === "opportunity") return opportunityInputText(input);
   if (input.kind === "continuation") return afterChatContinuationInputText(input);
@@ -873,6 +876,20 @@ function interactionInputText(
     const selected = destination.destinationRef === interaction.defaultDestinationRef ? "; default" : "";
     return `- ${destination.kind}${label}: ${destination.destinationRef}; route ${destination.routeRef}${selected}`;
   }));
+  const knownRefs = new Set(interaction.destinations.map(destination => destination.destinationRef));
+  const otherChannelDestinations = (options.channelDestinations ?? [])
+    .filter(destination => !knownRefs.has(destination.destinationRef));
+  if (otherChannelDestinations.length > 0) {
+    lines.push(
+      "",
+      "Other Interaction Channel destinations:",
+      "A Turn that arrived through one Channel may still answer through another when that is the right place. Choose one by its ref above only through message.send destination_ref; never guess or alter a ref.",
+    );
+    lines.push(...otherChannelDestinations.map(destination => {
+      const label = destination.label ? ` (${destination.label})` : "";
+      return `- ${destination.kind}${label}: ${destination.destinationRef}; route ${destination.routeRef}`;
+    }));
+  }
   lines.push(
     "Content:",
     payloadText,

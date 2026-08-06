@@ -2116,11 +2116,20 @@ test("lets a Weixin-origin Turn answer through the Raft Destination and delivers
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-cross-channel-destination-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
   faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("message", {
-      action: "send",
-      text: "This report belongs in the Raft place.",
-      destination_ref: "raft:server-1:principal-dm",
-    }, { id: "message-cross-channel" }), { stopReason: "toolUse" }),
+    context => {
+      const current = [...context.messages].reverse().find(message => message.role === "user");
+      assert.ok(current && Array.isArray(current.content));
+      const text = current.content.find(block => block.type === "text")?.text ?? "";
+      assert.match(text, /Other Interaction Channel destinations:/);
+      assert.match(text, /- top_level \(principal DM\): raft:server-1:principal-dm; route raft:server-1/);
+      const raftRef = text.match(/- top_level \(principal DM\): ([^;]+); route raft:server-1/)?.[1];
+      assert.equal(raftRef, "raft:server-1:principal-dm");
+      return fauxAssistantMessage(fauxToolCall("message", {
+        action: "send",
+        text: "This report belongs in the Raft place.",
+        destination_ref: raftRef,
+      }, { id: "message-cross-channel" }), { stopReason: "toolUse" });
+    },
   ]);
   const execution = await createPiAgentExecution({
     agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
