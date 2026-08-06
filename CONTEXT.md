@@ -91,11 +91,11 @@ _Avoid_: turn, context window, transcript branch
 _Avoid_: session, request, model call
 
 **Effect**:
-Turn 在模型计算之外改变状态或对外行动的持久声明。Effect 必须先存在，相关工具或 Integration 才能实际执行。
+Turn 在模型计算之外改变状态或对外行动的持久声明。Effect 必须先存在，相关工具或 Interaction Channel 才能实际执行。
 _Avoid_: tool call, delivery, log event
 
 **Delivery**:
-Integration 对一个 outbound Effect 的实际投递尝试及其结果。Effect 被 Runtime 接受不表示 Delivery 已成功。
+Interaction Channel 对一个 outbound Effect 的实际投递尝试及其结果。Effect 被 Runtime 接受不表示 Delivery 已成功。
 _Avoid_: message send, effect, tool result
 
 **After-chat Continuation**:
@@ -123,7 +123,7 @@ _Avoid_: interaction route, recipient guess, recent thread, channel adapter
 _Avoid_: provider abstraction, model health, mutable session model
 
 **Integration**:
-Runtime Instance 与 channel、外部记忆服务、extension 及其凭据之间的具体接入。Integration 实现可以随 Harness 一起提供，但默认不属于任何 Instance；Instance Configuration 明确启用后才建立其生命周期、route、工具或 evidence。它为 Harness 提供能力，不定义 Individual 的身份或关系。
+Runtime Instance 与外部记忆服务、extension 及其凭据之间的具体接入（Interaction Channel 与 Attachment Store 分开定义）。Integration 不是 Interaction Channel：不提供 Interaction Route 或 Destination，不接收 Input，也不形成 Delivery。Integration 实现可以随 Harness 一起提供，但默认不属于任何 Instance；Instance Configuration 明确启用后才建立其生命周期、route、工具或 evidence。它为 Harness 提供能力，不定义 Individual 的身份或关系。
 _Avoid_: individual capability, relationship material, executor abstraction
 
 **Web Access Integration**:

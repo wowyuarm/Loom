@@ -11,9 +11,9 @@ export type OperationalEvent =
       signal: "SIGINT" | "SIGTERM";
     }
   | {
-      event: "integration.state";
+      event: "channel.state";
       at: string;
-      integration: string;
+      channel: string;
       state: string;
     }
   | {

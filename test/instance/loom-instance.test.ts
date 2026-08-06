@@ -9,7 +9,7 @@ import { openLoomInstance } from "../../src/instance/index.js";
 import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { beginWorkspaceMutation } from "../../src/workspace/workspace-mutation.js";
-import type { DeliveryAttemptRequest } from "../../src/runtime/index.js";
+import type { DeliveryAttemptRequest, InteractionContext } from "../../src/runtime/index.js";
 
 test("keeps accepted Input pending while blocked and resumes it after model configuration recovers", async t => {
   const root = await createInstanceRoot();
@@ -125,6 +125,7 @@ test("retains outbound attachment content while Delivery requires reconciliation
     sourceId: "outbound-attachment-input",
     kind: "interaction",
     payload: { text: "send the note" },
+    interaction: interactionContext("primary-route"),
   });
   await instance.runOnce(now);
   const effectPayload = instance.status().runtime.effects[0]?.payload as {
@@ -300,6 +301,7 @@ test("binds message Effects to the configured default Interaction Route", async 
     sourceId: "message-input",
     kind: "interaction",
     payload: { text: "say hello" },
+    interaction: interactionContext("primary-route"),
   });
   await instance.runOnce(now);
 
@@ -340,6 +342,7 @@ test("delivers persisted Effects while cold-start model configuration is blocked
     sourceId: "delivery-input",
     kind: "interaction",
     payload: { text: "send it" },
+    interaction: interactionContext("primary-route"),
   });
   await first.runOnce(now);
   assert.equal(first.status().runtime.effects[0]?.status, "pending");
@@ -415,6 +418,7 @@ test("continues five minutes after confirmed Delivery through the assembled Inst
     sourceId: "after-chat-input",
     kind: "interaction",
     payload: { text: "say something" },
+    interaction: interactionContext("primary-route"),
   });
   assert.deepEqual(await instance.runOnce(now), {
     disposition: "waiting",
@@ -1050,6 +1054,24 @@ test("keeps a due Pulse unclaimed while model configuration is blocked", async t
   });
   assert.equal(provider.requests(), 2);
 });
+
+function interactionContext(routeRef: string, peer = "Test human"): InteractionContext {
+  return {
+    routeRef,
+    signal: "direct_message",
+    actor: { actorRef: `external:${routeRef}:peer`, kind: "human", label: peer },
+    place: { placeRef: `${routeRef}:peer`, kind: "direct", label: peer, visibility: "private" },
+    audience: { visibility: "private", description: `${peer} and the Individual` },
+    references: [],
+    destinations: [{
+      destinationRef: `${routeRef}:top-level`,
+      routeRef,
+      kind: "top_level",
+      label: peer,
+    }],
+    defaultDestinationRef: `${routeRef}:top-level`,
+  };
+}
 
 async function createInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-instance-"));

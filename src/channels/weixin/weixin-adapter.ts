@@ -188,7 +188,8 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     return [
       "Weixin is a private, ongoing direct conversation with the configured human.",
       "Write as ordinary social messaging rather than a formal report.",
-      "One thought may be split into a few natural message bubbles by calling message once per bubble; do not turn separate bubbles into a burst of questions, and usually ask at most one question in one conversational turn.",
+      "One thought may be split into a few natural message bubbles.",
+      "Do not turn separate bubbles into a burst of questions, and usually ask at most one question in one conversational turn.",
       "Let the exchange end naturally when no reply is needed.",
     ].join(" ");
   }

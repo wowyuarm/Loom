@@ -59,6 +59,7 @@ import { loadDailyContext } from "./daily-context.js";
 import { attachmentReferences, type AttachmentReference } from "../attachments/index.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 import type { InteractionChannelAgentSurface } from "../channels/surface.js";
+import { RESERVED_LOOM_TOOL_NAMES } from "../channels/reserved-tool-names.js";
 import { createAttachmentTool } from "./attachment.js";
 import {
   emitOperationalEvent,
@@ -78,17 +79,6 @@ const MAIN_AGENT_BUILTIN_TOOLS = [
   "find",
   "ls",
 ] as const;
-
-/**
- * The single authoritative set of tool names maintained by the Harness.
- * Interaction Channels must not supply any of these names.
- */
-export const RESERVED_LOOM_TOOL_NAMES: ReadonlySet<string> = new Set([
-  ...MAIN_AGENT_BUILTIN_TOOLS,
-  "expand_tool_result",
-  "attachment",
-  "message",
-]);
 
 interface PreparedPiSession {
   session: PiSession;
@@ -404,8 +394,10 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           control: lifecycle.control(request.turnId),
           ...(this.defaultInteractionRoute ? { routeRef: this.defaultInteractionRoute } : {}),
           destinations: () => lifecycle.destinations(request.turnId),
+          channelDestinations: () => this.channelAgentSurface?.destinations ?? [],
           interactionDefaultDestination: () => lifecycle.interactionDefaultDestination(request.turnId),
           ...(defaultDestination ? { defaultDestination } : {}),
+          hasInteraction: () => lifecycle.hasIncludedInteraction(request.turnId),
           decision: messageDecision,
           workspaceRoot: this.agentWorkspace.root,
           ...(this.attachmentStore ? { attachmentStore: this.attachmentStore } : {}),

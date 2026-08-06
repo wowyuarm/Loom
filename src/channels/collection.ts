@@ -1,4 +1,4 @@
-import { RESERVED_LOOM_TOOL_NAMES } from "../main-agent/pi-execution.js";
+import { RESERVED_LOOM_TOOL_NAMES } from "./reserved-tool-names.js";
 import type {
   AcceptedInput,
   DeliveryAttemptRequest,
@@ -158,6 +158,9 @@ function composeAgentSurface(
   return {
     guidance: composeGuidance(surfaces),
     tools: composeTools(surfaces, toolNames),
+    destinations: surfaces.flatMap(
+      entry => (entry.surface.defaultDestination ? [entry.surface.defaultDestination] : []),
+    ),
     ...(defaultSurface?.surface.defaultDestination
       ? { defaultDestination: defaultSurface.surface.defaultDestination }
       : {}),

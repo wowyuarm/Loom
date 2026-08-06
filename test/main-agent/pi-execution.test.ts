@@ -1055,6 +1055,7 @@ test("requires a message decision after a human steers a proactive Turn", async 
   await running.steer({
     ...executionInput("input-2", "new human input"),
     inclusionPosition: 2,
+    interaction: raftInteractionContext(),
   });
   releaseProvider.resolve();
 
@@ -1063,7 +1064,8 @@ test("requires a message decision after a human steers a proactive Turn", async 
   assert.deepEqual(effects, [{
     kind: "message",
     payload: { text: "A visible response to the new input." },
-    routeRef: "primary-route",
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
   }]);
 });
 
@@ -1943,6 +1945,270 @@ test("uses only the configured principal DM for a proactive message with no curr
   }]);
 });
 
+test("sends an Interaction reply when no proactive default Route is configured", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-interaction-without-default-route-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I will answer in the design channel.",
+    }, { id: "message-no-default-route" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-interaction-without-default-route",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-without-default-route", "Could you review this?"),
+      interaction: raftInteractionContext(),
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-without-default-route" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I will answer in the design channel." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
+  }]);
+});
+
+test("never falls back to the proactive default Route when an Interaction lacks a Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-interaction-no-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "This must not reach the proactive route.",
+    }, { id: "message-no-destination" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "no_reply",
+    }, { id: "message-no-reply" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+  const noDestinationInteraction: Omit<
+    ReturnType<typeof raftInteractionContext>,
+    "defaultDestinationRef"
+  > = {
+    ...raftInteractionContext(),
+    destinations: [],
+  };
+
+  await execution.start({
+    turnId: "turn-interaction-no-destination",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-no-destination", "Could you review this?"),
+      interaction: {
+        ...noDestinationInteraction,
+        destinations: [],
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-no-destination" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, []);
+  const transcript = await readTranscript(
+    path.join(root, "transcript", "2026-08-03", "agent.jsonl"),
+  );
+  assert.ok(
+    transcript.some(entry => JSON.stringify(entry).includes(
+      "message send requires an Interaction Destination from the current Interaction",
+    )),
+    "the rejected send must be recorded in the Primary Transcript",
+  );
+});
+
+test("uses the proactive default Route for a proactive Turn without a configured Destination", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-proactive-route-only-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "I wanted to share this while it was still alive.",
+    }, { id: "message-proactive-route-only" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+    defaultInteractionRoute: "raft:server-1",
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-proactive-route-only",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("opportunity-route-only", "background opportunity"),
+      kind: "opportunity",
+      payload: {
+        version: 1,
+        narrative: "A concrete thing may be worth sharing.",
+        observedAt: "2026-08-03T05:00:00.000Z",
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-proactive-route-only" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "I wanted to share this while it was still alive." },
+    routeRef: "raft:server-1",
+  }]);
+});
+
+test("lets a Weixin-origin Turn answer through the Raft Destination and delivers by its routeRef", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-cross-channel-destination-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "send",
+      text: "This report belongs in the Raft place.",
+      destination_ref: "raft:server-1:principal-dm",
+    }, { id: "message-cross-channel" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+    defaultInteractionRoute: "raft:server-1",
+    channelAgentSurface: {
+      guidance: "Weixin and Raft are both available places.",
+      tools: { names: [], create: () => [] },
+      destinations: [
+        {
+          destinationRef: "weixin:primary-route:peer",
+          routeRef: "primary-route",
+          kind: "top_level",
+          label: "Weixin peer",
+        },
+        {
+          destinationRef: "raft:server-1:principal-dm",
+          routeRef: "raft:server-1",
+          kind: "top_level",
+          label: "principal DM",
+        },
+      ],
+      defaultDestination: {
+        destinationRef: "raft:server-1:principal-dm",
+        routeRef: "raft:server-1",
+        kind: "top_level",
+        label: "principal DM",
+      },
+    },
+  });
+  t.after(() => execution.close());
+  const effects: EffectRequest[] = [];
+
+  await execution.start({
+    turnId: "turn-cross-channel",
+    leaseToken: 1,
+    recordingDay: "2026-08-03",
+    inputs: [{
+      ...executionInput("input-cross-channel", "Please look at this."),
+      interaction: {
+        routeRef: "primary-route",
+        signal: "direct_message",
+        actor: {
+          actorRef: "external:weixin:primary-route:peer",
+          kind: "human",
+          label: "Lin",
+        },
+        place: {
+          placeRef: "weixin:primary-route:peer",
+          kind: "direct",
+          label: "Lin",
+          visibility: "private",
+        },
+        audience: { visibility: "private", description: "Lin and the Individual" },
+        references: [{ kind: "message", ref: "weixin:primary-route:message-7" }],
+        destinations: [{
+          destinationRef: "weixin:primary-route:peer",
+          routeRef: "primary-route",
+          kind: "top_level",
+          label: "Weixin peer",
+        }],
+        defaultDestinationRef: "weixin:primary-route:peer",
+      },
+    }],
+  }, {
+    includeInput: () => {},
+    prepareExecutionState: () => {},
+    replaceExecutionState: () => {},
+    recordToolActivity: () => {},
+    prepareEffect: effect => {
+      effects.push(effect);
+      return { effectId: "effect-cross-channel" };
+    },
+  }).result;
+
+  assert.deepEqual(effects, [{
+    kind: "message",
+    payload: { text: "This report belongs in the Raft place." },
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:principal-dm",
+  }]);
+});
+
 test("requires an explicit Destination after multiple Interaction places enter a Turn", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-multiple-destinations-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
@@ -2054,7 +2320,6 @@ test("asks once for a missing message decision in the same interaction", async t
     model,
     harnessSystemPrompt: "You are the primary Agent.",
     interactionEnabled: true,
-    defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
   const effects: EffectRequest[] = [];
@@ -2063,7 +2328,10 @@ test("asks once for a missing message decision in the same interaction", async t
     turnId: "turn-1",
     leaseToken: 1,
     recordingDay: "2026-07-19",
-    inputs: [executionInput("input-1", "hello")],
+    inputs: [{
+      ...executionInput("input-1", "hello"),
+      interaction: raftInteractionContext(),
+    }],
   }, {
     includeInput: () => {},
     prepareExecutionState: () => {},
@@ -2079,7 +2347,8 @@ test("asks once for a missing message decision in the same interaction", async t
   assert.deepEqual(effects, [{
     kind: "message",
     payload: { text: "A visible reply." },
-    routeRef: "primary-route",
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
   }]);
   const transcript = await readTranscript(path.join(transcriptDirectory, "2026-07-19", "agent.jsonl"));
   const markerIndex = transcript.findIndex(entry =>
@@ -2143,7 +2412,6 @@ test("prepares a message Effect through the Main Agent action interface", async 
     model,
     harnessSystemPrompt: "You are the primary Agent.",
     interactionEnabled: true,
-    defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
   const effects: EffectRequest[] = [];
@@ -2152,7 +2420,10 @@ test("prepares a message Effect through the Main Agent action interface", async 
     turnId: "turn-1",
     leaseToken: 1,
     recordingDay: "2026-07-19",
-    inputs: [executionInput("input-1", "hello")],
+    inputs: [{
+      ...executionInput("input-1", "hello"),
+      interaction: raftInteractionContext(),
+    }],
   }, {
     includeInput: () => {},
     prepareExecutionState: () => {},
@@ -2168,7 +2439,8 @@ test("prepares a message Effect through the Main Agent action interface", async 
   assert.deepEqual(effects, [{
     kind: "message",
     payload: { text: "A message from the Individual." },
-    routeRef: "primary-route",
+    routeRef: "raft:server-1",
+    destinationRef: "raft:server-1:channel-3:top-level",
   }]);
 });
 
@@ -2195,7 +2467,6 @@ test("snapshots a Workspace file before accepting an outbound message Effect", a
     model,
     harnessSystemPrompt: "You are the primary Agent.",
     interactionEnabled: true,
-    defaultInteractionRoute: "primary-route",
     attachmentStore,
   });
   t.after(() => execution.close());
@@ -2205,7 +2476,10 @@ test("snapshots a Workspace file before accepting an outbound message Effect", a
     turnId: "turn-attachment-send",
     leaseToken: 1,
     recordingDay: "2026-07-24",
-    inputs: [executionInput("input-attachment-send", "send the note")],
+    inputs: [{
+      ...executionInput("input-attachment-send", "send the note"),
+      interaction: raftInteractionContext(),
+    }],
   }, {
     ...noEffectControl(),
     prepareEffect: effect => {

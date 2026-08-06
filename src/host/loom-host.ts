@@ -16,13 +16,9 @@ import {
   type ProcessDriverStatus,
 } from "../instance/index.js";
 import { resolveInstanceLayout } from "../instance/layout.js";
-import {
-  openConfiguredWeixinAdapter,
-  type WeixinAdapter,
-} from "../channels/weixin/index.js";
+import { openConfiguredWeixinAdapter } from "../channels/weixin/index.js";
 import {
   openConfiguredRaftChannel,
-  type RaftChannel,
   type RaftRemote,
 } from "../channels/raft/index.js";
 import {
@@ -254,10 +250,10 @@ class DefaultLoomHost implements LoomHost {
 export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHost> {
   const root = path.resolve(options.root);
   const ownership = await acquireInstanceRootOwnership(root);
-  let weixin: WeixinAdapter | undefined;
-  let raft: RaftChannel | undefined;
   let web: WebAccessIntegration | undefined;
   let attachmentStore: AttachmentStore | undefined;
+  let channels: LoomInteractionChannels | undefined;
+  const interactionChannels: InteractionChannel[] = [];
   try {
     const layout = resolveInstanceLayout(root);
     attachmentStore = await openAttachmentStore({
@@ -268,9 +264,8 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       file: layout.configurationFile,
       ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
     });
-    const interactionChannels: InteractionChannel[] = [];
     if (configuration.channels.weixin) {
-      weixin = await openConfiguredWeixinAdapter({
+      const weixin = await openConfiguredWeixinAdapter({
         configurationFile: layout.weixinConfigurationFile,
         authFile: layout.weixinAuthFile,
         stateFile: layout.weixinStateFile,
@@ -280,7 +275,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       interactionChannels.push(weixin);
     }
     if (configuration.channels.raft) {
-      raft = await openConfiguredRaftChannel({
+      const raft = await openConfiguredRaftChannel({
         configurationFile: layout.raftConfigurationFile,
         stateFile: layout.raftStateFile,
         ...(options.raftRemote ? { remote: options.raftRemote } : {}),
@@ -306,7 +301,10 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
     }
     const { raftRemote: _raftRemote, ...instanceOptions } = options;
-    const channels = openLoomInteractionChannels({
+    // The collection owns every Channel from here on: start, rollback, stop,
+    // delivery routing and surface composition. The Host never touches an
+    // individual Channel again.
+    channels = openLoomInteractionChannels({
       channels: interactionChannels,
       ...(configuration.defaultInteractionRoute
         ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
@@ -337,8 +335,18 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       ...(options.now ? { now: options.now } : {}),
     });
   } catch (error) {
-    await weixin?.stop();
-    await raft?.stop();
+    // Channels opened but not yet handed to the collection are stopped by the
+    // collection; channels opened before its construction are stopped directly.
+    // Both adapters stop safely before their start() was ever called.
+    try {
+      if (channels) {
+        await channels.stop();
+      } else {
+        for (const channel of [...interactionChannels].reverse()) await channel.stop();
+      }
+    } catch {
+      // Best effort cleanup; the original failure is the reported cause.
+    }
     attachmentStore?.close();
     ownership.release();
     throw error;

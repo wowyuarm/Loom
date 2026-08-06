@@ -17,8 +17,8 @@ Before changing anything, establish:
   intentional migration;
 - the target host, Unix account, Instance Root and service name;
 - which host changes, interruptions and private materials the user authorizes;
-- which model and Integrations the Instance should use, and where their
-  credentials already live;
+- which model, Channels and Integrations the Instance should use, and where
+  their credentials already live;
 - what observable result will count as completion.
 
 Do not invent Identity, Stable Facts, Long-term Memory, Current Attention or a
@@ -30,14 +30,14 @@ the authorized environment.
 | User need | Guide |
 | --- | --- |
 | Install Loom, initialize an Instance, configure systemd, update code or host multiple Individuals | [Instance Lifecycle](reference/instance-lifecycle.md) |
-| Configure models, credentials, schedules, routes or enabled Integrations | [Configuration And Credentials](reference/configuration-and-credentials.md) |
+| Configure models, credentials, schedules, Interaction Channels, routes or enabled Integrations | [Configuration And Credentials](reference/configuration-and-credentials.md) |
 | View live state, understand recent Agent runs, investigate failure or recover a process | [Status And Diagnosis](reference/status-and-diagnosis.md) |
 | Back up, restore or migrate a complete Instance | [Backup, Restore And Migration](reference/backup-and-restore.md) |
 | Enable or verify an Interaction Channel | [Weixin](../integrations/weixin.md) or [Raft](../integrations/raft.md) |
 | Enable or verify an Integration | [nmem](../integrations/nmem.md) or [Web Access](../integrations/web.md) |
 
-Read only the guides needed for the user's request. Integration-specific login,
-configuration and acceptance belong to the corresponding Integration guide.
+Read only the guides needed for the user's request. Login, configuration and
+acceptance specifics belong to the corresponding Channel or Integration guide.
 
 ## Common Operating Contract
 
@@ -48,11 +48,11 @@ configuration and acceptance belong to the corresponding Integration guide.
 - Use `~/.loom` by default. Supply `--root` only when the deployment deliberately
   uses a non-default Instance Root.
 - Never start a second Host for an active Instance Root or open its private
-  Runtime, Integration or Transcript stores as an operator shortcut.
+  Runtime, Channel, Integration or Transcript stores as an operator shortcut.
 - Never expose credentials, message bodies, Transcripts, attachment contents or
   private Workspace material in logs, tickets or summaries.
 - Treat unavailable or insufficient evidence as `unknown`. Do not infer that a
-  running service means its models, Agents or Integrations are working.
+  running service means its models, Agents, Channels or Integrations are working.
 - Obtain explicit authorization before interrupting a live Host, changing host
   configuration, accessing private backup material, restoring or migrating.
 
@@ -71,5 +71,5 @@ configuration and acceptance belong to the corresponding Integration guide.
 
 Finish by reporting what changed, what evidence was actually observed, what
 remains unknown, and whether the work interrupted the Individual. Do not claim
-deployment, Integration, backup or recovery success beyond the checks that were
-performed.
+deployment, Channel or Integration enablement, backup or recovery success
+beyond the checks that were performed.

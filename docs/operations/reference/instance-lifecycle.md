@@ -76,7 +76,7 @@ npm run build
 # Create one account and its blank Instance scaffold.
 useradd --system --create-home --home-dir /home/loom-hal --shell /usr/sbin/nologin loom-hal
 install -d -o loom-hal -g loom-hal -m 700 /home/loom-hal
-sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js init --root /home/loom-hal/.loom
+sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js init --root /home/loom-hal/.loom --channel raft
 
 # After supplying authorized Individual material, configuration and credentials,
 # install and start the Host.
@@ -89,7 +89,6 @@ Run Loom clients as the matching Instance account:
 
 ```bash
 sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js status --root /home/loom-hal/.loom
-sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js chat --root /home/loom-hal/.loom "..."
 sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js history --root /home/loom-hal/.loom
 ```
 

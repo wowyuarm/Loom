@@ -11,7 +11,7 @@ Loom 的设计来自一个已长期运行的真实 agent 的经验沉淀与通�
 一个 Runtime Instance 由四类执行模块装配而成，它们各自持有不同的持久面：
 
 ```
-Instance Configuration          装配一切：时间、模型、Integration、调度
+Instance Configuration          装配一切：时间、模型、Channel、Integration、调度
 
 Runtime                         持有 Runtime Store（本地 SQLite）
   │                               input · 时间 · turn · effect / delivery
@@ -29,8 +29,10 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   │     Thread Maintainer         维护私人工作线 Threads 的结构连续性
   │     Tool Trace Compactor      压缩过长的工具轨迹
   │
+  ├── Interaction Channels       默认关闭，Instance Configuration 显式启用
+  │     Weixin · Raft
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Weixin · Raft · Web Access · nmem · Attachments
+        Web Access · nmem · Attachments
 ```
 
 这些东西归属分明：**Agent Workspace** 是 Individual 自己的--身份、关系、记忆、私人工作都在这里，Harness 不替它决定。运行事实、执行证据和装配配置归 Harness 持有，让进程能恢复、能审计、能重新装配。
@@ -43,7 +45,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 
 - **阶段**：早期，单 Instance，前台 Host 运行。Loom 不负责 OS service 安装，也不替 Individual 生成身份。
 - **已验证**：Weixin（文字 / 单张入站图片 / 单个出站附件）、Raft（机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行）、多 Interaction Channel 并行与 model-facing surface 合并、Web Access（搜索与公开网页抓取）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。
-- **边界**：一个 Instance 至少启用一个 Interaction Channel（`loom init --channel` 显式选择，可同时启用多个）；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Integration。
+- **边界**：一个 Instance 至少启用一个 Interaction Channel（`loom init --channel` 显式选择，可同时启用多个）；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Interaction Channel 能力范围。
 
 ## 快速开始
 
@@ -58,12 +60,12 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 ```bash
 npm ci
 npm run build
-node dist/src/cli.js init
+node dist/src/cli.js init --channel raft
 ```
 
 `init` 只创建基础目录，不生成 Individual 材料，也不覆盖已有文件。继续准备实例见
-[Instance Lifecycle](docs/operations/reference/instance-lifecycle.md)；模型、key 和
-Integration 配置见
+[Instance Lifecycle](docs/operations/reference/instance-lifecycle.md)；模型、key、
+Channel 和 Integration 配置见
 [Configuration And Credentials](docs/operations/reference/configuration-and-credentials.md)。
 
 运行 Instance：

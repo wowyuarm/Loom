@@ -1,6 +1,6 @@
-# Weixin Integration
+# Weixin Interaction Channel
 
-Loom 当前支持一个 Runtime Instance 配置一个 Weixin route 和一个固定 peer。第一阶段接收文字和单张图片，并可发送文字和一个 Agent Workspace 现有文件的不可变快照。Integration 配置、凭据、附件原始内容和动态状态都在 Agent Workspace 外；Main Agent 只看到 `message`、通用 Attachment 和不透明的默认 Interaction Route。
+Loom 当前支持一个 Runtime Instance 配置一个 Weixin route 和一个固定 peer。第一阶段接收文字和单张图片，并可发送文字和一个 Agent Workspace 现有文件的不可变快照。Channel 配置、凭据、附件原始内容和动态状态都在 Agent Workspace 外；Main Agent 只看到 `message`、通用 Attachment 和不透明的默认 Interaction Route。
 
 ## Files
 
@@ -53,4 +53,4 @@ Inbound 只接受配置 peer 的完成消息。文字直接进入 Input；一张
 
 Outbound 在接受 Effect 前把 `message.send` 指定的 Agent Workspace 文件快照进 Attachment Store，之后的文件修改不影响投递。Runtime Delivery attempt 的 idempotency key 是稳定前缀；带文字的附件分别使用 `:text` 和 `:attachment` client id。明确 API 拒绝进入 `not_sent` 退避；网络或 HTTP 结果不明进入 `unknown`。若文字已送达而附件失败，整个 Delivery 进入 `unknown`，不会自动重发文字。context token 明确过期时，Adapter 在同一 attempt 内清掉 token 并重试一次。
 
-语音/ASR、入站普通文件、视频、引用媒体、typing、登录/配对和多附件不属于当前 Integration。
+语音/ASR、入站普通文件、视频、引用媒体、typing、登录/配对和多附件不属于当前 Interaction Channel 能力范围。

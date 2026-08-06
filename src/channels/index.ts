@@ -1,3 +1,4 @@
+export { RESERVED_LOOM_TOOL_NAMES } from "./reserved-tool-names.js";
 export type { InteractionChannel, InteractionChannelStatus } from "./channel.js";
 export type {
   ExternalAttentionEvidence,

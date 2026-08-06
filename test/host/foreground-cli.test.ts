@@ -164,7 +164,7 @@ test("runs one prepared Instance until a termination signal requests graceful st
   assert.equal(signal, null);
   assert.match(stdout, /"event":"host\.stopped"/);
   assert.match(stdout, /"event":"model\.runtime"/);
-  assert.match(stdout, /"event":"integration\.state"/);
+  assert.match(stdout, /"event":"channel\.state"/);
   assert.match(stdout, /"event":"driver\.run\.started"/);
   assert.match(stdout, /"event":"driver\.run\.completed"/);
 });
@@ -199,7 +199,7 @@ test("chats through the running Weixin channel and rebuilds history in another c
   );
   for (const event of [
     "model.runtime",
-    "integration.state",
+    "channel.state",
     "runtime.transition",
     "driver.run.started",
     "driver.run.completed",

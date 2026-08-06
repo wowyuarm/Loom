@@ -204,26 +204,62 @@ test("returns no agent surface when no Channel provides one", () => {
   assert.equal(channels.agentSurface(), undefined);
 });
 
-test("takes the default Destination only from the default Route", () => {
+test("exposes every Channel's stable Destination and keeps the default only from the default Route", async () => {
   const weixinDestination = {
     destinationRef: "weixin-destination",
     routeRef: "weixin-route",
     kind: "top_level" as const,
+    label: "Weixin peer",
   };
   const raftDestination = {
     destinationRef: "raft-destination",
     routeRef: "raft-route",
     kind: "top_level" as const,
+    label: "principal DM",
   };
+  const delivered: string[] = [];
   const channels = openLoomInteractionChannels({
     channels: [
-      mockChannel({ id: "weixin", routeRef: "weixin-route", surface: { defaultDestination: weixinDestination } }),
-      mockChannel({ id: "raft", routeRef: "raft-route", surface: { defaultDestination: raftDestination } }),
+      mockChannel({
+        id: "weixin",
+        routeRef: "weixin-route",
+        surface: { defaultDestination: weixinDestination },
+        deliver: attempt => {
+          delivered.push(`weixin:${attempt.routeRef}`);
+          return { status: "delivered", remoteId: "w" };
+        },
+      }),
+      mockChannel({
+        id: "raft",
+        routeRef: "raft-route",
+        surface: { defaultDestination: raftDestination },
+        deliver: attempt => {
+          delivered.push(`raft:${attempt.routeRef}`);
+          return { status: "delivered", remoteId: "r" };
+        },
+      }),
     ],
     defaultInteractionRoute: "raft-route",
   });
 
-  assert.deepEqual(channels.agentSurface()?.defaultDestination, raftDestination);
+  const surface = channels.agentSurface();
+  assert.ok(surface);
+  assert.deepEqual(surface.defaultDestination, raftDestination);
+  assert.deepEqual(surface.destinations, [weixinDestination, raftDestination]);
+
+  // A Turn that arrived through Weixin can still answer through the Raft place:
+  // the Effect fixed the Raft Destination, so the collection routes it by its
+  // routeRef to the Raft Channel, and the Weixin Channel never sees it.
+  assert.deepEqual(await channels.deliver({
+    attemptId: "attempt-cross",
+    effectId: "effect-cross",
+    routeRef: "raft-route",
+    kind: "message",
+    payload: { text: "I will answer in Raft." },
+    destinationRef: "raft-destination",
+    idempotencyKey: "key-cross",
+  }), { status: "delivered", remoteId: "r" });
+  assert.deepEqual(delivered, ["raft:raft-route"]);
 });
 
 test("passes a single attention source through untouched", async () => {

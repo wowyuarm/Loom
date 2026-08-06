@@ -105,7 +105,7 @@ Raft status 有四种状态：
 - `stopped`：Host 已完成 graceful stop。
 
 这些状态可通过 `loom status` 的 Raft 条目读取；`--json` 提供相同状态的结构化形式。
-`loom run` 启动时也会输出一条 Raft `integration.state`，但该诊断事件不能替代当前
+`loom run` 启动时也会输出一条 Raft `channel.state` 事件，但该诊断事件不能替代当前
 status。运行中 bridge 后来失联会反映为 `degraded`，当前不会另外推送一条状态变化
 事件。不要把进程仍在运行当成 Raft 一定 connected。
 
@@ -190,5 +190,5 @@ hold、task 冲突等明确未执行结果记为 `not_sent`；连接在结果确
 12. 停掉 Host 后发送 DM，再启动 Host；无需额外新消息或 wake，旧 DM 也能进入一次且
     只进入一次，bridge 补偿日志不再反复显示同一批 `handoff_pending`。
 
-当前 Raft 集成仍处于首个真实验收阶段。在一份独立、非个人的 Raft-only Instance
+当前 Raft Channel 实现仍处于首个真实验收阶段。在一份独立、非个人的 Raft-only Instance
 完成以上检查前，不应把 fake CLI 测试当作生产可用证明。

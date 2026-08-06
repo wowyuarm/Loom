@@ -72,9 +72,9 @@ async function main(argv: string[]): Promise<void> {
     });
     for (const [channel, status] of Object.entries(runningStatus.channels ?? {})) {
       observe({
-        event: "integration.state",
+        event: "channel.state",
         at: operationalTimestamp(),
-        integration: channel,
+        channel,
         state: status.state,
       });
     }

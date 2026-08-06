@@ -22,9 +22,15 @@ interface MessageToolDetails {
 export function createMessageTool(options: {
   control: TurnControl;
   routeRef?: string;
+  /** Destinations authorized by the current Interaction, if the Turn has one. */
   destinations?: () => InteractionDestination[];
+  /** Stable Destinations of every enabled Interaction Channel. */
+  channelDestinations?: () => InteractionDestination[];
   interactionDefaultDestination?: () => InteractionDestination | undefined;
+  /** Proactive fallback of the default Route; never used while a Turn has an Interaction. */
   defaultDestination?: InteractionDestination;
+  /** Whether the current Turn includes an Interaction; disables proactive fallbacks. */
+  hasInteraction?: () => boolean;
   decision: MessageTurnDecision;
   attachmentStore?: AttachmentStore;
   workspaceRoot: string;
@@ -37,10 +43,11 @@ export function createMessageTool(options: {
       "Assistant output outside this tool is private and is not delivered.",
       "send creates one durable outbound Effect. Tool success means the Harness accepted it; it does not mean Delivery succeeded or the human received it.",
       "When attachment_path is present, Loom snapshots that Workspace file before accepting the Effect. Later edits cannot change the accepted attachment.",
-      "Call message more than once when several separate messages are natural.",
+      "One call produces one visible message; several natural messages need several calls, and a blank line inside one text does not split it into separate messages.",
       "send ends the Turn by default. Use after_send=continue when another message, tool action, or further work should follow in the same Turn.",
       "no_reply creates no outbound Effect and ends the Turn. It means the current interaction can naturally stop without forcing another response.",
       "A proactive Turn that simply lets an opportunity pass does not need to call no_reply.",
+      "Every enabled Channel's stable Destination is selectable through destination_ref; a Turn that arrived through one Channel may still answer through another when that is the right place.",
     ].join(" "),
     parameters: Type.Object({
       action: Type.Optional(Type.Union([
@@ -103,16 +110,22 @@ export function createMessageTool(options: {
             source: attachmentPath,
           })
         : undefined;
+      const interactionDestinations = options.destinations?.() ?? [];
+      const hasInteraction = options.hasInteraction?.() ?? false;
       const destination = selectDestination(
-        options.destinations?.() ?? [],
+        interactionDestinations,
+        [...interactionDestinations, ...(options.channelDestinations?.() ?? [])],
         params.destination_ref,
         options.interactionDefaultDestination?.(),
         options.defaultDestination,
+        hasInteraction,
       );
-      const routeRef = destination?.routeRef ?? options.routeRef;
+      const routeRef = destination?.routeRef ?? (hasInteraction ? undefined : options.routeRef);
       if (!routeRef) {
         throw new Error(
-          "message send requires an Interaction Destination when no default Route is configured",
+          hasInteraction
+            ? "message send requires an Interaction Destination from the current Interaction"
+            : "message send requires an Interaction Destination when no default Route is configured",
         );
       }
       const effect = {
@@ -150,19 +163,27 @@ export function createMessageTool(options: {
 }
 
 function selectDestination(
-  destinations: InteractionDestination[],
+  interactionDestinations: InteractionDestination[],
+  availableDestinations: InteractionDestination[],
   requested: string | undefined,
   interactionDefaultDestination: InteractionDestination | undefined,
   defaultDestination: InteractionDestination | undefined,
+  hasInteraction: boolean,
 ): InteractionDestination | undefined {
-  const unique = [...new Map(destinations.map(destination => [destination.destinationRef, destination])).values()];
+  const available = [...new Map(availableDestinations.map(destination => [destination.destinationRef, destination])).values()];
+  const interactionOnly = [...new Map(interactionDestinations.map(destination => [destination.destinationRef, destination])).values()];
   if (requested?.trim()) {
-    const selected = unique.find(destination => destination.destinationRef === requested.trim());
+    const selected = available.find(destination => destination.destinationRef === requested.trim());
     if (!selected) throw new Error("message destination_ref is not available in the current Interaction Context");
     return selected;
   }
   if (interactionDefaultDestination) return interactionDefaultDestination;
-  if (unique.length === 0) return defaultDestination;
-  if (unique.length === 1) return unique[0];
+  if (interactionOnly.length === 0) {
+    if (hasInteraction) {
+      throw new Error("message send requires an Interaction Destination from the current Interaction");
+    }
+    return defaultDestination;
+  }
+  if (interactionOnly.length === 1) return interactionOnly[0];
   throw new Error("message send requires destination_ref when more than one Interaction Destination is available");
 }

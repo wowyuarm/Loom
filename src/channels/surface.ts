@@ -26,11 +26,15 @@ export interface InteractionChannelTools {
 /**
  * The model-facing part of an enabled Interaction Channel. Protocol, ingress,
  * delivery and recovery stay behind the channel adapter; Main Agent only sees
- * the stable guidance, bounded tools and explicitly configured fallback place.
+ * the stable guidance, bounded tools and explicitly configured fallback places.
+ * The composed surface adds `destinations`: every stable Destination of every
+ * enabled Channel, so the model can answer a Turn through any Channel, while
+ * `defaultDestination` stays the proactive fallback of the default Route.
  */
 export interface InteractionChannelAgentSurface {
   guidance: string;
   tools: InteractionChannelTools;
+  destinations?: InteractionDestination[];
   defaultDestination?: InteractionDestination;
   attentionSource?: InteractionChannelAttentionSource;
 }
