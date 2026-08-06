@@ -156,7 +156,7 @@ test("releases Instance Root ownership when Instance opening fails", async () =>
   await writeFile(configuration, "version: [malformed", "utf8");
 
   await assert.rejects(openLoomHost({ root }), /Instance Configuration could not be read/);
-  await rm(configuration);
+  await writeFile(configuration, "version: 1\n", "utf8");
 
   const recovered = await openLoomHost({ root });
   await recovered.stop();
@@ -531,8 +531,11 @@ const outboundEffectExecution: AgentExecution = {
 async function preparedInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-host-"));
   const workspace = path.join(root, "workspace");
+  const configuration = path.join(root, "configuration");
   await mkdir(path.join(workspace, "behavior"), { recursive: true });
+  await mkdir(configuration, { recursive: true });
   await Promise.all([
+    writeFile(path.join(configuration, "instance.yaml"), "version: 1\n", "utf8"),
     writeFile(path.join(workspace, "facts.json"), JSON.stringify({
       version: 1,
       individual: { name: "Rowan", languages: ["en"] },

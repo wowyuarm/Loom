@@ -1041,6 +1041,7 @@ test("keeps a due Pulse unclaimed while model configuration is blocked", async t
 async function createInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-instance-"));
   await mkdir(path.join(root, "configuration", "pi"), { recursive: true });
+  await writeFile(path.join(root, "configuration", "instance.yaml"), "version: 1\n", "utf8");
   return root;
 }
 

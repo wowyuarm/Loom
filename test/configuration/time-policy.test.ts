@@ -34,18 +34,13 @@ test("loads an explicit time policy across a daylight-saving transition", async 
   );
 });
 
-test("uses the machine time zone and Harness logical-day default when config is absent", async () => {
+test("rejects a missing Instance Configuration", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-configuration-default-"));
-  const configuration = await loadInstanceConfiguration({
-    file: path.join(root, "missing-instance.yaml"),
-    machineTimeZone: "Asia/Tokyo",
-  });
+  const file = path.join(root, "missing-instance.yaml");
 
-  assert.equal(configuration.timePolicy.timeZone, "Asia/Tokyo");
-  assert.equal(configuration.timePolicy.logicalDayStart, "03:00");
-  assert.equal(
-    configuration.timePolicy.recordingDay(new Date("2026-07-21T17:30:00.000Z")),
-    "2026-07-21",
+  await assert.rejects(
+    loadInstanceConfiguration({ file, machineTimeZone: "Asia/Tokyo" }),
+    /Instance Configuration could not be read:.*ENOENT.*missing-instance\.yaml/,
   );
 });
 
@@ -118,10 +113,9 @@ test("requires explicit Integration enablement and keeps Integrations disabled b
   ].join("\n"), "utf8");
 
   const configured = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
-  const defaults = await loadInstanceConfiguration({
-    file: path.join(root, "missing.yaml"),
-    machineTimeZone: "UTC",
-  });
+  const defaultsFile = path.join(root, "defaults.yaml");
+  await writeFile(defaultsFile, "version: 1\n", "utf8");
+  const defaults = await loadInstanceConfiguration({ file: defaultsFile, machineTimeZone: "UTC" });
 
   assert.deepEqual(configured.integrations, { local: true, weixin: false, raft: true, web: true, nmem: true });
   assert.deepEqual(defaults.integrations, { local: false, weixin: false, raft: false, web: false, nmem: false });
@@ -143,10 +137,9 @@ test("loads the proactive Pulse schedule with Harness defaults and explicit over
   ].join("\n"), "utf8");
 
   const configured = await loadInstanceConfiguration({ file, machineTimeZone: "UTC" });
-  const defaults = await loadInstanceConfiguration({
-    file: path.join(root, "missing.yaml"),
-    machineTimeZone: "UTC",
-  });
+  const defaultsFile = path.join(root, "defaults.yaml");
+  await writeFile(defaultsFile, "version: 1\n", "utf8");
+  const defaults = await loadInstanceConfiguration({ file: defaultsFile, machineTimeZone: "UTC" });
 
   assert.deepEqual(configured.schedule.proactivePulse, {
     intervalMinutes: 45,

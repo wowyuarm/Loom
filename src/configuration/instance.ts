@@ -94,9 +94,6 @@ export async function loadInstanceConfiguration(
   try {
     document = parse(await readFile(options.file, "utf8"), { uniqueKeys: true });
   } catch (error) {
-    if (isMissingFile(error)) {
-      return defaultConfiguration(machineTimeZone);
-    }
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Instance Configuration could not be read: ${message}`);
   }
@@ -313,15 +310,6 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
     && ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
-function defaultConfiguration(machineTimeZone: string): InstanceConfiguration {
-  return {
-    version: 1,
-    timePolicy: createTimePolicy({ timeZone: machineTimeZone }),
-    schedule: DEFAULT_SCHEDULE,
-    integrations: defaultIntegrations(),
-  };
-}
-
 function currentMachineTimeZone(): string {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (!timeZone) throw new Error("Host machine did not expose an IANA time zone");
@@ -341,8 +329,4 @@ function assertOnlyKeys(
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissingFile(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
