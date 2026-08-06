@@ -23,7 +23,7 @@ import type {
 } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
-import type { ExternalAttentionEvidence } from "../main-agent/channel-surface.js";
+import type { ExternalAttentionEvidence } from "../channels/surface.js";
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 20;
 const MAX_ACTIVITY_PAGE_SIZE = 200;

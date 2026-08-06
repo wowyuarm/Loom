@@ -30,7 +30,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   │     Tool Trace Compactor      压缩过长的工具轨迹
   │
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Local · Weixin · Raft · Web Access · nmem · Attachments
+        Weixin · Raft · Web Access · nmem · Attachments
 ```
 
 这些东西归属分明：**Agent Workspace** 是 Individual 自己的--身份、关系、记忆、私人工作都在这里，Harness 不替它决定。运行事实、执行证据和装配配置归 Harness 持有，让进程能恢复、能审计、能重新装配。
@@ -42,8 +42,8 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 ## 现状
 
 - **阶段**：早期，单 Instance，前台 Host 运行。Loom 不负责 OS service 安装，也不替 Individual 生成身份。
-- **已验证**：Local interaction channel、Weixin（文字 / 单张入站图片 / 单个出站附件）、Web Access（搜索与公开网页抓取）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。Raft 的机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行。
-- **边界**：一个 Instance 只启用一个 interaction channel；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Integration。
+- **已验证**：Weixin（文字 / 单张入站图片 / 单个出站附件）、Raft（机械实现与本地合同已通过测试，独立 Raft-only Instance 的真实验收仍在进行）、多 Interaction Channel 并行与 model-facing surface 合并、Web Access（搜索与公开网页抓取）、nmem 可选集成、Instance 初始化、第二个 Individual 的真实模型端到端验收。
+- **边界**：一个 Instance 至少启用一个 Interaction Channel（`loom init --channel` 显式选择，可同时启用多个）；不预建通用运维或评估体系；语音 / ASR、入站普通文件、视频、多附件不属于当前 Integration。
 
 ## 快速开始
 
@@ -78,9 +78,8 @@ node dist/src/cli.js run
 `--root`。在仓库开发期可 `npm link` 后直接使用 `loom`：
 
 ```bash
-loom init
+loom init --channel weixin [--channel raft]
 loom run
-loom chat "hello"
 loom history
 loom status
 loom status --json
@@ -88,20 +87,23 @@ loom status --since 2026-08-03T00:00:00Z
 loom requeue <blocked-input-id>
 ```
 
-`chat` 和 `history` 通过启用的 Local Unix socket 读写互动视图；`status`
-通过独立的本机 operator socket 查询正在运行的 Host，因此在 Raft-only 或
-Weixin-only 实例上同样可用。Host 不在时返回 `unavailable`，不会直接打开
-Runtime Store 猜测当前状态，并以退出码 1 结束。`--since` 只增加该时间后的
-无内容 Agent 运行摘要。`requeue` 通过同一 Host 将一条明确 `blocked` 的 Input
-恢复为 `pending`；它不接受其他状态，也不直接修改 Runtime Store。
+`init` 必须显式指定一个或多个 `--channel`（`weixin` / `raft`）；不传直接报
+usage，不替用户猜默认渠道。`history` 通过 Host 的 status socket 读取互动视图，
+每条往来消息按所在 Channel 名分组展示；`status` 通过同一本机 operator socket
+查询正在运行的 Host，报告每个启用 Channel 与 Integration 的状态，因此在
+Raft-only 或 Weixin-only 实例上同样可用。Host 不在时返回 `unavailable`，不会
+直接打开 Runtime Store 猜测当前状态，并以退出码 1 结束。`--since` 只增加该
+时间后的无内容 Agent 运行摘要。`requeue` 通过同一 Host 将一条明确 `blocked`
+的 Input 恢复为 `pending`；它不接受其他状态，也不直接修改 Runtime Store。
 
 Instance Root 布局：
 
 ```
 <root>/
 ├── configuration/
-│   ├── instance.yaml          装配、时间、模型、Integration、调度
+│   ├── instance.yaml          装配、时间、模型、Channel、Integration、调度
 │   ├── pi/                    auth.json · models.json · models-store.json
+│   ├── channels/<name>/       config.json · auth.json（按需）
 │   └── integrations/<name>/   config.json · auth.json（按需）
 ├── workspace/                 Agent Individual 拥有
 │   ├── identity.md  memory.md  attention.md  facts.json
@@ -111,7 +113,8 @@ Instance Root 布局：
 │   ├── host-lock.db           Host 独占锁
 │   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
-│   └── integrations/          channel state · raft.db · raft-bridge/ · nmem.db · attachments/
+│   ├── channels/              weixin.db · raft.db
+│   └── integrations/          raft-bridge/ · nmem.db · attachments/
 ├── transcripts/{main,organs}/
 └── backups/                   认知器官写前备份
 ```

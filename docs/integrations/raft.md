@@ -5,8 +5,8 @@ Raft External Agent 身份进入同一 Raft server；Raft 负责外部交流场�
 持有 Individual 的 Workspace、Runtime、Transcript、记忆与恢复事实。
 
 当前版本固定使用 `@botiverse/raft@0.0.17`，支持文字 Interaction、通用
-`message`、四个有界读取工具，以及已有 task 和自身注意力的受控操作。一个 Instance
-仍然只能启用一个 Interaction Channel，因此首个 Raft Instance 应关闭 Local 与 Weixin。
+`message`、四个有界读取工具，以及已有 task 和自身注意力的受控操作。Raft 与 Weixin
+可同时启用，多个 Interaction Channel 并行，Host 合并它们的 model-facing surface。
 
 ## 准备 Raft Profile
 
@@ -45,24 +45,22 @@ sudo -u loom-example -- \
 
 ## Instance 配置
 
-在 `configuration/instance.yaml` 中只启用 Raft，并让默认 route 与 Raft 配置一致：
+在 `configuration/instance.yaml` 中只启用 Raft（与 Weixin 同时启用时多个 Interaction Channel 并行），并让默认 route 与 Raft 配置一致：
 
 ```yaml
 version: 1
-integrations:
-  local:
-    enabled: false
+channels:
   weixin:
     enabled: false
   raft:
     enabled: true
-  nmem:
-    enabled: false
 interaction:
   defaultRoute: raft-primary
 ```
 
-新增 `configuration/integrations/raft/config.json`：
+至少一个 Interaction Channel 必须启用；全部禁用时 Host 拒绝打开。
+
+新增 `configuration/channels/raft/config.json`：
 
 ```json
 {
@@ -92,7 +90,7 @@ loom run --root /home/loom-example/.loom
 Host 会自动建立仅监听 loopback 的临时 wake endpoint，并启动固定版本的
 `raft agent bridge`。端口和随机 token 只存在于当前进程，不需要用户配置；bridge
 自己的持久重放状态位于 `runtime/integrations/raft-bridge/`，Loom 已接住的 wake、
-不透明引用和 Attention 状态位于 `runtime/integrations/raft.db`。不要手工编辑或只
+不透明引用和 Attention 状态位于 `runtime/channels/raft.db`。不要手工编辑或只
 复制其中一部分来代替完整 Instance 备份。
 
 固定版本的 bridge 还会从 wake 地址推导本地 `/activity/drain`。Loom 在该地址返回

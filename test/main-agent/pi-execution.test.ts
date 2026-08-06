@@ -1023,6 +1023,7 @@ test("requires a message decision after a human steers a proactive Turn", async 
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -1105,6 +1106,7 @@ test("reminds only the first human input to enter a Turn", async t => {
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -1178,6 +1180,7 @@ test("continues after chat in the current Context with the source background Beh
     modelRuntime,
     model,
     harnessSystemPrompt: "harness guidance",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
     loadContextMaterials: async () => ({
       turnLive: [],
@@ -1624,6 +1627,7 @@ test("reminds the Main Agent how to make the first interaction visible", async t
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -1664,6 +1668,7 @@ test("presents a Raft Input as actor-aware Interaction Context", async t => {
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
   });
   t.after(() => execution.close());
@@ -1718,6 +1723,7 @@ test("sends to the only Destination authorized by the current Interaction", asyn
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
   });
   t.after(() => execution.close());
@@ -1766,6 +1772,7 @@ test("uses the current Interaction default when known alternative Destinations a
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
   });
   t.after(() => execution.close());
@@ -1827,6 +1834,7 @@ test("sends explicitly to a known alternative Destination", async t => {
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
   });
   t.after(() => execution.close());
@@ -1887,6 +1895,7 @@ test("uses only the configured principal DM for a proactive message with no curr
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
     channelAgentSurface: {
       guidance: "Raft is an external shared collaboration place.",
@@ -1962,6 +1971,7 @@ test("requires an explicit Destination after multiple Interaction places enter a
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "raft:server-1",
   });
   t.after(() => execution.close());
@@ -2043,6 +2053,7 @@ test("asks once for a missing message decision in the same interaction", async t
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -2096,6 +2107,7 @@ test("fails an interaction that still has no message decision after the correcti
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -2130,6 +2142,7 @@ test("prepares a message Effect through the Main Agent action interface", async 
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());
@@ -2181,6 +2194,7 @@ test("snapshots a Workspace file before accepting an outbound message Effect", a
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
     attachmentStore,
   });
@@ -2229,6 +2243,7 @@ test("finishes with no_reply without preparing an Effect", async t => {
     modelRuntime,
     model,
     harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
     defaultInteractionRoute: "primary-route",
   });
   t.after(() => execution.close());

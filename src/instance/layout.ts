@@ -16,7 +16,6 @@ export interface InstanceLayout {
   webAuthFile: string;
   nmemConfigurationFile: string;
   nmemAuthFile: string;
-  localSocketPath: string;
   statusSocketPath: string;
   attachmentStoreRoot: string;
   workspaceRoot: string;
@@ -31,8 +30,9 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
   const resolvedRoot = path.resolve(root);
   const configurationRoot = path.join(resolvedRoot, "configuration");
   const piRoot = path.join(configurationRoot, "pi");
-  const weixinRoot = path.join(configurationRoot, "integrations", "weixin");
-  const raftRoot = path.join(configurationRoot, "integrations", "raft");
+  const channelRoot = path.join(configurationRoot, "channels");
+  const weixinRoot = path.join(channelRoot, "weixin");
+  const raftRoot = path.join(channelRoot, "raft");
   const webRoot = path.join(configurationRoot, "integrations", "web");
   const nmemRoot = path.join(configurationRoot, "integrations", "nmem");
   const transcriptRoot = path.join(resolvedRoot, "transcripts");
@@ -45,14 +45,13 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     piModelsStoreFile: path.join(piRoot, "models-store.json"),
     weixinConfigurationFile: path.join(weixinRoot, "config.json"),
     weixinAuthFile: path.join(weixinRoot, "auth.json"),
-    weixinStateFile: path.join(resolvedRoot, "runtime", "integrations", "weixin.db"),
+    weixinStateFile: path.join(resolvedRoot, "runtime", "channels", "weixin.db"),
     raftConfigurationFile: path.join(raftRoot, "config.json"),
-    raftStateFile: path.join(resolvedRoot, "runtime", "integrations", "raft.db"),
+    raftStateFile: path.join(resolvedRoot, "runtime", "channels", "raft.db"),
     webConfigurationFile: path.join(webRoot, "config.json"),
     webAuthFile: path.join(webRoot, "auth.json"),
     nmemConfigurationFile: path.join(nmemRoot, "config.json"),
     nmemAuthFile: path.join(nmemRoot, "auth.json"),
-    localSocketPath: path.join(resolvedRoot, "runtime", "integrations", "local.sock"),
     statusSocketPath: path.join(resolvedRoot, "runtime", "status.sock"),
     attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
     workspaceRoot: path.join(resolvedRoot, "workspace"),

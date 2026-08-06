@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   openRaftChannel,
   type RaftRemote,
-} from "../../src/integrations/raft/index.js";
+} from "../../src/channels/raft/index.js";
 import type { EffectRequest, RuntimeInput } from "../../src/runtime/index.js";
 
 const activationTime = () => new Date("2026-08-03T04:59:00.000Z");

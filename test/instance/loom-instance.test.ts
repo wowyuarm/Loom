@@ -107,6 +107,7 @@ test("retains outbound attachment content while Delivery requires reconciliation
     root,
     machineTimeZone: "UTC",
     now: () => now,
+    interactionEnabled: true,
     outboundDelivery: {
       deliver: async () => ({ status: "unknown", error: "remote outcome unknown" }),
     },
@@ -286,7 +287,12 @@ test("binds message Effects to the configured default Interaction Route", async 
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl, "primary-route");
   const now = new Date("2026-07-22T10:00:00.000Z");
-  const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    interactionEnabled: true,
+  });
   t.after(() => instance.close());
 
   await instance.acceptInput({
@@ -323,7 +329,12 @@ test("delivers persisted Effects while cold-start model configuration is blocked
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl, "primary-route");
   const now = new Date("2026-07-22T10:00:00.000Z");
-  const first = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
+  const first = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    interactionEnabled: true,
+  });
   await first.acceptInput({
     source: "test-channel",
     sourceId: "delivery-input",
@@ -349,6 +360,7 @@ test("delivers persisted Effects while cold-start model configuration is blocked
     root,
     machineTimeZone: "UTC",
     now: () => now,
+    interactionEnabled: true,
     outboundDelivery: {
       deliver: async request => {
         delivered.push(request);
@@ -388,6 +400,7 @@ test("continues five minutes after confirmed Delivery through the assembled Inst
     root,
     machineTimeZone: "UTC",
     now: () => now,
+    interactionEnabled: true,
     outboundDelivery: {
       deliver: async request => {
         delivered.push(request);

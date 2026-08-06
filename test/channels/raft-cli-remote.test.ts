@@ -7,7 +7,7 @@ import test from "node:test";
 import {
   openRaftCliRemote,
   SUPPORTED_RAFT_CLI_VERSION,
-} from "../../src/integrations/raft/index.js";
+} from "../../src/channels/raft/index.js";
 
 test("validates a pinned Raft profile and resolves and sends through the 0.0.17 CLI contract", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-"));

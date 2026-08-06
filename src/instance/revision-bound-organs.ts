@@ -34,7 +34,7 @@ import type {
 } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { InstanceLayout } from "./layout.js";
-import type { InteractionChannelAttentionSource } from "../main-agent/channel-surface.js";
+import type { InteractionChannelAttentionSource } from "../channels/surface.js";
 
 export interface RevisionBoundOrganOptions {
   revisions: ModelRuntimeRevisions;

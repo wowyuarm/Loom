@@ -17,22 +17,20 @@ import {
 } from "../instance/index.js";
 import { resolveInstanceLayout } from "../instance/layout.js";
 import {
-  LOCAL_INTERACTION_ROUTE,
-  openLocalInteractionChannel,
-  type LocalInteractionChannel,
-  type LocalInteractionChannelStatus,
-} from "../integrations/local/index.js";
-import {
   openConfiguredWeixinAdapter,
   type WeixinAdapter,
-  type WeixinAdapterStatus,
-} from "../integrations/weixin/index.js";
+} from "../channels/weixin/index.js";
 import {
   openConfiguredRaftChannel,
   type RaftChannel,
-  type RaftChannelStatus,
   type RaftRemote,
-} from "../integrations/raft/index.js";
+} from "../channels/raft/index.js";
+import {
+  openLoomInteractionChannels,
+  type InteractionChannel,
+  type InteractionChannelStatus,
+  type LoomInteractionChannels,
+} from "../channels/index.js";
 import { openConfiguredWebAccess, type WebAccessIntegration } from "../integrations/web/index.js";
 import { loadNmemConnectionConfiguration } from "../integrations/nmem/index.js";
 import type {
@@ -70,16 +68,12 @@ export interface LoomHostStatus {
   state: "open" | "running" | "stopping" | "stopped";
   driver: ProcessDriverStatus;
   instance: LoomInstanceStatus;
-  integrations?: {
-    local?: LocalInteractionChannelStatus;
-    weixin?: WeixinAdapterStatus;
-    raft?: RaftChannelStatus;
-  };
+  channels?: Record<string, InteractionChannelStatus>;
 }
 
 export type OpenLoomHostOptions = Omit<
   OpenLoomInstanceOptions,
-  "attachmentStore" | "channelAgentSurface" | "webAccess" | "nmem"
+  "attachmentStore" | "channelAgentSurface" | "webAccess" | "nmem" | "interactionEnabled"
 > & {
   raftRemote?: RaftRemote;
 };
@@ -89,9 +83,7 @@ class DefaultLoomHost implements LoomHost {
   readonly #instance: LoomInstance;
   readonly #driver: ProcessDriver;
   readonly #ownership: InstanceRootOwnership;
-  readonly #local: LocalInteractionChannel | undefined;
-  readonly #weixin: WeixinAdapter | undefined;
-  readonly #raft: RaftChannel | undefined;
+  readonly #channels: LoomInteractionChannels;
   readonly #attachmentStore: AttachmentStore;
   readonly #statusServer: LoomStatusServer;
   readonly #runId = randomUUID();
@@ -107,9 +99,7 @@ class DefaultLoomHost implements LoomHost {
     driver: ProcessDriver;
     ownership: InstanceRootOwnership;
     attachmentStore: AttachmentStore;
-    local?: LocalInteractionChannel;
-    weixin?: WeixinAdapter;
-    raft?: RaftChannel;
+    channels: LoomInteractionChannels;
     web?: WebAccessIntegration;
     statusSocketPath: string;
     now?: () => Date;
@@ -119,14 +109,13 @@ class DefaultLoomHost implements LoomHost {
     this.#driver = options.driver;
     this.#ownership = options.ownership;
     this.#attachmentStore = options.attachmentStore;
-    this.#local = options.local;
-    this.#weixin = options.weixin;
-    this.#raft = options.raft;
+    this.#channels = options.channels;
     this.#now = options.now ?? (() => new Date());
     this.#statusServer = createLoomStatusServer({
       socketPath: options.statusSocketPath,
       read: since => this.#operatorStatus(since),
       requeueInput: inputId => this.requeueInput(inputId).disposition,
+      interactionView: options => this.interactionView(options),
     });
   }
 
@@ -138,13 +127,7 @@ class DefaultLoomHost implements LoomHost {
     this.#state = "running";
     this.#startedAt = this.#now().toISOString();
     try {
-      await this.#local?.start({
-        acceptInput: input => this.acceptInput(input),
-        interactionView: options => this.#instance.interactionView(options),
-        inputOutcome: inputId => this.#instance.inputOutcome(inputId),
-      });
-      this.#weixin?.start(input => this.acceptInput(input));
-      await this.#raft?.start(input => this.acceptInput(input));
+      await this.#channels.start(input => this.acceptInput(input));
       await this.#statusServer.start();
     } catch (error) {
       await this.stop();
@@ -183,6 +166,7 @@ class DefaultLoomHost implements LoomHost {
         }] : [],
       },
       agents: agentStatus.agents.map(agent => operatorAgentStatus(agent, status.driver)),
+      channels: operatorChannelStatuses(status),
       integrations: operatorIntegrationStatuses(status),
     };
   }
@@ -196,7 +180,15 @@ class DefaultLoomHost implements LoomHost {
 
   interactionView(options?: InteractionViewOptions): InteractionViewPage {
     if (this.#state === "stopped") throw new Error("Loom Host cannot read interactions while stopped");
-    return this.#instance.interactionView(options);
+    const page = this.#instance.interactionView(options);
+    const byRoute = this.#channels.routeChannelIds();
+    return {
+      ...page,
+      entries: page.entries.map(entry => {
+        const channelId = byRoute.get(entry.source);
+        return channelId ? { ...entry, source: channelId } : entry;
+      }),
+    };
   }
 
   requeueInput(inputId: string): RequeueInputResult {
@@ -221,13 +213,7 @@ class DefaultLoomHost implements LoomHost {
       state: this.#state,
       driver: this.#driver.status(),
       instance: this.#finalInstanceStatus ?? this.#instance.status(),
-      ...(this.#local || this.#weixin || this.#raft ? {
-        integrations: {
-          ...(this.#local ? { local: this.#local.status() } : {}),
-          ...(this.#weixin ? { weixin: this.#weixin.status() } : {}),
-          ...(this.#raft ? { raft: this.#raft.status() } : {}),
-        },
-      } : {}),
+      channels: this.#channels.status(),
     };
   }
 
@@ -249,15 +235,7 @@ class DefaultLoomHost implements LoomHost {
           await this.#driver.stop();
         } finally {
           try {
-            try {
-              await this.#local?.stop();
-            } finally {
-              try {
-                await this.#weixin?.stop();
-              } finally {
-                await this.#raft?.stop();
-              }
-            }
+            await this.#channels.stop();
           } finally {
             this.#attachmentStore.close();
           }
@@ -276,7 +254,6 @@ class DefaultLoomHost implements LoomHost {
 export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHost> {
   const root = path.resolve(options.root);
   const ownership = await acquireInstanceRootOwnership(root);
-  let local: LocalInteractionChannel | undefined;
   let weixin: WeixinAdapter | undefined;
   let raft: RaftChannel | undefined;
   let web: WebAccessIntegration | undefined;
@@ -291,46 +268,27 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       file: layout.configurationFile,
       ...(options.machineTimeZone ? { machineTimeZone: options.machineTimeZone } : {}),
     });
-    const enabledInteractionChannels = [
-      configuration.integrations.local,
-      configuration.integrations.weixin,
-      configuration.integrations.raft,
-    ].filter(Boolean).length;
-    if (enabledInteractionChannels > 1) {
-      throw new Error("Loom Host currently accepts one enabled interaction channel");
-    }
-    if (configuration.integrations.local) {
-      if (configuration.defaultInteractionRoute !== LOCAL_INTERACTION_ROUTE) {
-        throw new Error(`Local Interaction Channel requires interaction.defaultRoute: ${LOCAL_INTERACTION_ROUTE}`);
-      }
-      local = openLocalInteractionChannel({ socketPath: layout.localSocketPath });
-    }
-    if (configuration.integrations.weixin) {
-      if (!configuration.defaultInteractionRoute) {
-        throw new Error("Enabled Weixin requires interaction.defaultRoute");
-      }
+    const interactionChannels: InteractionChannel[] = [];
+    if (configuration.channels.weixin) {
       weixin = await openConfiguredWeixinAdapter({
         configurationFile: layout.weixinConfigurationFile,
         authFile: layout.weixinAuthFile,
         stateFile: layout.weixinStateFile,
         attachmentStore,
-        expectedRouteRef: configuration.defaultInteractionRoute,
       });
       if (!weixin) throw new Error("Enabled Weixin requires both config.json and auth.json");
+      interactionChannels.push(weixin);
     }
-    if (configuration.integrations.raft) {
-      if (!configuration.defaultInteractionRoute) {
-        throw new Error("Enabled Raft requires interaction.defaultRoute");
-      }
+    if (configuration.channels.raft) {
       raft = await openConfiguredRaftChannel({
         configurationFile: layout.raftConfigurationFile,
         stateFile: layout.raftStateFile,
-        expectedRouteRef: configuration.defaultInteractionRoute,
         ...(options.raftRemote ? { remote: options.raftRemote } : {}),
       });
       if (!raft) throw new Error("Enabled Raft requires config.json");
+      interactionChannels.push(raft);
     } else if (options.raftRemote) {
-      throw new Error("Raft Remote was provided while the Integration is disabled");
+      throw new Error("Raft Remote was provided while the Channel is disabled");
     }
     if (configuration.integrations.web) {
       web = await openConfiguredWebAccess({
@@ -344,18 +302,23 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
           authFile: layout.nmemAuthFile,
         })
       : undefined;
-    if ((local || weixin || raft) && options.outboundDelivery) {
+    if (interactionChannels.length > 0 && options.outboundDelivery) {
       throw new Error("Loom Host cannot combine an enabled interaction channel with another OutboundDelivery");
     }
-    const { outboundDelivery, raftRemote: _raftRemote, ...instanceOptions } = options;
+    const { raftRemote: _raftRemote, ...instanceOptions } = options;
+    const channels = openLoomInteractionChannels({
+      channels: interactionChannels,
+      ...(configuration.defaultInteractionRoute
+        ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
+        : {}),
+    });
     const instance = await openLoomInstance({
       ...instanceOptions,
       root,
       attachmentStore,
-      ...(local || weixin || raft || outboundDelivery
-        ? { outboundDelivery: local ?? weixin ?? raft ?? outboundDelivery }
-        : {}),
-      ...(raft ? { channelAgentSurface: raft.agentSurface() } : {}),
+      interactionEnabled: true,
+      outboundDelivery: channels,
+      ...(channels.agentSurface() ? { channelAgentSurface: channels.agentSurface()! } : {}),
       ...(web ? { webAccess: web } : {}),
       ...(nmem ? { nmem } : {}),
     });
@@ -369,14 +332,11 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       }),
       ownership,
       attachmentStore,
+      channels,
       statusSocketPath: layout.statusSocketPath,
       ...(options.now ? { now: options.now } : {}),
-      ...(local ? { local } : {}),
-      ...(weixin ? { weixin } : {}),
-      ...(raft ? { raft } : {}),
     });
   } catch (error) {
-    await local?.stop();
     await weixin?.stop();
     await raft?.stop();
     attachmentStore?.close();
@@ -422,16 +382,20 @@ function operatorAgentStatus(
   return retrying ? { ...agent, state: "retrying", nextRunAt: driver.nextRunAt } : agent;
 }
 
+function operatorChannelStatuses(status: LoomHostStatus): LoomIntegrationStatus[] {
+  return Object.entries(status.channels ?? {})
+    .filter(([, channel]) => channel !== undefined)
+    .map(([name, channel]) => ({
+      name,
+      state: channel.state,
+      ...(channel.lastError
+        ? { lastFailure: { category: failureCategory(channel.lastError) } }
+        : {}),
+    }));
+}
+
 function operatorIntegrationStatuses(status: LoomHostStatus): LoomIntegrationStatus[] {
   const integrations: LoomIntegrationStatus[] = [];
-  for (const [name, integration] of Object.entries(status.integrations ?? {})) {
-    if (!integration) continue;
-    integrations.push({
-      name,
-      state: integration.state,
-      ...(integration.lastError ? { lastFailure: { category: failureCategory(integration.lastError) } } : {}),
-    });
-  }
   if (status.instance.nmem) {
     const blocked = [
       ...status.instance.nmem.threads.items,
@@ -452,7 +416,7 @@ function failureCategory(message: string): string {
   if (/auth|credential|token|401|403/i.test(message)) return "authentication";
   if (/rate|429/i.test(message)) return "rate_limited";
   if (/timeout|timed out|abort/i.test(message)) return "timeout";
-  if (/connect|network|socket|ECONN|ENOTFOUND|HTTP 5\d\d/i.test(message)) return "connection";
+  if (/connect|network|socket|ECONN|ENOTFOUND|fetch failed|HTTP 5\d\d/i.test(message)) return "connection";
   if (/unavailable|not found/i.test(message)) return "unavailable";
   return "unknown";
 }

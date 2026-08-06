@@ -9,15 +9,18 @@ export interface InstanceConfiguration {
   version: 1;
   timePolicy: TimePolicy;
   schedule: ScheduleConfiguration;
+  channels: ChannelConfiguration;
   integrations: IntegrationConfiguration;
   modelPolicy?: ModelPolicy;
   defaultInteractionRoute?: string;
 }
 
-export interface IntegrationConfiguration {
-  local: boolean;
+export interface ChannelConfiguration {
   weixin: boolean;
   raft: boolean;
+}
+
+export interface IntegrationConfiguration {
   web: boolean;
   nmem: boolean;
 }
@@ -99,7 +102,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models", "interaction", "integrations", "schedule"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction", "channels", "integrations", "schedule"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -115,6 +118,7 @@ export async function loadInstanceConfiguration(
   const modelPolicy = document.models === undefined
     ? undefined
     : parseModelPolicy(document.models);
+  const channels = parseChannels(document.channels);
   const integrations = parseIntegrations(document.integrations);
   const defaultInteractionRoute = parseInteraction(document.interaction);
   const schedule = parseSchedule(document.schedule);
@@ -125,6 +129,7 @@ export async function loadInstanceConfiguration(
       ...(time.logicalDayStart !== undefined ? { logicalDayStart: time.logicalDayStart } : {}),
     }),
     schedule,
+    channels,
     integrations,
     ...(modelPolicy ? { modelPolicy } : {}),
     ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
@@ -141,14 +146,21 @@ function parseInteraction(value: unknown): string | undefined {
   return value.defaultRoute.trim();
 }
 
+function parseChannels(value: unknown): ChannelConfiguration {
+  if (value === undefined) return defaultChannels();
+  if (!isObject(value)) throw new Error("Instance Configuration channels must be an object");
+  assertOnlyKeys(value, ["weixin", "raft"], "Instance Configuration channels");
+  return Object.freeze({
+    weixin: parseIntegrationEnabled(value.weixin, "channels.weixin"),
+    raft: parseIntegrationEnabled(value.raft, "channels.raft"),
+  });
+}
+
 function parseIntegrations(value: unknown): IntegrationConfiguration {
   if (value === undefined) return defaultIntegrations();
   if (!isObject(value)) throw new Error("Instance Configuration integrations must be an object");
-  assertOnlyKeys(value, ["local", "weixin", "raft", "web", "nmem"], "Instance Configuration integrations");
+  assertOnlyKeys(value, ["web", "nmem"], "Instance Configuration integrations");
   return Object.freeze({
-    local: parseIntegrationEnabled(value.local, "integrations.local"),
-    weixin: parseIntegrationEnabled(value.weixin, "integrations.weixin"),
-    raft: parseIntegrationEnabled(value.raft, "integrations.raft"),
     web: parseIntegrationEnabled(value.web, "integrations.web"),
     nmem: parseIntegrationEnabled(value.nmem, "integrations.nmem"),
   });
@@ -165,8 +177,12 @@ function parseIntegrationEnabled(value: unknown, label: string): boolean {
   return value.enabled;
 }
 
+function defaultChannels(): ChannelConfiguration {
+  return Object.freeze({ weixin: false, raft: false });
+}
+
 function defaultIntegrations(): IntegrationConfiguration {
-  return Object.freeze({ local: false, weixin: false, raft: false, web: false, nmem: false });
+  return Object.freeze({ web: false, nmem: false });
 }
 
 function parseSchedule(value: unknown): ScheduleConfiguration {

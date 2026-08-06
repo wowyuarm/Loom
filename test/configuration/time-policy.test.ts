@@ -98,13 +98,12 @@ test("requires explicit Integration enablement and keeps Integrations disabled b
   const file = path.join(root, "instance.yaml");
   await writeFile(file, [
     "version: 1",
-    "integrations:",
-    "  local:",
-    "    enabled: true",
+    "channels:",
     "  weixin:",
     "    enabled: false",
     "  raft:",
     "    enabled: true",
+    "integrations:",
     "  web:",
     "    enabled: true",
     "  nmem:",
@@ -117,8 +116,10 @@ test("requires explicit Integration enablement and keeps Integrations disabled b
   await writeFile(defaultsFile, "version: 1\n", "utf8");
   const defaults = await loadInstanceConfiguration({ file: defaultsFile, machineTimeZone: "UTC" });
 
-  assert.deepEqual(configured.integrations, { local: true, weixin: false, raft: true, web: true, nmem: true });
-  assert.deepEqual(defaults.integrations, { local: false, weixin: false, raft: false, web: false, nmem: false });
+  assert.deepEqual(configured.channels, { weixin: false, raft: true });
+  assert.deepEqual(configured.integrations, { web: true, nmem: true });
+  assert.deepEqual(defaults.channels, { weixin: false, raft: false });
+  assert.deepEqual(defaults.integrations, { web: false, nmem: false });
 });
 
 test("loads the proactive Pulse schedule with Harness defaults and explicit overrides", async () => {
@@ -252,9 +253,9 @@ test("rejects invalid Instance time configuration before Runtime starts", async 
       error: /unknown fields: channel/,
     },
     {
-      name: "invalid Integration enablement",
-      source: "version: 1\nintegrations:\n  local:\n    enabled: yes\n",
-      error: /integrations\.local\.enabled must be a boolean/,
+      name: "invalid Channel enablement",
+      source: "version: 1\nchannels:\n  raft:\n    enabled: yes\n",
+      error: /channels\.raft\.enabled must be a boolean/,
     },
     {
       name: "invalid Pulse cadence",

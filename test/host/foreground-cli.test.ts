@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,7 +17,7 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
   const root = path.join(parent, ".loom");
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
 
-  const child = spawn(process.execPath, [cli, "init"], {
+  const child = spawn(process.execPath, [cli, "init", "--channel", "weixin", "--channel", "weixin"], {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, HOME: parent },
   });
@@ -49,6 +49,22 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
     await readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
     /Background time belongs to the Agent Individual/,
   );
+});
+
+test("requires an explicit --channel for init and rejects unknown channels", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-usage-"));
+  const root = path.join(parent, ".loom");
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+
+  const missing = await runCli(cli, ["init"], { ...process.env, HOME: parent });
+  assert.equal(missing.code, 1);
+  assert.equal(missing.stdout, "");
+  assert.match(missing.stderr, /Usage: loom init/);
+
+  const unknown = await runCli(cli, ["init", "--channel", "slack"], { ...process.env, HOME: parent });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /Usage: loom init/);
+  await assert.rejects(access(root));
 });
 
 test("reports an unavailable Host as structured status without opening Instance state", async () => {
@@ -153,12 +169,13 @@ test("runs one prepared Instance until a termination signal requests graceful st
   assert.match(stdout, /"event":"driver\.run\.completed"/);
 });
 
-test("chats through the running Local channel and rebuilds history in another client", async t => {
-  const provider = await startMessageProvider("hello through Loom");
-  t.after(() => provider.close());
+test("chats through the running Weixin channel and rebuilds history in another client", async t => {
+  const channel = await startWeixinChannel("hello from the human");
+  t.after(() => channel.close());
   const home = await mkdtemp(path.join(tmpdir(), "loom-cli-home-"));
   const root = await preparedInstanceRoot(path.join(home, ".loom"));
-  await writeModelConfiguration(root, provider.baseUrl);
+  await writeWeixinChannel(root, channel.baseUrl);
+  await writeModelConfiguration(root, channel.modelBaseUrl);
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
   const env = { ...process.env, HOME: home };
   const host = spawn(process.execPath, [cli, "run"], {
@@ -175,13 +192,9 @@ test("chats through the running Local channel and rebuilds history in another cl
   });
   await waitForOutput(host, () => hostStdout.includes('"event":"host.started"'), () => hostStderr);
 
-  const chat = await runCli(cli, ["chat", "hello from the human"], env);
-  assert.equal(chat.code, 0, chat.stderr);
-  assert.equal(chat.stdout.trim(), "hello through Loom");
-
   await waitForOutput(
     host,
-    () => hostStdout.includes('"event":"agent.tool.completed"'),
+    () => channel.received.includes("hello through Loom"),
     () => hostStderr,
   );
   for (const event of [
@@ -199,8 +212,8 @@ test("chats through the running Local channel and rebuilds history in another cl
 
   const history = await runCli(cli, ["history"], env);
   assert.equal(history.code, 0, history.stderr);
-  assert.match(history.stdout, /human \[local\]: hello from the human/);
-  assert.match(history.stdout, /individual \[local\]: hello through Loom/);
+  assert.match(history.stdout, /human \[weixin\]: hello from the human/);
+  assert.match(history.stdout, /individual \[weixin\]: hello through Loom/);
 
   const statusJson = await runCli(cli, [
     "status",
@@ -212,12 +225,14 @@ test("chats through the running Local channel and rebuilds history in another cl
   const status = JSON.parse(statusJson.stdout) as {
     host: { state: string };
     agents: Array<{ name: string; state: string; history?: unknown[] }>;
+    channels: Array<{ name: string; state: string }>;
     integrations: Array<{ name: string; state: string }>;
   };
   assert.equal(status.host.state, "running");
   assert.equal(status.agents.find(agent => agent.name === "main-agent")?.state, "succeeded");
   assert.equal(status.agents.find(agent => agent.name === "main-agent")?.history?.length, 1);
-  assert.deepEqual(status.integrations, [{ name: "local", state: "listening" }]);
+  assert.deepEqual(status.channels, [{ name: "weixin", state: "connected" }]);
+  assert.deepEqual(status.integrations, []);
   assert.doesNotMatch(statusJson.stdout, /hello from the human|hello through Loom|\.loom/);
 
   const historicalStatus = await runCli(cli, [
@@ -235,7 +250,7 @@ test("chats through the running Local channel and rebuilds history in another cl
   assert.match(humanStatus.stdout, /^Host: running \(Loom 0\.0\.0\+g[0-9a-f]{7,12}, started /m);
   assert.match(humanStatus.stdout, /^Model: active/m);
   assert.match(humanStatus.stdout, /^  Main Agent: succeeded/m);
-  assert.match(humanStatus.stdout, /^  Local: listening/m);
+  assert.match(humanStatus.stdout, /^  Weixin: connected/m);
   assert.doesNotMatch(humanStatus.stdout, /\{|"schemaVersion"|hello from the human/);
 
   const exited = once(host, "exit");
@@ -247,7 +262,8 @@ test("chats through the running Local channel and rebuilds history in another cl
 async function preparedInstanceRoot(root?: string): Promise<string> {
   const instanceRoot = root ?? await mkdtemp(path.join(tmpdir(), "loom-cli-"));
   const workspace = path.join(instanceRoot, "workspace");
-  await initializeLoomInstance({ root: instanceRoot });
+  await initializeLoomInstance({ root: instanceRoot, channels: ["weixin"] });
+  await writeWeixinChannel(instanceRoot, "http://127.0.0.1:1");
   await mkdir(workspace, { recursive: true });
   await Promise.all([
     writeFile(path.join(workspace, "facts.json"), JSON.stringify({
@@ -262,19 +278,33 @@ async function preparedInstanceRoot(root?: string): Promise<string> {
   return instanceRoot;
 }
 
+async function writeWeixinChannel(root: string, baseUrl: string): Promise<void> {
+  const channelRoot = path.join(root, "configuration", "channels", "weixin");
+  await mkdir(channelRoot, { recursive: true });
+  await writeFile(path.join(channelRoot, "config.json"), JSON.stringify({
+    version: 1,
+    routeRef: "primary-route",
+    peerId: "peer-1",
+    baseUrl,
+  }), "utf8");
+  await writeFile(path.join(channelRoot, "auth.json"), JSON.stringify({
+    version: 1,
+    token: "channel-token",
+  }), "utf8");
+}
+
 async function writeModelConfiguration(root: string, baseUrl: string): Promise<void> {
   const configuration = path.join(root, "configuration");
   await writeFile(path.join(configuration, "instance.yaml"), [
     "version: 1",
-    "integrations:",
-    "  local:",
-    "    enabled: true",
+    "channels:",
     "  weixin:",
-    "    enabled: false",
+    "    enabled: true",
+    "integrations:",
     "  nmem:",
     "    enabled: false",
     "interaction:",
-    "  defaultRoute: local",
+    "  defaultRoute: primary-route",
     "models:",
     "  default:",
     "    - provider: local-test",
@@ -303,51 +333,107 @@ async function writeModelConfiguration(root: string, baseUrl: string): Promise<v
   }), "utf8");
 }
 
-async function startMessageProvider(text: string): Promise<{ baseUrl: string; close(): void }> {
+async function startWeixinChannel(humanText: string): Promise<{
+  baseUrl: string;
+  modelBaseUrl: string;
+  received: string[];
+  close(): void;
+}> {
+  const received: string[] = [];
+  let delivered = false;
   const server = createServer((request, response) => {
-    request.resume();
+    let source = "";
+    request.setEncoding("utf8");
+    request.on("data", chunk => { source += chunk; });
     request.on("end", () => {
-      response.writeHead(200, { "content-type": "text/event-stream", connection: "keep-alive" });
-      response.write(`data: ${JSON.stringify({
-        id: "completion-1",
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "local-model",
-        choices: [{
-          index: 0,
-          delta: {
-            role: "assistant",
-            tool_calls: [{
-              index: 0,
-              id: "call-message",
-              type: "function",
-              function: { name: "message", arguments: JSON.stringify({ action: "send", text }) },
+      const url = new URL(request.url ?? "/", "http://localhost");
+      if (url.pathname === "/v1/chat/completions") {
+        respondStreaming(response, "hello through Loom");
+        return;
+      }
+      if (url.pathname === "/ilink/bot/getupdates") {
+        if (!delivered) {
+          delivered = true;
+          respondJson(response, {
+            ret: 0,
+            get_updates_buf: "cursor-2",
+            msgs: [{
+              message_id: 1,
+              from_user_id: "peer-1",
+              create_time_ms: 1_750_000_000_000,
+              message_type: 1,
+              message_state: 2,
+              item_list: [{ type: 1, text_item: { text: humanText } }],
             }],
-          },
-          finish_reason: null,
-        }],
-      })}\n\n`);
-      response.write(`data: ${JSON.stringify({
-        id: "completion-1",
-        object: "chat.completion.chunk",
-        created: 1,
-        model: "local-model",
-        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-        usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
-      })}\n\n`);
-      response.end("data: [DONE]\n\n");
+          });
+        } else {
+          // long poll: hold the request open until the Host stops polling
+          request.on("aborted", () => response.destroy());
+        }
+        return;
+      }
+      if (url.pathname === "/ilink/bot/sendmessage") {
+        const body = JSON.parse(source) as {
+          msg?: { item_list?: Array<{ text_item?: { text?: string } }> };
+        };
+        received.push(body.msg?.item_list?.[0]?.text_item?.text ?? "");
+        respondJson(response, { ret: 0 });
+        return;
+      }
+      // notifystart / notifystop
+      respondJson(response, { ret: 0 });
     });
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
   return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    baseUrl,
+    modelBaseUrl: `${baseUrl}/v1`,
+    received,
     close: () => {
       server.closeAllConnections();
       server.close();
     },
   };
+}
+
+function respondJson(response: import("node:http").ServerResponse, body: unknown): void {
+  response.writeHead(200, { "content-type": "application/json" });
+  response.end(JSON.stringify(body));
+}
+
+function respondStreaming(response: import("node:http").ServerResponse, text: string): void {
+  response.writeHead(200, { "content-type": "text/event-stream", connection: "keep-alive" });
+  response.write(`data: ${JSON.stringify({
+    id: "completion-1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "local-model",
+    choices: [{
+      index: 0,
+      delta: {
+        role: "assistant",
+        tool_calls: [{
+          index: 0,
+          id: "call-message",
+          type: "function",
+          function: { name: "message", arguments: JSON.stringify({ action: "send", text }) },
+        }],
+      },
+      finish_reason: null,
+    }],
+  })}\n\n`);
+  response.write(`data: ${JSON.stringify({
+    id: "completion-1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "local-model",
+    choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+    usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+  })}\n\n`);
+  response.end("data: [DONE]\n\n");
 }
 
 async function runCli(

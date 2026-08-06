@@ -33,7 +33,8 @@ the authorized environment.
 | Configure models, credentials, schedules, routes or enabled Integrations | [Configuration And Credentials](reference/configuration-and-credentials.md) |
 | View live state, understand recent Agent runs, investigate failure or recover a process | [Status And Diagnosis](reference/status-and-diagnosis.md) |
 | Back up, restore or migrate a complete Instance | [Backup, Restore And Migration](reference/backup-and-restore.md) |
-| Enable or verify an Integration | [Local](../integrations/local.md), [Weixin](../integrations/weixin.md), [Raft](../integrations/raft.md), [nmem](../integrations/nmem.md) or [Web Access](../integrations/web.md) |
+| Enable or verify an Interaction Channel | [Weixin](../integrations/weixin.md) or [Raft](../integrations/raft.md) |
+| Enable or verify an Integration | [nmem](../integrations/nmem.md) or [Web Access](../integrations/web.md) |
 
 Read only the guides needed for the user's request. Integration-specific login,
 configuration and acceptance belong to the corresponding Integration guide.
@@ -64,7 +65,9 @@ configuration and acceptance belong to the corresponding Integration guide.
   `--since <ISO timestamp>` adds bounded Agent run history.
 - `loom requeue <input-id>` returns one repaired, explicitly blocked Input to
   pending through the running Host.
-- `loom chat` and `loom history` are clients of an enabled Local Integration.
+- `loom history` reads the Interaction View of enabled Channels through the
+  Host status socket; `loom status` reports each enabled Channel and
+  Integration with a bounded failure category when one is failing.
 
 Finish by reporting what changed, what evidence was actually observed, what
 remains unknown, and whether the work interrupted the Individual. Do not claim

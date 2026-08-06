@@ -43,7 +43,7 @@ _Avoid_: daemon, job queue, workflow engine, Runtime
 _Avoid_: Scheduler, daemon framework, job runner, OS service
 
 **Host**:
-一个进程内对单一 Instance Root 的 live owner。它持有 Runtime Instance 与 Process Driver，提供 Input ingress、状态和 graceful stop；channel lifecycle 会在 Integration 接入时由它协调。它不是 Gateway、Scheduler、OS service 或多实例控制面。
+一个进程内对单一 Instance Root 的 live owner。它持有 Runtime Instance 与 Process Driver，提供 Input ingress、状态和 graceful stop；enabled Interaction Channels 的 lifecycle、route 校验与 model-facing surface 合并由它协调。它不是 Gateway、Scheduler、OS service 或多实例控制面。
 _Avoid_: Gateway, Runtime, Process Driver, supervisor, multi-instance host
 
 **Main Agent**:
@@ -66,9 +66,9 @@ _Avoid_: workspace, agent memory, transcript
 从 Runtime Store 的人类互动 Input、主 Agent 的 message Effect 与 confirmed Delivery 重建出的实例级只读视图。它用于本地客户端和未来 channel 展示共同的互动连续性，不是第二份事实源，也不包含 thinking、工具轨迹或未确认的输出。
 _Avoid_: local inbox, channel history, transcript, memory
 
-**Local Interaction Channel**:
-随 Loom 内置的本机 interaction channel。它负责 Unix socket 传输和本地 Delivery 确认；它不拥有聊天历史、关系材料或 Agent Workspace，也不把本地客户端变成新的 Runtime owner。
-_Avoid_: local inbox, CLI runtime, private chat store
+**Interaction Channel**:
+一个向实例提供实时互动的外部通道（当前为 Raft 与 Weixin）。它负责协议接入、ingress、Delivery 与恢复；Host 校验每个 Channel 的 route 唯一性，并把所有启用 Channel 的 model-facing surface 合并成单一指导。Channel 不拥有聊天历史、关系材料或 Agent Workspace，也不把外部客户端变成新的 Runtime owner。
+_Avoid_: local inbox, CLI runtime, private chat store, Integration
 
 **Workspace Mutation**:
 Runtime Root 中用于保护一次 Cognitive Organ 多文件 Workspace revision 的持久恢复记录。它在写入前保存完整 before-image，在器官验证成功后保存可重放结果，使进程退出后要么恢复旧 revision，要么沿用已完成 revision；它不接管 Main Agent 的普通 Workspace 活动，也不是通用文件事务。

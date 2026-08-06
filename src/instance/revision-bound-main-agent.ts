@@ -20,7 +20,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { InstanceLayout } from "./layout.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
-import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
+import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 
 const CORE_SKILLS_DIRECTORY = fileURLToPath(new URL("../main-agent/core-skills/", import.meta.url));
 
@@ -28,6 +28,8 @@ export interface RevisionBoundMainAgentOptions {
   revisions: ModelRuntimeRevisions;
   layout: InstanceLayout;
   agentWorkspace: AgentWorkspace;
+  /** Whether at least one Interaction Channel is enabled; gates the message tool. */
+  interactionEnabled: boolean;
   defaultInteractionRoute?: string;
   channelAgentSurface?: InteractionChannelAgentSurface;
   additionalTools?: ToolDefinition[];
@@ -82,6 +84,7 @@ class RevisionBoundMainAgent implements AgentExecution {
       ...(this.options.channelAgentSurface
         ? { channelAgentSurface: this.options.channelAgentSurface }
         : {}),
+      interactionEnabled: this.options.interactionEnabled,
       ...(this.options.defaultInteractionRoute
         ? { defaultInteractionRoute: this.options.defaultInteractionRoute }
         : {}),

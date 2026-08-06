@@ -58,7 +58,7 @@ import { createMessageTool, type MessageTurnDecision } from "./message.js";
 import { loadDailyContext } from "./daily-context.js";
 import { attachmentReferences, type AttachmentReference } from "../attachments/index.js";
 import type { AttachmentStore } from "../integrations/attachments/index.js";
-import type { InteractionChannelAgentSurface } from "./channel-surface.js";
+import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 import { createAttachmentTool } from "./attachment.js";
 import {
   emitOperationalEvent,
@@ -79,6 +79,17 @@ const MAIN_AGENT_BUILTIN_TOOLS = [
   "ls",
 ] as const;
 
+/**
+ * The single authoritative set of tool names maintained by the Harness.
+ * Interaction Channels must not supply any of these names.
+ */
+export const RESERVED_LOOM_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...MAIN_AGENT_BUILTIN_TOOLS,
+  "expand_tool_result",
+  "attachment",
+  "message",
+]);
+
 interface PreparedPiSession {
   session: PiSession;
   acceptedSkillCount: number;
@@ -94,6 +105,8 @@ export interface PiAgentExecutionOptions {
   thinkingLevel?: ThinkingLevel;
   harnessSystemPrompt: string;
   channelAgentSurface?: InteractionChannelAgentSurface;
+  /** Whether at least one Interaction Channel is enabled; controls the message tool and interaction behavior. */
+  interactionEnabled?: boolean;
   defaultInteractionRoute?: string;
   additionalTools?: ToolDefinition[];
   skillSources?: PiSkillSources;
@@ -265,6 +278,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly loadContextMaterials: (request: TurnRequest) => Promise<PiContextMaterials>,
     private readonly harnessSystemPrompt: string,
     private readonly channelAgentSurface: InteractionChannelAgentSurface | undefined,
+    private readonly interactionEnabled: boolean,
     private readonly defaultInteractionRoute: string | undefined,
     private readonly contextBudget: Partial<ContextBudget> | undefined,
     private readonly toolTraceCompactor: ToolTraceCompactor | undefined,
@@ -304,7 +318,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
             : false;
           const presentation = await presentInput(input, {
             structureHumanInput: input.kind === "interaction",
-            includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
+            includeMessageReminder: this.interactionEnabled && firstInteraction,
             humanArrivedDuringNonInteraction:
               request.inputs[0]!.kind !== "interaction" && firstInteraction,
           }, this.attachmentStore, this.supportsNativeImages);
@@ -384,11 +398,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           workspaceRoot: this.agentWorkspace.root,
         }));
       }
-      if (this.defaultInteractionRoute) {
+      if (this.interactionEnabled) {
         const defaultDestination = this.channelAgentSurface?.defaultDestination;
         turnTools.push(createMessageTool({
           control: lifecycle.control(request.turnId),
-          routeRef: this.defaultInteractionRoute,
+          ...(this.defaultInteractionRoute ? { routeRef: this.defaultInteractionRoute } : {}),
           destinations: () => lifecycle.destinations(request.turnId),
           interactionDefaultDestination: () => lifecycle.interactionDefaultDestination(request.turnId),
           ...(defaultDestination ? { defaultDestination } : {}),
@@ -430,8 +444,8 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         ? lifecycle.presentInteraction(request.turnId)
         : false;
       const initialInputOptions = {
-        structureHumanInput: Boolean(this.defaultInteractionRoute) && firstInteraction,
-        includeMessageReminder: Boolean(this.defaultInteractionRoute) && firstInteraction,
+        structureHumanInput: this.interactionEnabled && firstInteraction,
+        includeMessageReminder: this.interactionEnabled && firstInteraction,
       };
       const initialPresentation = await presentInput(
         request.inputs[0]!,
@@ -464,7 +478,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       await prompt;
       this.#acceptsSteering = false;
       this.#throwIfAborted(request.turnId);
-      if (this.defaultInteractionRoute
+      if (this.interactionEnabled
         && (requiresMessageDecision(request.inputs[0]!) || lifecycle.hasIncludedInteraction(request.turnId))
         && !hasMessageDecision(messageDecision)) {
         sessionManager.appendCustomEntry("loom.internal-prompt.v1", {
@@ -483,7 +497,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         sourceId: request.recordingDay,
         sessionId: sessionManager.getSessionId(),
         inputs: lifecycle.evidenceRequest(request.turnId),
-        ...(this.defaultInteractionRoute ? { terminalToolNames: ["message"] } : {}),
+        ...(this.interactionEnabled ? { terminalToolNames: ["message"] } : {}),
       });
       this.#throwIfAborted(request.turnId);
       const completedWindow = completeContextWindow(
@@ -554,12 +568,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
 
 export async function createPiAgentExecution(options: PiAgentExecutionOptions): Promise<PiAgentExecution> {
   const additionalTools = options.additionalTools ?? [];
-  const reservedTools = new Set<string>([
-    ...MAIN_AGENT_BUILTIN_TOOLS,
-    "expand_tool_result",
-    "attachment",
-    "message",
-  ]);
+  const reservedTools = RESERVED_LOOM_TOOL_NAMES;
   const additionalToolNames = new Set<string>();
   for (const tool of additionalTools) {
     if (reservedTools.has(tool.name)) {
@@ -667,6 +676,7 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     options.loadContextMaterials ?? (async () => ({ turnLive: [], windowFrozen: [] })),
     options.harnessSystemPrompt,
     options.channelAgentSurface,
+    options.interactionEnabled ?? false,
     options.defaultInteractionRoute,
     options.contextBudget,
     options.toolTraceCompactor,

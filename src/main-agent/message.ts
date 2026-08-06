@@ -21,7 +21,7 @@ interface MessageToolDetails {
 
 export function createMessageTool(options: {
   control: TurnControl;
-  routeRef: string;
+  routeRef?: string;
   destinations?: () => InteractionDestination[];
   interactionDefaultDestination?: () => InteractionDestination | undefined;
   defaultDestination?: InteractionDestination;
@@ -109,13 +109,19 @@ export function createMessageTool(options: {
         options.interactionDefaultDestination?.(),
         options.defaultDestination,
       );
+      const routeRef = destination?.routeRef ?? options.routeRef;
+      if (!routeRef) {
+        throw new Error(
+          "message send requires an Interaction Destination when no default Route is configured",
+        );
+      }
       const effect = {
         kind: "message",
         payload: {
           ...(text ? { text } : {}),
           ...(attachment ? { attachments: [JSON.parse(JSON.stringify(attachment))] } : {}),
         },
-        routeRef: destination?.routeRef ?? options.routeRef,
+        routeRef,
         ...(destination ? { destinationRef: destination.destinationRef } : {}),
       };
       const committed = options.control.commitInteractionDecision

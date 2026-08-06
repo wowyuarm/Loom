@@ -4,13 +4,15 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { openLoomHost, readLoomStatus, requeueLoomInput, type LoomStatusReport } from "./host/index.js";
+import {
+  openLoomHost,
+  readLoomInteractionHistory,
+  readLoomStatus,
+  requeueLoomInput,
+  type LoomStatusReport,
+} from "./host/index.js";
 import { initializeLoomInstance } from "./instance/index.js";
 import { resolveInstanceLayout } from "./instance/layout.js";
-import {
-  readLocalInteractionHistory,
-  sendLocalChat,
-} from "./integrations/local/index.js";
 import type { InteractionViewEntry } from "./runtime/index.js";
 import {
   operationalTimestamp,
@@ -20,36 +22,20 @@ import {
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  if (command !== "init" && command !== "run" && command !== "chat" && command !== "history"
+  if (command !== "init" && command !== "run" && command !== "history"
     && command !== "status" && command !== "requeue") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
   if (command === "init") {
-    const result = await initializeLoomInstance({ root });
+    const result = await initializeLoomInstance({ root, channels: readInitChannels(args) });
     console.log(JSON.stringify({ event: "instance.initialized", ...result }));
-    return;
-  }
-  if (command === "chat") {
-    const text = remainingArguments(args, "--root").join(" ").trim();
-    if (!text) throw new Error(usage("chat"));
-    const result = await sendLocalChat({
-      socketPath: resolveInstanceLayout(root).localSocketPath,
-      text,
-    });
-    if (result.outcome.state === "failed" || result.outcome.state === "blocked") {
-      throw new Error(`Local chat did not complete: ${result.outcome.reason}`);
-    }
-    for (const entry of result.entries) {
-      const text = interactionText(entry.content);
-      if (text) console.log(text);
-    }
     return;
   }
   if (command === "history") {
     const remaining = remainingArguments(args, "--root");
     if (remaining.length > 0) throw new Error(`Unknown argument: ${remaining[0]}`);
-    const entries = await readRecentInteractions(resolveInstanceLayout(root).localSocketPath, 100);
+    const entries = await readRecentInteractions(resolveInstanceLayout(root).statusSocketPath, 100);
     for (const entry of entries) {
       console.log(`${entry.at} ${entry.actorRef} [${entry.source}]: ${interactionText(entry.content) ?? JSON.stringify(entry.content)}`);
     }
@@ -84,13 +70,11 @@ async function main(argv: string[]): Promise<void> {
       at: operationalTimestamp(),
       root: runningStatus.root,
     });
-    for (const integration of ["local", "weixin", "raft"] as const) {
-      const status = runningStatus.integrations?.[integration];
-      if (!status) continue;
+    for (const [channel, status] of Object.entries(runningStatus.channels ?? {})) {
       observe({
         event: "integration.state",
         at: operationalTimestamp(),
-        integration,
+        integration: channel,
         state: status.state,
       });
     }
@@ -162,6 +146,12 @@ function formatStatus(report: LoomStatusReport, since?: string): string {
     const retry = agent.nextRunAt ? `, next ${agent.nextRunAt}` : "";
     lines.push(`  ${agentLabel(agent.name)}: ${agent.state}${latestAt ? ` at ${latestAt}` : ""}${outcome}${retry}`);
   }
+  lines.push("Channels:");
+  if (report.channels.length === 0) lines.push("  None enabled");
+  for (const channel of report.channels) {
+    const failure = channel.lastFailure ? ` (${channel.lastFailure.category})` : "";
+    lines.push(`  ${integrationLabel(channel.name)}: ${channel.state}${failure}`);
+  }
   lines.push("Integrations:");
   if (report.integrations.length === 0) lines.push("  None enabled");
   for (const integration of report.integrations) {
@@ -207,7 +197,20 @@ function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-type LoomCommand = "init" | "run" | "chat" | "history" | "status" | "requeue";
+type LoomCommand = "init" | "run" | "history" | "status" | "requeue";
+
+function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
+  const channels: Array<"weixin" | "raft"> = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--channel") continue;
+    const value = args[index + 1];
+    if (value !== "weixin" && value !== "raft") throw new Error(usage("init"));
+    if (!channels.includes(value)) channels.push(value);
+    index += 1;
+  }
+  if (channels.length === 0) throw new Error(usage("init"));
+  return channels;
+}
 
 function readRoot(args: string[], command: LoomCommand): string {
   const name = "--root";
@@ -218,7 +221,7 @@ function readRoot(args: string[], command: LoomCommand): string {
     throw new Error(usage(command));
   }
   const remaining = remainingArguments(args, name);
-  if (command !== "chat" && command !== "status" && command !== "requeue" && remaining.length > 0) {
+  if (command !== "init" && command !== "status" && command !== "requeue" && remaining.length > 0) {
     throw new Error(`Unknown argument: ${remaining[0]}`);
   }
   return value;
@@ -231,17 +234,18 @@ function remainingArguments(args: string[], flag: string): string[] {
 }
 
 function usage(command?: LoomCommand): string {
-  if (command === "chat") return "Usage: loom chat [--root <instance-root>] <text>";
   if (command === "status") {
     return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
   }
   if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
+  if (command === "init") {
+    return "Usage: loom init [--root <instance-root>] --channel raft|weixin [--channel raft|weixin]";
+  }
   if (command) return `Usage: loom ${command} [--root <instance-root>]`;
   return [
     "Usage:",
-    "  loom init [--root <instance-root>]",
+    "  loom init [--root <instance-root>] --channel raft|weixin [--channel raft|weixin]",
     "  loom run [--root <instance-root>]",
-    "  loom chat [--root <instance-root>] <text>",
     "  loom history [--root <instance-root>]",
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
     "  loom requeue [--root <instance-root>] <input-id>",
@@ -260,8 +264,7 @@ async function readRecentInteractions(socketPath: string, limit: number): Promis
   const entries: InteractionViewEntry[] = [];
   let after: string | undefined;
   while (true) {
-    const page = await readLocalInteractionHistory({
-      socketPath,
+    const page = await readLoomInteractionHistory(socketPath, {
       ...(after ? { after } : {}),
       limit: 500,
     });

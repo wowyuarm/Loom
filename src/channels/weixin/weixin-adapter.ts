@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
@@ -9,9 +10,24 @@ import type {
   OutboundDelivery,
   RuntimeInput,
 } from "../../runtime/index.js";
-import type { AttachmentStore } from "../attachments/index.js";
+import type { AttachmentStore } from "../../integrations/attachments/index.js";
+import type { InteractionChannel } from "../channel.js";
+import type { InteractionChannelAgentSurface } from "../surface.js";
 import { parseAttachmentReference, type AttachmentReference } from "../../attachments/index.js";
 import { createWeixinHttpRemote } from "./weixin-http.js";
+
+/**
+ * Deterministic, channel-namespaced opaque ref for one Weixin peer. The raw
+ * peer id never reaches the model prompt; Delivery resolves attempts against
+ * the same derivation so only this Channel's peer is a valid Destination.
+ */
+export function weixinOpaqueRef(kind: "place" | "destination", routeRef: string, peerId: string): string {
+  const digest = createHash("sha256")
+    .update(`${routeRef}\0${kind}\0${peerId}`)
+    .digest("hex")
+    .slice(0, 24);
+  return `weixin:${kind}:${digest}`;
+}
 
 const RECONNECT_DELAY_MS = 2_000;
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
@@ -84,7 +100,9 @@ export interface WeixinAdapterStatus {
   lastError?: string;
 }
 
-export interface WeixinAdapter extends OutboundDelivery {
+export interface WeixinAdapter extends InteractionChannel, OutboundDelivery {
+  readonly id: "weixin";
+  readonly label: "Weixin";
   start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): void;
   status(): WeixinAdapterStatus;
   stop(): Promise<void>;
@@ -94,14 +112,11 @@ export interface OpenWeixinAdapterOptions {
   configurationFile: string;
   authFile: string;
   stateFile: string;
-  expectedRouteRef: string;
   attachmentStore: AttachmentStore;
   remote?: WeixinRemote;
 }
 
-export interface OpenConfiguredWeixinAdapterOptions extends Omit<OpenWeixinAdapterOptions, "expectedRouteRef"> {
-  expectedRouteRef?: string;
-}
+export interface OpenConfiguredWeixinAdapterOptions extends OpenWeixinAdapterOptions {}
 
 interface WeixinConfiguration {
   routeRef: string;
@@ -119,11 +134,15 @@ interface StateRow {
 }
 
 class DefaultWeixinAdapter implements WeixinAdapter {
+  readonly id = "weixin" as const;
+  readonly label = "Weixin" as const;
   readonly #database: DatabaseSync;
   #state: WeixinAdapterStatus = { state: "stopped" };
   #controller: AbortController | undefined;
   #running: Promise<void> | undefined;
   #stopped = false;
+
+  readonly routeRef: string;
 
   constructor(
     private readonly configuration: WeixinConfiguration,
@@ -131,6 +150,7 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     private readonly attachmentStore: AttachmentStore,
     stateFile: string,
   ) {
+    this.routeRef = configuration.routeRef;
     this.#database = new DatabaseSync(stateFile);
     this.#database.exec(`
       PRAGMA journal_mode = WAL;
@@ -164,6 +184,28 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     return this.#state;
   }
 
+  channelGuidance(): string {
+    return [
+      "Weixin is a private, ongoing direct conversation with the configured human.",
+      "Write as ordinary social messaging rather than a formal report.",
+      "One thought may be split into a few natural message bubbles by calling message once per bubble; do not turn separate bubbles into a burst of questions, and usually ask at most one question in one conversational turn.",
+      "Let the exchange end naturally when no reply is needed.",
+    ].join(" ");
+  }
+
+  agentSurface(): InteractionChannelAgentSurface {
+    return {
+      guidance: this.channelGuidance(),
+      tools: { names: [], create: () => [] },
+      defaultDestination: {
+        destinationRef: weixinOpaqueRef("destination", this.configuration.routeRef, this.configuration.peerId),
+        routeRef: this.configuration.routeRef,
+        kind: "top_level",
+        label: "Weixin peer",
+      },
+    };
+  }
+
   async stop(): Promise<void> {
     if (this.#stopped) return;
     this.#stopped = true;
@@ -179,6 +221,10 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     }
     if (attempt.kind !== "message") {
       return { status: "not_sent", error: "Weixin accepts only message Effects" };
+    }
+    const destinationRef = weixinOpaqueRef("destination", this.configuration.routeRef, this.configuration.peerId);
+    if (!attempt.destinationRef || attempt.destinationRef !== destinationRef) {
+      return { status: "not_sent", error: "Weixin Destination is unavailable to this Channel" };
     }
     let payload: ReturnType<typeof parseMessagePayload>;
     try {
@@ -318,11 +364,6 @@ class DefaultWeixinAdapter implements WeixinAdapter {
 
 export async function openWeixinAdapter(options: OpenWeixinAdapterOptions): Promise<WeixinAdapter> {
   const configuration = await loadConfiguration(options.configurationFile, options.authFile);
-  if (configuration.routeRef !== options.expectedRouteRef) {
-    throw new Error(
-      `Weixin route ${configuration.routeRef} does not match default Interaction Route ${options.expectedRouteRef}`,
-    );
-  }
   await mkdir(path.dirname(options.stateFile), { recursive: true });
   return new DefaultWeixinAdapter(
     configuration,
@@ -343,13 +384,7 @@ export async function openConfiguredWeixinAdapter(
   if (!hasConfiguration || !hasAuth) {
     throw new Error("Weixin Integration requires both config.json and auth.json");
   }
-  if (!options.expectedRouteRef) {
-    throw new Error("Weixin Integration requires an Instance default Interaction Route");
-  }
-  return openWeixinAdapter({
-    ...options,
-    expectedRouteRef: options.expectedRouteRef,
-  });
+  return openWeixinAdapter(options);
 }
 
 async function loadConfiguration(configurationFile: string, authFile: string): Promise<WeixinConfiguration> {
@@ -406,6 +441,7 @@ async function toRuntimeInput(
   if (!text && !attachment) return undefined;
   const occurredAt = message.createTimeMs === undefined ? undefined : new Date(message.createTimeMs);
   if (occurredAt && !Number.isFinite(occurredAt.getTime())) return undefined;
+  const destinationRef = weixinOpaqueRef("destination", configuration.routeRef, configuration.peerId);
   return {
     source: "weixin",
     sourceId: message.messageId,
@@ -417,6 +453,28 @@ async function toRuntimeInput(
         : {}),
     },
     ...(occurredAt ? { occurredAt: occurredAt.toISOString() } : {}),
+    interaction: {
+      routeRef: configuration.routeRef,
+      signal: "direct_message",
+      actor: { actorRef: "human", kind: "human" },
+      place: {
+        placeRef: weixinOpaqueRef("place", configuration.routeRef, configuration.peerId),
+        kind: "direct",
+        visibility: "private",
+      },
+      audience: {
+        visibility: "private",
+        description: "private conversation with the Weixin peer",
+      },
+      references: [],
+      destinations: [{
+        destinationRef,
+        routeRef: configuration.routeRef,
+        kind: "top_level",
+        label: "Weixin peer",
+      }],
+      defaultDestinationRef: destinationRef,
+    },
   };
 }
 

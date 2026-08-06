@@ -9,8 +9,9 @@ import test from "node:test";
 import {
   createWeixinHttpRemote,
   openWeixinAdapter,
+  weixinOpaqueRef,
   type WeixinRemote,
-} from "../../src/integrations/weixin/index.js";
+} from "../../src/channels/weixin/index.js";
 import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import type { RuntimeInput } from "../../src/runtime/index.js";
@@ -35,7 +36,7 @@ test("accepts text Input before advancing the durable Weixin cursor", async t =>
   });
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote,
   });
   t.after(() => adapter.stop());
@@ -53,13 +54,35 @@ test("accepts text Input before advancing the durable Weixin cursor", async t =>
     kind: "interaction",
     payload: { text: "hello from Weixin" },
     occurredAt: "2026-03-21T05:20:00.000Z",
+    interaction: {
+      routeRef: "primary-route",
+      signal: "direct_message",
+      actor: { actorRef: "human", kind: "human" },
+      place: {
+        placeRef: weixinOpaqueRef("place", "primary-route", "peer-1"),
+        kind: "direct",
+        visibility: "private",
+      },
+      audience: {
+        visibility: "private",
+        description: "private conversation with the Weixin peer",
+      },
+      references: [],
+      destinations: [{
+        destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
+        routeRef: "primary-route",
+        kind: "top_level",
+        label: "Weixin peer",
+      }],
+      defaultDestinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
+    },
   });
   await adapter.stop();
 
   const recoveredCursors: string[] = [];
   const recovered = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
   });
   t.after(() => recovered.stop());
@@ -91,7 +114,7 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
   });
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     attachmentStore,
     remote,
   });
@@ -115,7 +138,7 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
   const recoveredCursors: string[] = [];
   const recovered = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     attachmentStore,
     remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
   });
@@ -148,7 +171,7 @@ test("delivers text with Runtime idempotency and the accepted peer context", asy
   });
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote,
   });
   t.after(() => adapter.stop());
@@ -161,6 +184,7 @@ test("delivers text with Runtime idempotency and the accepted peer context", asy
     kind: "message",
     payload: { text: "a visible reply" },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-1:1",
   }), { status: "delivered", remoteId: "remote-77" });
   assert.deepEqual(sends[0], {
@@ -179,6 +203,7 @@ test("delivers text with Runtime idempotency and the accepted peer context", asy
     kind: "message",
     payload: { text: "retry" },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-1:2",
   }), { status: "not_sent", error: "recipient unavailable" });
 
@@ -189,6 +214,7 @@ test("delivers text with Runtime idempotency and the accepted peer context", asy
     kind: "message",
     payload: { text: "uncertain" },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-1:3",
   }), { status: "unknown", error: "connection reset" });
 });
@@ -212,7 +238,7 @@ test("delivers one immutable outbound attachment from the generic message Effect
   });
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote,
   });
   t.after(() => adapter.stop());
@@ -225,6 +251,7 @@ test("delivers one immutable outbound attachment from the generic message Effect
       attachments: [JSON.parse(JSON.stringify(attachment))],
     },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-attachment:1",
   }), { status: "delivered", remoteId: "remote-attachment" });
   assert.equal(sends.length, 1);
@@ -292,7 +319,7 @@ test("reports unknown when an attachment fails after its caption was sent", asyn
   }), "utf8");
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote: createWeixinHttpRemote(),
   });
   t.after(() => adapter.stop());
@@ -306,6 +333,7 @@ test("reports unknown when an attachment fails after its caption was sent", asyn
       attachments: [JSON.parse(JSON.stringify(attachment))],
     },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-partial:1",
   });
 
@@ -513,7 +541,7 @@ test("does not advance the Weixin cursor when Runtime has not accepted the Input
   const paths = await weixinPaths();
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote: blockingRemote({
       cursors: [],
       firstPoll: {
@@ -535,7 +563,7 @@ test("does not advance the Weixin cursor when Runtime has not accepted the Input
   const recoveredCursors: string[] = [];
   const recovered = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
   });
   t.after(() => recovered.stop());
@@ -569,7 +597,7 @@ test("retries once without an expired peer context inside the same Delivery atte
   });
   const adapter = await openWeixinAdapter({
     ...paths,
-    expectedRouteRef: "primary-route",
+
     remote,
   });
   t.after(() => adapter.stop());
@@ -582,6 +610,7 @@ test("retries once without an expired peer context inside the same Delivery atte
     kind: "message",
     payload: { text: "same Delivery" },
     routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
     idempotencyKey: "effect-expired:1",
   }), { status: "delivered", remoteId: "effect-expired:1" });
   assert.equal(sends.length, 2);
@@ -621,9 +650,9 @@ async function weixinPaths(): Promise<{
   attachmentStore: Awaited<ReturnType<typeof openAttachmentStore>>;
 }> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-weixin-"));
-  const configurationFile = path.join(root, "configuration", "integrations", "weixin", "config.json");
-  const authFile = path.join(root, "configuration", "integrations", "weixin", "auth.json");
-  const stateFile = path.join(root, "runtime", "integrations", "weixin.db");
+  const configurationFile = path.join(root, "configuration", "channels", "weixin", "config.json");
+  const authFile = path.join(root, "configuration", "channels", "weixin", "auth.json");
+  const stateFile = path.join(root, "runtime", "channels", "weixin.db");
   const attachmentStoreRoot = path.join(root, "runtime", "integrations", "attachments");
   const attachmentStore = await openAttachmentStore({ root: attachmentStoreRoot });
   await mkdir(path.dirname(configurationFile), { recursive: true });

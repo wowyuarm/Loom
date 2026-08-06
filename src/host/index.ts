@@ -5,6 +5,7 @@ export {
   type OpenLoomHostOptions,
 } from "./loom-host.js";
 export {
+  readLoomInteractionHistory,
   readLoomStatus,
   requeueLoomInput,
   type LoomStatusReport,

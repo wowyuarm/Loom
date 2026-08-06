@@ -2,6 +2,8 @@ import { chmod, mkdir, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
 
+import type { InteractionViewOptions, InteractionViewPage } from "../runtime/index.js";
+
 export type LoomAgentName =
   | "main-agent"
   | "orientation"
@@ -62,6 +64,7 @@ export interface LiveLoomStatusReport {
     integrityWarnings: Array<{ kind: string; count: number }>;
   };
   agents: LoomAgentStatus[];
+  channels: LoomIntegrationStatus[];
   integrations: LoomIntegrationStatus[];
 }
 
@@ -70,6 +73,7 @@ export interface UnavailableLoomStatusReport {
   observedAt: string;
   host: { state: "unavailable" };
   agents: [];
+  channels: [];
   integrations: [];
 }
 
@@ -77,10 +81,12 @@ export type LoomStatusReport = LiveLoomStatusReport | UnavailableLoomStatusRepor
 
 type StatusRequest =
   | { type: "status"; since?: string }
-  | { type: "requeue_input"; inputId: string };
+  | { type: "requeue_input"; inputId: string }
+  | { type: "history"; after?: string; limit?: number };
 type StatusResponse =
   | { ok: true; type: "status"; report: LiveLoomStatusReport }
   | { ok: true; type: "requeue_input"; disposition: "requeued" | "not_blocked" }
+  | { ok: true; type: "history"; page: InteractionViewPage }
   | { ok: false; error: string };
 const MAX_STATUS_REQUEST_BYTES = 8 * 1024;
 
@@ -93,6 +99,7 @@ export function createLoomStatusServer(options: {
   socketPath: string;
   read(since?: string): LiveLoomStatusReport;
   requeueInput(inputId: string): "requeued" | "not_blocked";
+  interactionView(viewOptions?: InteractionViewOptions): InteractionViewPage;
 }): LoomStatusServer {
   const socketPath = path.resolve(options.socketPath);
   let server: Server | undefined;
@@ -129,6 +136,15 @@ export function createLoomStatusServer(options: {
                 ok: true,
                 type: "requeue_input",
                 disposition: options.requeueInput(request.inputId),
+              });
+            } else if (request.type === "history") {
+              writeResponse(socket, {
+                ok: true,
+                type: "history",
+                page: options.interactionView({
+                  ...(request.after !== undefined ? { after: request.after } : {}),
+                  ...(request.limit !== undefined ? { limit: request.limit } : {}),
+                }),
               });
             } else {
               writeResponse(socket, { ok: true, type: "status", report: options.read(request.since) });
@@ -214,6 +230,29 @@ export async function readLoomStatus(
   });
 }
 
+export async function readLoomInteractionHistory(
+  socketPath: string,
+  options: { after?: string; limit?: number } = {},
+): Promise<InteractionViewPage> {
+  let response: Extract<StatusResponse, { ok: true }>;
+  try {
+    response = await sendStatusRequest(socketPath, {
+      type: "history",
+      ...(options.after !== undefined ? { after: options.after } : {}),
+      ...(options.limit !== undefined ? { limit: options.limit } : {}),
+    });
+  } catch (error) {
+    if (error instanceof Error && isUnavailable(error)) {
+      throw new Error("Loom Host is not running; start it with `loom run` before reading history");
+    }
+    throw error;
+  }
+  if (response.type !== "history") {
+    throw new Error("Loom status endpoint returned the wrong response type");
+  }
+  return response.page;
+}
+
 export async function requeueLoomInput(
   socketPath: string,
   inputId: string,
@@ -248,6 +287,20 @@ function parseStatusRequest(source: string): StatusRequest {
       throw new Error("Loom requeue requires an Input id");
     }
     return { type: "requeue_input", inputId: request.inputId.trim() };
+  }
+  if (request.type === "history") {
+    if (request.after !== undefined && typeof request.after !== "string") {
+      throw new Error("Loom history cursor must be a string");
+    }
+    if (request.limit !== undefined
+      && (!Number.isSafeInteger(request.limit) || (request.limit as number) < 1)) {
+      throw new Error("Loom history limit must be a positive integer");
+    }
+    return {
+      type: "history",
+      ...(typeof request.after === "string" ? { after: request.after } : {}),
+      ...(Number.isSafeInteger(request.limit) ? { limit: request.limit as number } : {}),
+    };
   }
   if (request.type !== "status") throw new Error("Unsupported Loom status request");
   if (request.since !== undefined && typeof request.since !== "string") {
@@ -306,6 +359,7 @@ function unavailableReport(): UnavailableLoomStatusReport {
     observedAt: new Date().toISOString(),
     host: { state: "unavailable" },
     agents: [],
+    channels: [],
     integrations: [],
   };
 }

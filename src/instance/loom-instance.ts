@@ -44,7 +44,7 @@ import {
   type AttachmentStore,
 } from "../integrations/attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
-import type { InteractionChannelAgentSurface } from "../main-agent/channel-surface.js";
+import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 import type { WebAccessIntegration } from "../integrations/web/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import {
@@ -105,6 +105,8 @@ export interface OpenLoomInstanceOptions {
   machineTimeZone?: string;
   now?: () => Date;
   outboundDelivery?: OutboundDelivery;
+  /** Whether at least one Interaction Channel is enabled; gates the message tool. */
+  interactionEnabled?: boolean;
   channelAgentSurface?: InteractionChannelAgentSurface;
   webAccess?: WebAccessIntegration;
   nmem?: NmemRecallToolOptions;
@@ -281,6 +283,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     layout,
     agentWorkspace,
     attachmentStore,
+    interactionEnabled: options.interactionEnabled ?? false,
     ...(options.observe ? { observe: options.observe } : {}),
     ...(options.channelAgentSurface ? { channelAgentSurface: options.channelAgentSurface } : {}),
     ...(configuration.defaultInteractionRoute
@@ -303,7 +306,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       mainAgentTools: [
         ...MAIN_AGENT_ACTION_TOOLS,
         ...(recallTool ? ["nmem_recall" as const] : []),
-        ...(configuration.defaultInteractionRoute ? ["message"] : []),
+        ...((options.interactionEnabled ?? false) ? ["message"] : []),
         ...(options.channelAgentSurface?.tools.names ?? []),
       ],
       evidenceSources: [

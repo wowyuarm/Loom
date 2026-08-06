@@ -14,6 +14,10 @@ export interface InitializeLoomInstanceResult {
   }>;
 }
 
+export type InitializeChannelName = "weixin" | "raft";
+
+const INITIALIZABLE_CHANNELS: readonly InitializeChannelName[] = ["weixin", "raft"];
+
 const REQUIRED_INDIVIDUAL_MATERIALS: InitializeLoomInstanceResult["requiredIndividualMaterials"] = [
   { path: "workspace/facts.json" },
   { path: "workspace/identity.md" },
@@ -21,34 +25,48 @@ const REQUIRED_INDIVIDUAL_MATERIALS: InitializeLoomInstanceResult["requiredIndiv
   { path: "workspace/attention.md" },
 ];
 
-const SCAFFOLD_FILES = new Map<string, string>([
-  ["configuration/instance.yaml", `version: 1
-integrations:
-  local:
-    enabled: true
-  weixin:
-    enabled: false
-  raft:
-    enabled: false
-  web:
-    enabled: false
-  nmem:
-    enabled: false
-interaction:
-  defaultRoute: local
-`],
+const SCAFFOLD_BEHAVIOR_FILES = new Map<string, string>([
   ["workspace/behavior/background.md", DEFAULT_BACKGROUND_BEHAVIOR],
   ["workspace/behavior/interaction.md", DEFAULT_INTERACTION_BEHAVIOR],
 ]);
 
+function scaffoldInstanceYaml(channels: readonly InitializeChannelName[]): string {
+  return [
+    "version: 1",
+    "channels:",
+    ...INITIALIZABLE_CHANNELS.map(name =>
+      `  ${name}:\n    enabled: ${channels.includes(name) ? "true" : "false"}`),
+    "integrations:",
+    "  web:",
+    "    enabled: false",
+    "  nmem:",
+    "    enabled: false",
+    "",
+  ].join("\n");
+}
+
 export async function initializeLoomInstance(options: {
   root: string;
+  /** Interaction Channels to enable in the scaffold; at least one is required. */
+  channels: readonly InitializeChannelName[];
 }): Promise<InitializeLoomInstanceResult> {
+  const channels = [...new Set(options.channels)];
+  const invalid = channels.filter(name => !INITIALIZABLE_CHANNELS.includes(name));
+  if (invalid.length > 0) {
+    throw new Error(`Unsupported Interaction Channel: ${invalid[0]}`);
+  }
+  if (channels.length === 0) {
+    throw new Error("Loom requires at least one enabled Interaction Channel");
+  }
   const root = path.resolve(options.root);
+  const scaffoldFiles = new Map<string, string>([
+    ["configuration/instance.yaml", scaffoldInstanceYaml(channels)],
+    ...SCAFFOLD_BEHAVIOR_FILES,
+  ]);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await ensureDirectory(root, "configuration/pi");
   const createdFiles: string[] = [];
-  for (const [relativePath, content] of SCAFFOLD_FILES) {
+  for (const [relativePath, content] of scaffoldFiles) {
     if (await writeIfMissing(root, relativePath, content)) createdFiles.push(relativePath);
   }
   return {

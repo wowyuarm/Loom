@@ -1,6 +1,7 @@
 export {
   openWeixinAdapter,
   openConfiguredWeixinAdapter,
+  weixinOpaqueRef,
   type WeixinAdapter,
   type WeixinAdapterStatus,
   type WeixinRemote,

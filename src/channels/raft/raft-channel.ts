@@ -7,12 +7,13 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import type { InteractionChannel } from "../channel.js";
 import type {
   ExternalAttentionEvidence,
   InteractionChannelAgentSurface,
   InteractionChannelAttentionSource,
   InteractionChannelEffectControl,
-} from "../../main-agent/channel-surface.js";
+} from "../surface.js";
 import type {
   AcceptedInput,
   ActorReference,
@@ -193,7 +194,9 @@ export interface RaftChannelStatus {
   selfMemberId?: string;
 }
 
-export interface RaftChannel extends OutboundDelivery {
+export interface RaftChannel extends InteractionChannel, OutboundDelivery {
+  readonly id: "raft";
+  readonly label: "Raft";
   start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): Promise<void>;
   acceptWake(wake: RaftWake): Promise<{ ok: true }>;
   agentTools(control: InteractionChannelEffectControl): ToolDefinition[];
@@ -218,7 +221,6 @@ export interface OpenRaftChannelOptions {
 export interface OpenConfiguredRaftChannelOptions {
   configurationFile: string;
   stateFile: string;
-  expectedRouteRef?: string;
   remote?: RaftRemote;
 }
 
@@ -227,6 +229,9 @@ interface WakeRow {
 }
 
 class DefaultRaftChannel implements RaftChannel {
+  readonly id = "raft" as const;
+  readonly label = "Raft" as const;
+  readonly routeRef: string;
   readonly #database: DatabaseSync;
   #acceptInput: ((input: RuntimeInput) => Promise<AcceptedInput>) | undefined;
   #processing: Promise<void> | undefined;
@@ -238,6 +243,7 @@ class DefaultRaftChannel implements RaftChannel {
   #stopping: Promise<void> | undefined;
 
   constructor(private readonly options: OpenRaftChannelOptions) {
+    this.routeRef = options.routeRef;
     this.#database = new DatabaseSync(options.stateFile);
     initializeRaftState(this.#database, (options.now?.() ?? new Date()).toISOString());
   }
@@ -521,12 +527,11 @@ class DefaultRaftChannel implements RaftChannel {
       "Claim a task before taking responsibility for it, report progress in its task thread, move completed work to in_review, and mark it done only after explicit acceptance. Explain in the task thread before unclaiming and releasing responsibility.",
       "Raft is asynchronous: the current message may not be the latest in its place, and activity that did not mention you does not arrive on its own.",
       "When a signal is a thread reply, or the meaning may depend on what came before, open the message reference before replying rather than answering the bare text. Use raft_activity when you need to see what else has happened in a place you care about.",
-      "A conversation lives in the place it started. Reply in the destination a message came from unless you have a concrete reason to move it; treat a Raft reply thread as the unit of one conversation and keep its replies inside it.",
+      "Treat a Raft reply thread as the unit of one conversation and keep its replies inside it.",
       "Raft reply threads are a message structure here, not the Workspace threads where your own continuing work lives.",
       "When a reply-thread discussion is complete, decide whether its ordinary updates still deserve attention; use raft_attention to unfollow it when they do not. Opening evidence, finishing a task, or closing a Loom Thread never unfollows automatically.",
-      "What is said in a private channel or DM stays there and is not relayed to other places. Threads do not nest.",
+      "Raft threads do not nest.",
       "The Raft read tools return bounded evidence through opaque refs, not a full history. Their refs must not be reconstructed as CLI targets; use them when the current evidence is not enough, and treat what they return as evidence to weigh rather than a queue to exhaust.",
-      "Use message to make a durable Effect, and choose a Destination from the current Interaction Context when more than one is available.",
     ].join(" ");
   }
 
@@ -1203,9 +1208,6 @@ export async function openConfiguredRaftChannel(
   options: OpenConfiguredRaftChannelOptions,
 ): Promise<RaftChannel | undefined> {
   if (!(await fileExists(options.configurationFile))) return undefined;
-  if (!options.expectedRouteRef) {
-    throw new Error("Raft Integration requires an Instance default Interaction Route");
-  }
   const document = await readJson(options.configurationFile, "Raft configuration");
   assertObject(document, "Raft configuration");
   assertExactKeys(document, [
@@ -1219,9 +1221,6 @@ export async function openConfiguredRaftChannel(
   ], "Raft configuration");
   if (document.version !== 1) throw new Error("Raft configuration requires version: 1");
   const routeRef = nonEmptyString(document.routeRef, "Raft configuration routeRef");
-  if (routeRef !== options.expectedRouteRef) {
-    throw new Error(`Raft route ${routeRef} does not match default Interaction Route ${options.expectedRouteRef}`);
-  }
   const profile = nonEmptyString(document.profile, "Raft configuration profile");
   const serverId = nonEmptyString(document.serverId, "Raft configuration serverId");
   const selfMemberId = nonEmptyString(document.selfMemberId, "Raft configuration selfMemberId");

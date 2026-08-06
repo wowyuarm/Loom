@@ -10,7 +10,7 @@ test("creates an Instance scaffold without inventing Individual material", async
   const parent = await mkdtemp(path.join(tmpdir(), "loom-init-"));
   const root = path.join(parent, ".loom");
 
-  const result = await initializeLoomInstance({ root });
+  const result = await initializeLoomInstance({ root, channels: ["weixin", "raft"] });
 
   assert.deepEqual(result, {
     root,
@@ -36,19 +36,16 @@ test("creates an Instance scaffold without inventing Individual material", async
   );
   assert.equal(await readFile(path.join(root, "configuration", "instance.yaml"), "utf8"), [
     "version: 1",
-    "integrations:",
-    "  local:",
-    "    enabled: true",
+    "channels:",
     "  weixin:",
-    "    enabled: false",
+    "    enabled: true",
     "  raft:",
-    "    enabled: false",
+    "    enabled: true",
+    "integrations:",
     "  web:",
     "    enabled: false",
     "  nmem:",
     "    enabled: false",
-    "interaction:",
-    "  defaultRoute: local",
     "",
   ].join("\n"));
   assert.equal((await stat(path.join(root, "configuration", "pi"))).isDirectory(), true);
@@ -62,7 +59,7 @@ test("creates an Instance scaffold without inventing Individual material", async
 test("preserves every existing scaffold file when initialization is repeated", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "loom-reinit-"));
   const root = path.join(parent, ".loom");
-  await initializeLoomInstance({ root });
+  await initializeLoomInstance({ root, channels: ["raft"] });
   const interaction = path.join(root, "workspace", "behavior", "interaction.md");
   const configuration = path.join(root, "configuration", "instance.yaml");
   await Promise.all([
@@ -70,11 +67,36 @@ test("preserves every existing scaffold file when initialization is repeated", a
     writeFile(configuration, "version: 1\ntime:\n  logicalDayStart: 04:00\n", "utf8"),
   ]);
 
-  const result = await initializeLoomInstance({ root });
+  const result = await initializeLoomInstance({ root, channels: ["raft"] });
 
   assert.deepEqual(result.createdFiles, []);
   assert.equal(await readFile(interaction, "utf8"), "Individual interaction behavior.\n");
   assert.match(await readFile(configuration, "utf8"), /logicalDayStart: 04:00/);
+});
+
+test("requires at least one enabled Interaction Channel and deduplicates repeated names", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "loom-init-channels-"));
+  const root = path.join(parent, ".loom");
+
+  await assert.rejects(
+    initializeLoomInstance({ root, channels: [] }),
+    /at least one enabled Interaction Channel/,
+  );
+  await assert.rejects(
+    initializeLoomInstance({ root, channels: ["raft", "weixin", "slack" as never] }),
+    /Unsupported Interaction Channel: slack/,
+  );
+
+  const result = await initializeLoomInstance({ root, channels: ["raft", "raft"] });
+  assert.match(
+    await readFile(path.join(root, "configuration", "instance.yaml"), "utf8"),
+    /channels:\n  weixin:\n    enabled: false\n  raft:\n    enabled: true/,
+  );
+  assert.deepEqual(result.createdFiles, [
+    "configuration/instance.yaml",
+    "workspace/behavior/background.md",
+    "workspace/behavior/interaction.md",
+  ]);
 });
 
 test("does not follow a partial Instance scaffold outside its root", async () => {
@@ -85,7 +107,7 @@ test("does not follow a partial Instance scaffold outside its root", async () =>
   await symlink(outside, path.join(root, "workspace"));
 
   await assert.rejects(
-    initializeLoomInstance({ root }),
+    initializeLoomInstance({ root, channels: ["raft"] }),
     /Instance scaffold path must stay inside the Instance Root/,
   );
   await assert.rejects(access(path.join(outside, "behavior", "interaction.md")));

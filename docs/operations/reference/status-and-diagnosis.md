@@ -15,7 +15,7 @@ both the evidence obtained and the conclusion that evidence supports.
 | What is the live Instance state? | Run `loom status`; use `--json` for structured output. | The running Host's current model, Runtime, Agent and stateful Integration state. | Why an unavailable Host stopped, what private activity contains or whether a stateless tool will succeed on its next request. |
 | What happened during a period? | Run `loom status --since <ISO timestamp>` and, when needed, read the matching journal range. | Bounded Agent run history and emitted lifecycle events for that period. | A complete private history or facts that neither source records. |
 | How can a repaired blocked Input run again? | Run `loom requeue <input-id>` against the live Host. | That one Input was still `blocked` and is now pending again. | That its original failure is repaired or the next Turn will succeed. |
-| Can Local answer? | Run `loom chat` or `loom history` when Local is enabled. | The Local client reached the Host and received that result. | That another Integration is connected or Runtime has no pending work. |
+| Can an enabled Channel answer? | Read the Channel entry in `loom status`, then run `loom history`. | The Channel reached the Host and the Host delivered its result. | That another Integration is connected or Runtime has no pending work. |
 | Is Raft connected? | Read the Raft entry in `loom status`, then run Raft acceptance checks when behavior must be proved. | Current bridge state and a bounded failure category. | That DM, thread, ambient and replay behavior all passed. |
 
 Never open `runtime.db`, an Integration database or a Transcript as an operator
