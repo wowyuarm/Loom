@@ -11,6 +11,7 @@ test("upgrades version 17 Delivery attempts with a required owning Segment", asy
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-schema-v17-"));
   const database = new DatabaseSync(path.join(root, "runtime.db"));
   database.exec(`
+    PRAGMA foreign_keys = ON;
     CREATE TABLE turns (
       id TEXT PRIMARY KEY,
       segment_id TEXT NOT NULL,
@@ -36,6 +37,10 @@ test("upgrades version 17 Delivery attempts with a required owning Segment", asy
       UNIQUE (effect_id, attempt_number),
       UNIQUE (idempotency_key)
     ) STRICT;
+    CREATE TABLE after_chat_continuation (
+      singleton INTEGER PRIMARY KEY,
+      source_delivery_id TEXT NOT NULL REFERENCES delivery_attempts(id)
+    ) STRICT;
     INSERT INTO turns (id, segment_id, status) VALUES ('turn-1', 'segment-1', 'completed');
     INSERT INTO effects (id, turn_id) VALUES ('effect-1', 'turn-1');
     INSERT INTO delivery_attempts (
@@ -45,6 +50,8 @@ test("upgrades version 17 Delivery attempts with a required owning Segment", asy
       'delivery-1', 'effect-1', 1, 'not_sent', 'effect-1:1',
       'owner-1', 1, '2026-08-05T10:01:00.000Z', '2026-08-05T10:00:00.000Z'
     );
+    INSERT INTO after_chat_continuation (singleton, source_delivery_id)
+    VALUES (1, 'delivery-1');
     PRAGMA user_version = 17;
   `);
 
@@ -60,5 +67,14 @@ test("upgrades version 17 Delivery attempts with a required owning Segment", asy
     "SELECT segment_id FROM delivery_attempts WHERE id = 'delivery-1'",
   ).get() as { segment_id: string };
   assert.equal(migrated.segment_id, "segment-1");
+  assert.deepEqual(database.prepare("PRAGMA foreign_key_check").all(), []);
+  const continuation = database.prepare(
+    "SELECT source_delivery_id FROM after_chat_continuation",
+  ).get() as { source_delivery_id: string };
+  assert.equal(continuation.source_delivery_id, "delivery-1");
+  assert.equal(
+    (database.prepare("PRAGMA foreign_keys").get() as unknown as { foreign_keys: number }).foreign_keys,
+    1,
+  );
   database.close();
 });

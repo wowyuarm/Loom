@@ -275,6 +275,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
 }
 
 function migrateVersion17(database: DatabaseSync): void {
+  const foreignKeys = database.prepare("PRAGMA foreign_keys").get() as unknown as { foreign_keys: number };
+  if (foreignKeys.foreign_keys === 1) database.exec("PRAGMA foreign_keys = OFF");
   database.exec("BEGIN IMMEDIATE");
   try {
     const deliveryTable = database.prepare(`
@@ -327,12 +329,18 @@ function migrateVersion17(database: DatabaseSync): void {
         DROP TABLE delivery_attempts;
         ALTER TABLE delivery_attempts_v18 RENAME TO delivery_attempts;
       `);
+      const violation = database.prepare("PRAGMA foreign_key_check").get();
+      if (violation) {
+        throw new Error("Runtime Store version 17 has an invalid foreign key after Delivery migration");
+      }
     }
     database.exec("PRAGMA user_version = 18");
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
+  } finally {
+    if (foreignKeys.foreign_keys === 1) database.exec("PRAGMA foreign_keys = ON");
   }
 }
 
