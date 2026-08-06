@@ -21,6 +21,8 @@ import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 
+type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
 
@@ -168,7 +170,7 @@ Use read, ls, and grep only inside the Agent Workspace. Use read_reflection_acti
 
 replace_core_material is the only write tool. It accepts a complete replacement for one authorized material. Finish every warranted replacement before the final answer.
 
-Return exactly UPDATED after one or more successful replacements. Return exactly NO_CHANGE when no replacement was made. Do not return a summary, explanation, or advice.`;
+Finish after the warranted replacements are complete. Do not return advice.`;
 }
 
 export interface MemoryReflectionRequest {
@@ -186,6 +188,7 @@ export type MemoryReflectionResult = {
 
 export interface MemoryReflector {
   reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult>;
+  cancel(reason: string): Promise<void>;
 }
 
 export interface PiMemoryReflectorOptions {
@@ -203,6 +206,9 @@ export interface PiMemoryReflectorOptions {
 }
 
 class PiMemoryReflector implements MemoryReflector {
+  #activeSession: PiSession | undefined;
+  #cancelReason: string | undefined;
+
   constructor(private readonly options: PiMemoryReflectorOptions) {}
 
   async reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult> {
@@ -322,16 +328,14 @@ class PiMemoryReflector implements MemoryReflector {
     ];
 
     try {
-      const output = await this.#runSession(request, runId, baseline.get("facts.json")!, tools);
+      await this.#runSession(request, runId, baseline.get("facts.json")!, tools);
       assertGrounded(readBaselines, supportingEvidenceRead);
       if (changedMaterials.length > 0) {
-        if (output !== "UPDATED") throw new Error("Memory Reflector must return UPDATED after replacement");
         await validateCurrentMaterials(this.options.agentWorkspace.root);
         const result: MemoryReflectionResult = { outcome: "updated", runId, changedMaterials };
         await mutation.complete(result);
         return result;
       }
-      if (output !== "NO_CHANGE") throw new Error("Memory Reflector must return NO_CHANGE when no replacement was made");
       const result: MemoryReflectionResult = { outcome: "no_change", runId, changedMaterials: [] };
       await mutation.complete(result);
       return result;
@@ -429,6 +433,11 @@ class PiMemoryReflector implements MemoryReflector {
     }
   }
 
+  async cancel(reason: string): Promise<void> {
+    this.#cancelReason = reason;
+    await this.#activeSession?.abort();
+  }
+
   async #runSession(
     request: MemoryReflectionRequest,
     runId: string,
@@ -477,7 +486,9 @@ class PiMemoryReflector implements MemoryReflector {
       sessionManager,
       settingsManager,
     });
+    this.#activeSession = session;
     try {
+      if (this.#cancelReason) throw new Error(`Memory reflection cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
       await session.prompt(buildRunPrompt(
@@ -487,6 +498,10 @@ class PiMemoryReflector implements MemoryReflector {
       ), { expandPromptTemplates: false });
       return finalAssistantText(session.messages);
     } finally {
+      if (this.#activeSession === session) {
+        this.#activeSession = undefined;
+        this.#cancelReason = undefined;
+      }
       session.dispose();
     }
   }
@@ -547,7 +562,7 @@ function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEna
       "Neither is required and neither overrides the Agent Workspace.",
       "",
     ] : []),
-    "Read the complete core baseline, inspect enough supporting evidence to judge real cross-time change, then replace only warranted materials. Finish with exactly UPDATED or NO_CHANGE.",
+    "Read the complete core baseline, inspect enough supporting evidence to judge real cross-time change, then replace only warranted materials.",
   ].join("\n");
 }
 

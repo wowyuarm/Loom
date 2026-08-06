@@ -25,6 +25,8 @@ import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 
+type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
 const SYSTEM_PROMPT = `You are the Life Recorder for one Agent Individual. Preserve first-hand records of what happened; do not turn them into long-term analysis.
 
 ## Individual grounding
@@ -132,6 +134,9 @@ export interface PiLifeRecorderOptions {
 export type LifeRecorder = ActivityRecorder;
 
 class PiLifeRecorder implements LifeRecorder {
+  #activeSession: PiSession | undefined;
+  #cancelReason: string | undefined;
+
   constructor(private readonly options: PiLifeRecorderOptions) {}
 
   async record(activity: FrozenActivity): Promise<LifeRecorderReceipt> {
@@ -303,6 +308,11 @@ class PiLifeRecorder implements LifeRecorder {
     }
   }
 
+  async cancel(reason: string): Promise<void> {
+    this.#cancelReason = reason;
+    await this.#activeSession?.abort();
+  }
+
   async #runSession(
     activity: FrozenActivity,
     runId: string,
@@ -358,7 +368,9 @@ class PiLifeRecorder implements LifeRecorder {
       sessionManager,
       settingsManager,
     });
+    this.#activeSession = session;
     try {
+      if (this.#cancelReason) throw new Error(`Life recording cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
       await session.prompt(
@@ -367,6 +379,10 @@ class PiLifeRecorder implements LifeRecorder {
       );
       assertSuccessfulCompletion(session.messages);
     } finally {
+      if (this.#activeSession === session) {
+        this.#activeSession = undefined;
+        this.#cancelReason = undefined;
+      }
       session.dispose();
     }
   }

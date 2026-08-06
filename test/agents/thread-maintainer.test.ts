@@ -199,7 +199,7 @@ test("preserves a substantive movement as a note and rewrites the Thread entranc
       path: "index.md",
       content: "# Threads\n\n- garden: smaller trial is now the live edge\n",
     }, { id: "write-index" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage("The Thread structure now reflects the smaller trial."),
   ]);
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),

@@ -50,7 +50,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
         content: "The current line has moved. Disagreement with Alex still feels safe.",
       }, { id: "replace-attention" }), { stopReason: "toolUse" });
     },
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage("The current line now carries the safer disagreement clearly."),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -145,7 +145,7 @@ test("counts a Workspace-internal absolute path as the Current Attention baselin
   })).outcome, "no_change");
 });
 
-test("accepts an explicit terminal outcome after explanatory prose", async () => {
+test("derives no change from the absence of a replacement", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-attention-terminal-outcome-"));
   const workspaceRoot = await createWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "attention-terminal-outcome");
@@ -158,7 +158,7 @@ test("accepts an explicit terminal outcome after explanatory prose", async () =>
       fauxToolCall("read", { path: "memory.md" }, { id: "read-memory-terminal" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The carried awareness remains accurate.\n\nNO_CHANGE"),
+    fauxAssistantMessage("The carried awareness remains accurate."),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),

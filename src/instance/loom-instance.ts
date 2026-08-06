@@ -16,6 +16,7 @@ import {
   type Runtime,
   type RuntimeInput,
   type RuntimeInputOutcome,
+  type RequeueInputResult,
   type OutboundDelivery,
   type RuntimeStatus,
   type RuntimeOperationalStatus,
@@ -91,6 +92,7 @@ export interface LoomInstance {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   inputOutcome(inputId: string): RuntimeInputOutcome;
+  requeueInput(inputId: string): RequeueInputResult;
   runOnce(observedAt: Date): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
@@ -134,6 +136,10 @@ class AssembledLoomInstance implements LoomInstance {
 
   inputOutcome(inputId: string): RuntimeInputOutcome {
     return this.runtime.inputOutcome(inputId);
+  }
+
+  requeueInput(inputId: string): RequeueInputResult {
+    return this.runtime.requeueInput(inputId);
   }
 
   async runOnce(observedAt: Date): Promise<LoomInstanceRunResult> {

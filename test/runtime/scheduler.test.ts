@@ -160,6 +160,61 @@ test("backs off after a confirmed not-sent Delivery", async () => {
   }
 });
 
+test("records a late Delivery retry in a later Activity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-late-delivery-"));
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const freezeRequests: Parameters<ActivityLifecycle["freeze"]>[0][] = [];
+  let deliveryCalls = 0;
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: {
+      deliver: async () => ++deliveryCalls === 1
+        ? { status: "not_sent", error: "route unavailable" }
+        : { status: "delivered", remoteId: "remote-late" },
+    },
+    activityLifecycle: {
+      freeze: async request => {
+        freezeRequests.push(request);
+        return {
+          activity: {
+            version: 1,
+            segmentId: request.segment.id,
+            recordingDay: request.segment.recordingDay,
+            openedAt: request.segment.openedAt,
+            closedAt: request.segment.closedAt,
+            events: [],
+            turns: [],
+          },
+          successorExecutionState: request.executionState,
+        };
+      },
+    },
+    now: () => now,
+  });
+  try {
+    await runtime.acceptInput({ source: "test", sourceId: "late-delivery", kind: "interaction", payload: {} });
+    assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+    assert.equal((await runtime.advance()).disposition, "delivery_not_sent");
+    assert.equal((await runtime.closeActivity()).disposition, "activity_frozen");
+    assert.equal(freezeRequests[0]?.deliveries[0]?.status, "not_sent");
+
+    now = new Date("2026-07-21T08:01:00.000Z");
+    assert.deepEqual(await runtime.advance(), { disposition: "delivery_completed" });
+    assert.ok(runtime.status().activeSegment);
+    now = new Date("2026-07-21T08:20:00.000Z");
+    assert.equal((await runtime.runAfterChatContinuation({ observedAt: now })).disposition, "expired");
+    assert.equal((await runtime.closeActivity()).disposition, "activity_frozen");
+    assert.deepEqual(freezeRequests[1]?.deliveries.map(delivery => ({
+      attempt: delivery.attempt,
+      status: delivery.status,
+      remoteId: delivery.remoteId,
+    })), [{ attempt: 2, status: "delivered", remoteId: "remote-late" }]);
+  } finally {
+    runtime.close();
+  }
+});
+
 test("keeps a Delivery retry time across Runtime restart", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-restart-"));
   let now = new Date("2026-07-21T08:00:00.000Z");
@@ -643,6 +698,73 @@ test("reflects one complete logical day and slices a cross-day Activity by Turn"
   }
 });
 
+test("advances Reflection past a silent Opportunity without an Activity", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-silent-opportunity-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    orientation: {
+      form: async () => ({
+        outcome: "opportunity",
+        runId: "silent-orientation",
+        narrative: "Nothing needs to be carried forward.",
+        whyNow: "The Runtime is quiet.",
+        evidence: [],
+      }),
+    },
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.resolve({
+            outcome: "no_reply",
+            inputAnchors: request.inputs.map(input => ({
+              inputId: input.id,
+              transcriptAnchor: {
+                sourceId: request.recordingDay,
+                sessionId: "silent-session",
+                entryId: `input-${input.id}`,
+              },
+            })),
+            transcriptAnchor: {
+              sourceId: request.recordingDay,
+              sessionId: "silent-session",
+              entryId: `turn-${request.turnId}`,
+            },
+            executionState: { version: 1 },
+            executionRecord: { version: 1 },
+          }),
+          steer: async input => control.includeInput(input.id),
+          abort: async () => {},
+        };
+      },
+    },
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  try {
+    assert.equal((await runtime.formOpportunity()).disposition, "accepted");
+    assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+    assert.equal(runtime.status().activeSegment, undefined);
+    assert.deepEqual(runtime.status().activities, []);
+
+    const scheduler = createScheduler({ runtime, memoryReflection: { delayMs: 0 } });
+    await scheduler.runOnce(now);
+    now = new Date("2026-07-22T03:00:00.000Z");
+    assert.deepEqual(await scheduler.runOnce(now), {
+      disposition: "waiting",
+      nextRunAt: "2026-07-23T03:00:00.000Z",
+    });
+    assert.deepEqual(requests, []);
+    assert.equal(runtime.status().memoryReflection?.lastCompletedDay, "2026-07-21");
+  } finally {
+    runtime.close();
+  }
+});
+
 test("keeps a failed Memory reflection day pending across restart", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-retry-"));
   let now = new Date("2026-07-21T12:00:00.000Z");
@@ -698,6 +820,77 @@ test("keeps a failed Memory reflection day pending across restart", async () => 
     assert.equal(recovered.status().memoryReflection?.lastCompletedDay, "2026-07-21");
   } finally {
     recovered.close();
+  }
+});
+
+test("does not let later Thread maintenance block an earlier Reflection day", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-reflection-scoped-dependency-"));
+  let now = new Date("2026-08-04T12:00:00.000Z");
+  const requests: Array<{ day: string; activityIds: string[]; eventTurnIds: string[] }> = [];
+  let frozenCount = 0;
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: {
+      freeze: async request => {
+        frozenCount += 1;
+        return {
+          activity: {
+            version: 1,
+            segmentId: request.segment.id,
+            recordingDay: request.segment.recordingDay,
+            openedAt: request.segment.openedAt,
+            closedAt: request.segment.closedAt,
+            events: [],
+            turns: request.turns.map(turn => ({
+              turnId: turn.id,
+              startedAt: turn.startedAt,
+              endedAt: turn.endedAt,
+              status: turn.status,
+              ...(turn.transcriptAnchor ? { transcriptAnchor: turn.transcriptAnchor } : {}),
+            })),
+          },
+          successorExecutionState: request.executionState,
+        };
+      },
+    },
+    activityRecorder: recorder([]),
+    threadMaintenance: {
+      observationsFor: activity => frozenCount === 1 ? [] : [{
+        turnId: activity.turns[0]!.turnId,
+        threadPath: "threads/later/thread.md",
+        relation: "changed",
+        paths: ["threads/later/thread.md"],
+      }],
+      maintain: async () => {
+        throw new Error("later Thread maintenance unavailable");
+      },
+    },
+    memoryReflection: memoryReflector(requests),
+    now: () => now,
+  });
+  const reflectionOptions = { observedAt: now, delayMs: 0, retryDelayMs: 30_000 };
+  try {
+    assert.equal((await runtime.runMemoryReflection(reflectionOptions)).disposition, "waiting");
+    await runtime.acceptInput({ source: "test", sourceId: "day-one", kind: "interaction", payload: {} });
+    await runtime.advance();
+    await runtime.closeActivity();
+    await runtime.advance();
+
+    now = new Date("2026-08-05T12:00:00.000Z");
+    await runtime.acceptInput({ source: "test", sourceId: "day-two", kind: "interaction", payload: {} });
+    await runtime.advance();
+    await runtime.closeActivity();
+    await runtime.advance();
+    assert.deepEqual(await runtime.advance(), { disposition: "thread_maintenance_failed" });
+
+    now = new Date("2026-08-06T03:00:00.000Z");
+    const result = await runtime.runMemoryReflection({ ...reflectionOptions, observedAt: now });
+    assert.equal(result.disposition, "completed");
+    assert.deepEqual(requests.map(request => request.day), ["2026-08-04"]);
+  } finally {
+    runtime.close();
   }
 });
 
@@ -1005,6 +1198,7 @@ test("keeps failed Thread maintenance pending across restart", async () => {
     relation: "changed",
     paths: ["garden/thread.md"],
   }];
+  let orientationCalls = 0;
   const firstRuntime = openRuntime({
     root,
     execution: completingExecution,
@@ -1016,9 +1210,28 @@ test("keeps failed Thread maintenance pending across restart", async () => {
         throw new Error("thread maintainer unavailable");
       },
     },
+    orientation: {
+      form: async () => {
+        orientationCalls += 1;
+        return {
+          outcome: "none",
+          runId: `orientation-${orientationCalls}`,
+          whyNow: "No independent pull emerged.",
+          evidence: [],
+        };
+      },
+    },
     now: () => now,
   });
-  const firstScheduler = createScheduler({ runtime: firstRuntime });
+  const firstScheduler = createScheduler({
+    runtime: firstRuntime,
+    proactivePulse: {
+      timeZone: "UTC",
+      intervalMs: 60_000,
+      initialDelayMs: 1,
+      quietHours: { start: "00:00", end: "00:01", intervalMs: 60_000 },
+    },
+  });
   await firstRuntime.acceptInput({
     source: "test-channel",
     sourceId: "maintain-after-restart",
@@ -1033,6 +1246,7 @@ test("keeps failed Thread maintenance pending across restart", async () => {
     reason: "thread_maintenance_failed",
     nextRunAt: "2026-07-21T17:45:00.000Z",
   });
+  assert.equal(orientationCalls, 1);
   const activityId = firstRuntime.status().activities[0]?.id;
   assert.ok(activityId);
   assert.equal(firstRuntime.status().threadMaintenance[0]?.status, "pending");

@@ -39,6 +39,7 @@ import type {
   AcceptedInput,
   InteractionViewOptions,
   InteractionViewPage,
+  RequeueInputResult,
   RuntimeInput,
 } from "../runtime/index.js";
 import {
@@ -58,6 +59,7 @@ export interface LoomHost {
   start(): Promise<void>;
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
+  requeueInput(inputId: string): RequeueInputResult;
   wake(): void;
   status(): LoomHostStatus;
   stop(): Promise<void>;
@@ -124,6 +126,7 @@ class DefaultLoomHost implements LoomHost {
     this.#statusServer = createLoomStatusServer({
       socketPath: options.statusSocketPath,
       read: since => this.#operatorStatus(since),
+      requeueInput: inputId => this.requeueInput(inputId).disposition,
     });
   }
 
@@ -171,6 +174,13 @@ class DefaultLoomHost implements LoomHost {
         pendingInputs: runtime.inputs.filter(input => input.status === "pending").length,
         pendingEffects: runtime.effects.filter(effect => effect.status === "pending").length,
         deliveriesNeedingAttention: runtime.deliveries.filter(delivery => delivery.status === "unknown").length,
+        ...(runtime.oldestPendingOrganAgeMs !== undefined
+          ? { oldestPendingOrganAgeMs: runtime.oldestPendingOrganAgeMs }
+          : {}),
+        integrityWarnings: runtime.integrityWarnings.length > 0 ? [{
+          kind: "unexplained_terminal_turn_segment",
+          count: runtime.integrityWarnings.length,
+        }] : [],
       },
       agents: agentStatus.agents.map(agent => operatorAgentStatus(agent, status.driver)),
       integrations: operatorIntegrationStatuses(status),
@@ -187,6 +197,15 @@ class DefaultLoomHost implements LoomHost {
   interactionView(options?: InteractionViewOptions): InteractionViewPage {
     if (this.#state === "stopped") throw new Error("Loom Host cannot read interactions while stopped");
     return this.#instance.interactionView(options);
+  }
+
+  requeueInput(inputId: string): RequeueInputResult {
+    if (this.#state !== "running") {
+      throw new Error(`Loom Host cannot requeue Input while ${this.#state}`);
+    }
+    const result = this.#instance.requeueInput(inputId);
+    if (result.disposition === "requeued") this.#driver.wake();
+    return result;
   }
 
   wake(): void {

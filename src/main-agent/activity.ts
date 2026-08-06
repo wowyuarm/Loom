@@ -86,7 +86,7 @@ class MainAgentActivityLifecycle implements ActivityLifecycle {
         .flatMap(turn => failedToolActivityEvents(request, turn.id)),
       ...request.turns.filter(turn => turn.status !== "completed").map(stoppedTurnEvent),
       ...request.effects.map(effectEvent),
-      ...request.deliveries.map(delivery => deliveryEvent(delivery, request.effects)),
+      ...request.deliveries.map(deliveryEvent),
     ]);
     assertUniqueEvents(events);
     const activity = {
@@ -211,15 +211,10 @@ function effectEvent(effect: ActivityFreezeRequest["effects"][number]): FrozenAc
   };
 }
 
-function deliveryEvent(
-  delivery: ActivityFreezeRequest["deliveries"][number],
-  effects: ActivityFreezeRequest["effects"],
-): FrozenActivityEvent {
-  const effect = effects.find(candidate => candidate.id === delivery.effectId);
-  if (!effect) throw new Error(`Delivery ${delivery.id} has no owning Effect`);
+function deliveryEvent(delivery: ActivityFreezeRequest["deliveries"][number]): FrozenActivityEvent {
   return {
     eventId: `delivery:${delivery.id}`,
-    turnId: effect.turnId,
+    turnId: delivery.turnId,
     at: delivery.endedAt ?? delivery.startedAt,
     actorRef: "system",
     kind: "delivery",

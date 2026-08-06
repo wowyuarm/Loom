@@ -372,6 +372,7 @@ test("preserves failed proactive tool activity without replaying the Opportunity
   await assert.rejects(runtime.advance(), /provider failed after tool activity/);
   assert.equal(runtime.status().inputs[0]?.status, "consumed");
   assert.equal(runtime.status().activeSegment, undefined);
+  assert.deepEqual(runtime.status().integrityWarnings, []);
   assert.equal(runtime.status().activities[0]?.status, "pending");
   assert.deepEqual(freezes[0]?.toolActivities, [{
     turnId: runtime.status().turns[0]?.id,

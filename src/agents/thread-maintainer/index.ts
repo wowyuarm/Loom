@@ -19,6 +19,8 @@ import type { FrozenActivity } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../../workspace/tools.js";
 import { beginWorkspaceTreeMutation } from "../../workspace/workspace-mutation.js";
+
+type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 import {
   compareReferences,
   type ThreadActivityObservation,
@@ -79,7 +81,7 @@ Thinking in a Frozen Activity belongs to the Individual and may explain why its 
 
 For calibration: a detailed experiment and its changed judgment accumulating inside thread.md may warrant a source note plus a tighter entry; a new date, routine status change, or brief return does not. Two Threads discovering one shared phrase may warrant a cross-link; it does not warrant a merge unless their live continuity has actually become one.
 
-Return exactly NO_CHANGE when no structural write is warranted. When structural tools are available and warranted, complete every write before returning exactly UPDATED. Do not expose maintenance runs, evidence IDs, or Harness bookkeeping in Workspace files.`;
+When structural tools are available and warranted, complete every write before finishing. Do not expose maintenance runs, evidence IDs, or Harness bookkeeping in Workspace files.`;
 
 export type { ThreadActivityObservation, ThreadEvidenceRelation } from "./evidence.js";
 export { threadObservationsFromActivity } from "./observations.js";
@@ -99,6 +101,7 @@ export type ThreadMaintenanceResult = {
 
 export interface ThreadMaintainer {
   maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult>;
+  cancel(reason: string): Promise<void>;
 }
 
 export interface PiThreadMaintainerOptions {
@@ -121,6 +124,9 @@ interface DurableThreadMaintenanceResult {
 }
 
 class PiThreadMaintainer implements ThreadMaintainer {
+  #activeSession: PiSession | undefined;
+  #cancelReason: string | undefined;
+
   constructor(private readonly options: PiThreadMaintainerOptions) {}
 
   async maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult> {
@@ -298,7 +304,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
     ];
 
     try {
-      const output = await this.#runSession(
+      await this.#runSession(
         request,
         runId,
         stableFacts,
@@ -308,15 +314,9 @@ class PiThreadMaintainer implements ThreadMaintainer {
       );
       assertGrounded(indexRead, requiredReads, readPaths, currentReferences, currentReadOffsets, request);
       if (!transaction.mutated) {
-        if (output !== "NO_CHANGE") {
-          throw new Error("Thread Maintainer must return NO_CHANGE when no structural write was made");
-        }
         const result: ThreadMaintenanceResult = { outcome: "no_change", runId, changedPaths: [] };
         await mutation.complete({ result, moves: [] });
         return result;
-      }
-      if (output !== "UPDATED") {
-        throw new Error("Thread Maintainer must return UPDATED after structural writes");
       }
       const changedPaths = await transaction.changedPaths();
       if (changedPaths.length === 0) throw new Error("Thread Maintainer reported writes without a Workspace change");
@@ -344,6 +344,11 @@ class PiThreadMaintainer implements ThreadMaintainer {
         },
       };
     }
+  }
+
+  async cancel(reason: string): Promise<void> {
+    this.#cancelReason = reason;
+    await this.#activeSession?.abort();
   }
 
   async #runSession(
@@ -396,7 +401,9 @@ class PiThreadMaintainer implements ThreadMaintainer {
       sessionManager,
       settingsManager,
     });
+    this.#activeSession = session;
     try {
+      if (this.#cancelReason) throw new Error(`Thread maintenance cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
       await session.prompt(buildRunPrompt(request, runId, evidenceIndex, currentReferences), {
@@ -404,6 +411,10 @@ class PiThreadMaintainer implements ThreadMaintainer {
       });
       return finalAssistantText(session.messages);
     } finally {
+      if (this.#activeSession === session) {
+        this.#activeSession = undefined;
+        this.#cancelReason = undefined;
+      }
       session.dispose();
     }
   }

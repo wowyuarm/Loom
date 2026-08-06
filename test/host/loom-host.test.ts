@@ -55,6 +55,7 @@ test("serves content-free live status independently of Interaction Channels", as
     pendingInputs: 0,
     pendingEffects: 0,
     deliveriesNeedingAttention: 0,
+    integrityWarnings: [],
   });
   assert.deepEqual(report.agents.map(agent => ({ name: agent.name, state: agent.state })), [
     { name: "main-agent", state: "never_run" },

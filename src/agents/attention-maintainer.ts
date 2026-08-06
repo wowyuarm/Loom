@@ -19,6 +19,8 @@ import type { FrozenActivity } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 
+type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+
 const ATTENTION_PATH = "attention.md";
 const DEFAULT_ACTIVITY_PAGE_SIZE = 20;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
@@ -99,8 +101,8 @@ Not Current Attention:
 1. Read the complete existing attention.md.
 2. Inspect at least one additional relevant Workspace source or indexed Frozen Activity.
 3. Compare the existing awareness with the evidence. Confirm what remains, remove what is no longer naturally carried, and update or add only what genuinely changes the whole.
-4. If it changed, call replace_attention exactly once with the complete new file, then return exactly UPDATED.
-5. If nothing changed, do not call replace_attention and return exactly NO_CHANGE.
+4. If it changed, call replace_attention exactly once with the complete new file.
+5. If nothing changed, do not call replace_attention.
 
 Do not modify any other file. A stable Current Attention is better left untouched than cosmetically rewritten.`;
 
@@ -118,6 +120,7 @@ export type AttentionMaintenanceResult = {
 
 export interface AttentionMaintainer {
   maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
+  cancel(reason: string): Promise<void>;
 }
 
 export interface PiAttentionMaintainerOptions {
@@ -131,6 +134,9 @@ export interface PiAttentionMaintainerOptions {
 }
 
 class PiAttentionMaintainer implements AttentionMaintainer {
+  #activeSession: PiSession | undefined;
+  #cancelReason: string | undefined;
+
   constructor(private readonly options: PiAttentionMaintainerOptions) {}
 
   async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
@@ -211,13 +217,11 @@ class PiAttentionMaintainer implements AttentionMaintainer {
     ];
 
     try {
-      const finalOutput = await this.#runSession(request, runId, identity, stableFacts, tools);
+      await this.#runSession(request, runId, identity, stableFacts, tools);
       assertGrounded(attentionRead, supportingEvidenceRead);
       if (replaced) {
-        if (finalOutput !== "UPDATED") throw new Error("Attention Maintainer must return UPDATED after replacement");
         return { outcome: "updated", runId, path: ATTENTION_PATH };
       }
-      if (finalOutput !== "NO_CHANGE") throw new Error("Attention Maintainer must return NO_CHANGE when no replacement was made");
       return { outcome: "no_change", runId, path: ATTENTION_PATH };
     } catch (error) {
       if (replaced) await atomicWrite(attentionFile, previousAttention);
@@ -239,6 +243,11 @@ class PiAttentionMaintainer implements AttentionMaintainer {
         },
       };
     }
+  }
+
+  async cancel(reason: string): Promise<void> {
+    this.#cancelReason = reason;
+    await this.#activeSession?.abort();
   }
 
   async #runSession(
@@ -294,12 +303,18 @@ class PiAttentionMaintainer implements AttentionMaintainer {
       sessionManager,
       settingsManager,
     });
+    this.#activeSession = session;
     try {
+      if (this.#cancelReason) throw new Error(`Attention maintenance cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
       await session.prompt(buildRunPrompt(request, runId), { expandPromptTemplates: false });
       return finalAssistantText(session.messages);
     } finally {
+      if (this.#activeSession === session) {
+        this.#activeSession = undefined;
+        this.#cancelReason = undefined;
+      }
       session.dispose();
     }
   }

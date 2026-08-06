@@ -248,7 +248,7 @@ test("accepts an explicit terminal outcome after explanatory prose", async () =>
   })).outcome, "no_change");
 });
 
-test("rolls back every core replacement when the final outcome contradicts a write", async () => {
+test("commits grounded replacements regardless of final model wording", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-rollback-"));
   const workspaceRoot = await createReflectorWorkspace(root);
   const originalFacts = await readFile(path.join(workspaceRoot, "facts.json"), "utf8");
@@ -265,7 +265,7 @@ test("rolls back every core replacement when the final outcome contradicts a wri
     fauxAssistantMessage(
       fauxToolCall("replace_core_material", {
         material: "long_term_memory",
-        content: "A replacement that must be rolled back.\n",
+        content: "A grounded replacement that must be kept.\n",
       }, { id: "replace-memory" }),
       { stopReason: "toolUse" },
     ),
@@ -290,17 +290,15 @@ test("rolls back every core replacement when the final outcome contradicts a wri
     nextRunId: () => "reflector-run-rollback",
   });
 
-  await assert.rejects(
-    reflector.reflect({
-      reflectionDay: "2026-07-21",
-      observedAt: "2026-07-21T12:05:00.000Z",
-      localTime: "2026-07-21 20:05 UTC+08:00",
-      activities: [activity()],
-    }),
-    /must return UPDATED/,
-  );
+  const result = await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  });
 
-  assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), "Previous long-term memory.\n");
+  assert.equal(result.outcome, "updated");
+  assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), "A grounded replacement that must be kept.\n");
   assert.equal(await readFile(path.join(workspaceRoot, "facts.json"), "utf8"), originalFacts);
 });
 
@@ -573,7 +571,7 @@ test("updates stable facts, identity, and both behavior views in one revision", 
   assert.match(await readFile(path.join(workspaceRoot, "behavior", "background.md"), "utf8"), /genuine curiosity/);
 });
 
-test("rolls back replacement when the final model outcome contradicts its writes", async () => {
+test("derives an update from durable replacements instead of final model wording", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-final-"));
   const workspaceRoot = await createReflectorWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-final");
@@ -589,11 +587,11 @@ test("rolls back replacement when the final model outcome contradicts its writes
     fauxAssistantMessage(
       fauxToolCall("replace_core_material", {
         material: "long_term_memory",
-        content: "This write must not survive a contradictory final outcome.\n",
+        content: "This grounded replacement survives natural final wording.\n",
       }, { id: "replace-memory" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage("The durable material now carries the supported change."),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -606,16 +604,16 @@ test("rolls back replacement when the final model outcome contradicts its writes
     nmemRecallTool: createNmemRecallTool({}),
   });
 
-  await assert.rejects(
-    reflector.reflect({
-      reflectionDay: "2026-07-21",
-      observedAt: "2026-07-21T12:05:00.000Z",
-      localTime: "2026-07-21 20:05 UTC+08:00",
-      activities: [activity()],
-    }),
-    /must return UPDATED/,
+  assert.equal((await reflector.reflect({
+    reflectionDay: "2026-07-21",
+    observedAt: "2026-07-21T12:05:00.000Z",
+    localTime: "2026-07-21 20:05 UTC+08:00",
+    activities: [activity()],
+  })).outcome, "updated");
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "memory.md"), "utf8"),
+    "This grounded replacement survives natural final wording.\n",
   );
-  assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), "Previous long-term memory.\n");
 });
 
 test("omits nmem tools and guidance when the Integration is not enabled", async () => {

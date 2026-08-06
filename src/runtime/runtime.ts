@@ -46,6 +46,7 @@ import type {
   RuntimeEffectStatus,
   RuntimeInput,
   RuntimeInputOutcome,
+  RequeueInputResult,
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
@@ -131,6 +132,8 @@ interface EffectRow {
 interface DeliveryRow {
   id: string;
   effect_id: string;
+  segment_id: string;
+  turn_id: string;
   attempt_number: number;
   status: RuntimeDeliveryStatus["status"];
   idempotency_key: string;
@@ -206,6 +209,7 @@ const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
 const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
 const INTERACTION_WAVE_QUIET_MS = 1_500;
 const INTERACTION_WAVE_MAX_MS = 6_000;
+const COGNITIVE_ORGAN_CANCEL_GRACE_MS = 1_000;
 
 const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
   "main-agent",
@@ -237,6 +241,10 @@ interface ActiveOrientation {
   supersede(): void;
 }
 
+interface ActiveCognitiveOrgan {
+  cancel(reason: string): Promise<void>;
+}
+
 class SqliteRuntime implements Runtime {
   readonly #database: DatabaseSync;
   readonly #execution: AgentExecution | undefined;
@@ -263,6 +271,7 @@ class SqliteRuntime implements Runtime {
   #memoryReflectionRunning = false;
   #opportunityRunning = false;
   #activeOrientation: ActiveOrientation | undefined;
+  #activeCognitiveOrgan: ActiveCognitiveOrgan | undefined;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RuntimeOptions) {
@@ -334,7 +343,12 @@ class SqliteRuntime implements Runtime {
     });
 
     if (accepted.disposition === "accepted") {
-      if (input.kind === "interaction") this.#activeOrientation?.supersede();
+      if (input.kind === "interaction") {
+        this.#activeOrientation?.supersede();
+        if (input.interaction?.actor.kind !== "agent" && input.interaction?.actor.kind !== "system") {
+          await this.#cancelActiveCognitiveOrgan("new_human_input");
+        }
+      }
       const active = this.#active;
       if (active && !active.finishing
         && input.kind === "interaction"
@@ -349,6 +363,20 @@ class SqliteRuntime implements Runtime {
       return { disposition: "accepted", inputId: id };
     }
     return accepted;
+  }
+
+  requeueInput(inputId: string): RequeueInputResult {
+    if (!inputId.trim()) throw new Error("Runtime requeue requires an Input id");
+    return this.#transaction(() => {
+      const now = this.#now();
+      const changed = this.#database.prepare(`
+        UPDATE inputs SET status = 'pending'
+        WHERE id = ? AND status = 'blocked'
+      `).run(inputId);
+      if (changed.changes !== 1) return { disposition: "not_blocked" } as const;
+      this.#recordTransition("input", inputId, "blocked", "pending", "explicit_requeue", now, null);
+      return { disposition: "requeued" } as const;
+    });
   }
 
   #joinInteractionWave(input: RuntimeInput, now: Date, inputId: string): string {
@@ -807,11 +835,12 @@ class SqliteRuntime implements Runtime {
       this.#startAgentRun(agentRunId, "attention-maintainer", this.#now());
     });
     try {
-      const result = await this.#attentionMaintenance.maintain({
+      const result = await this.#runCognitiveOrgan(this.#attentionMaintenance, () =>
+        this.#attentionMaintenance!.maintain({
         observedAt: options.observedAt.toISOString(),
         localTime: this.#timePolicy.formatLocalTime(options.observedAt),
         recentActivities: activities,
-      });
+        }));
       const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
       this.#transaction(() => {
         this.#database.prepare(`
@@ -852,7 +881,7 @@ class SqliteRuntime implements Runtime {
     if (options.observedAt < new Date(schedule.next_run_after)) {
       return { disposition: "waiting", nextRunAt: schedule.next_run_after };
     }
-    if (this.#memoryReflectionRunning || !this.#isMaintenanceIdle()) {
+    if (this.#memoryReflectionRunning || !this.#isCognitiveOrganIdle()) {
       return { disposition: "busy" };
     }
     if (!this.#reflectionDayComplete(schedule.next_day)) return { disposition: "busy" };
@@ -879,12 +908,13 @@ class SqliteRuntime implements Runtime {
       this.#startAgentRun(agentRunId, "memory-reflector", this.#now());
     });
     try {
-      const result = await this.#memoryReflection.reflect({
+      const result = await this.#runCognitiveOrgan(this.#memoryReflection, () =>
+        this.#memoryReflection!.reflect({
         reflectionDay,
         observedAt: options.observedAt.toISOString(),
         localTime: this.#timePolicy.formatLocalTime(options.observedAt),
         activities,
-      });
+        }));
       const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
       const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
       this.#transaction(() => {
@@ -1127,6 +1157,38 @@ class SqliteRuntime implements Runtime {
     const attentionMaintenance = this.#readAttentionSchedule();
     const memoryReflection = this.#readMemoryReflectionSchedule();
     const afterChatContinuation = this.#readAfterChatContinuation();
+    const statusObservedAt = this.#now();
+    const oldestPendingOrgan = this.#database.prepare(`
+      SELECT MIN(pending_at) AS pending_at
+      FROM (
+        SELECT created_at AS pending_at FROM activities WHERE status <> 'recorded'
+        UNION ALL
+        SELECT created_at AS pending_at FROM thread_maintenance WHERE status <> 'completed'
+        UNION ALL
+        SELECT next_run_after AS pending_at FROM attention_maintenance WHERE next_run_after <= ?
+        UNION ALL
+        SELECT next_run_after AS pending_at FROM memory_reflection WHERE next_run_after <= ?
+      )
+    `).get(statusObservedAt.toISOString(), statusObservedAt.toISOString()) as unknown as {
+      pending_at: string | null;
+    };
+    const integrityWarnings = this.#database.prepare(`
+      SELECT turns.segment_id, GROUP_CONCAT(turns.id) AS turn_ids
+      FROM turns
+      LEFT JOIN activities ON activities.id = turns.segment_id
+      LEFT JOIN active_segment ON active_segment.id = turns.segment_id
+      WHERE turns.status <> 'running'
+        AND activities.id IS NULL
+        AND active_segment.id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM transitions
+          WHERE transitions.entity_type = 'segment'
+            AND transitions.entity_id = turns.segment_id
+            AND transitions.to_state = 'discarded'
+        )
+      GROUP BY turns.segment_id
+      ORDER BY MIN(turns.started_at), turns.segment_id
+    `).all() as unknown as Array<{ segment_id: string; turn_ids: string }>;
     return {
       inputs: rows.map(row => ({
         id: row.id,
@@ -1257,6 +1319,18 @@ class SqliteRuntime implements Runtime {
           ...(afterChatContinuation.reason ? { reason: afterChatContinuation.reason } : {}),
         },
       } : {}),
+      ...(oldestPendingOrgan.pending_at ? {
+        oldestPendingOrganAt: oldestPendingOrgan.pending_at,
+        oldestPendingOrganAgeMs: Math.max(
+          0,
+          statusObservedAt.getTime() - Date.parse(oldestPendingOrgan.pending_at),
+        ),
+      } : {}),
+      integrityWarnings: integrityWarnings.map(warning => ({
+        kind: "unexplained_terminal_turn_segment",
+        segmentId: warning.segment_id,
+        turnIds: warning.turn_ids.split(","),
+      })),
     };
   }
 
@@ -1325,6 +1399,38 @@ class SqliteRuntime implements Runtime {
       );
       throw error;
     }
+  }
+
+  async #runCognitiveOrgan<Result>(
+    organ: { cancel?(reason: string): Promise<void> },
+    run: () => Promise<Result>,
+  ): Promise<Result> {
+    const active: ActiveCognitiveOrgan = {
+      cancel: reason => organ.cancel?.(reason) ?? Promise.resolve(),
+    };
+    this.#activeCognitiveOrgan = active;
+    try {
+      return await run();
+    } finally {
+      if (this.#activeCognitiveOrgan === active) this.#activeCognitiveOrgan = undefined;
+    }
+  }
+
+  async #cancelActiveCognitiveOrgan(reason: string): Promise<void> {
+    const active = this.#activeCognitiveOrgan;
+    if (!active) return;
+    await new Promise<void>(resolve => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve();
+      };
+      const timeout = setTimeout(finish, COGNITIVE_ORGAN_CANCEL_GRACE_MS);
+      timeout.unref();
+      void active.cancel(reason).then(finish, finish);
+    });
   }
 
   #agentRetryAt(name: RuntimeAgentName): string | undefined {
@@ -1580,6 +1686,18 @@ class SqliteRuntime implements Runtime {
       && !this.#hasPendingThreadMaintenance();
   }
 
+  #isCognitiveOrganIdle(): boolean {
+    return !this.#active
+      && !this.#activeDeliveryId
+      && !this.#closingActivityId
+      && !this.#activeActivityAttemptId
+      && !this.#activeThreadMaintenanceId
+      && !this.#attentionMaintenanceRunning
+      && !this.#memoryReflectionRunning
+      && !this.#hasRunningTurn()
+      && !this.#hasPendingInput();
+  }
+
   #readMemoryReflectionSchedule(): MemoryReflectionRow | undefined {
     return this.#database.prepare(`
       SELECT next_day, next_run_after, attempt_count, last_completed_day,
@@ -1607,14 +1725,6 @@ class SqliteRuntime implements Runtime {
   }
 
   #reflectionDayComplete(reflectionDay: string): boolean {
-    const unfinishedTurn = this.#database.prepare(`
-      SELECT 1 FROM turns
-      WHERE recording_day = ?
-        AND status IN ('running', 'completed', 'failed', 'timed_out', 'cancelled', 'interrupted')
-        AND segment_id NOT IN (SELECT id FROM activities)
-      LIMIT 1
-    `).get(reflectionDay);
-    if (unfinishedTurn) return false;
     const unsettledActivity = this.#database.prepare(`
       SELECT 1 FROM activities
       WHERE id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
@@ -1841,7 +1951,7 @@ class SqliteRuntime implements Runtime {
     | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
     | undefined {
     return this.#transaction(() => {
-      if (this.#hasRunningTurn() || this.#hasPendingInput() || this.#hasPendingDeliveryWork()
+      if (this.#hasRunningTurn() || this.#hasPendingInput()
         || this.#readAfterChatContinuation()?.status === "pending") return undefined;
       const segment = this.#readActiveSegment();
       if (!segment || segment.id !== segmentId || segment.status !== "active") return undefined;
@@ -1956,13 +2066,13 @@ class SqliteRuntime implements Runtime {
       completed_at: string;
     }>;
     const deliveryRows = this.#database.prepare(`
-      SELECT delivery_attempts.id, delivery_attempts.effect_id, delivery_attempts.attempt_number,
+      SELECT delivery_attempts.id, delivery_attempts.effect_id, effects.turn_id,
+             delivery_attempts.attempt_number,
              delivery_attempts.status, delivery_attempts.started_at, delivery_attempts.ended_at,
              delivery_attempts.remote_id, delivery_attempts.error
       FROM delivery_attempts
       JOIN effects ON effects.id = delivery_attempts.effect_id
-      JOIN turns ON turns.id = effects.turn_id
-      WHERE turns.segment_id = ?
+      WHERE delivery_attempts.segment_id = ?
       ORDER BY delivery_attempts.started_at, delivery_attempts.id
     `).all(segment.id) as unknown as Array<DeliveryRow & { started_at: string; ended_at: string | null }>;
     const recentActivities = this.#database.prepare(`
@@ -2031,6 +2141,7 @@ class SqliteRuntime implements Runtime {
       deliveries: deliveryRows.map(row => ({
         id: row.id,
         effectId: row.effect_id,
+        turnId: row.turn_id,
         attempt: row.attempt_number,
         status: row.status,
         startedAt: row.started_at,
@@ -2372,12 +2483,13 @@ class SqliteRuntime implements Runtime {
     this.#startHeartbeat("thread_maintenance", claimed.activity.segmentId, claimed.fencingToken);
     try {
       const observedAt = this.#now();
-      const result = await this.#threadMaintenance.maintain({
+      const result = await this.#runCognitiveOrgan(this.#threadMaintenance, () =>
+        this.#threadMaintenance!.maintain({
         observedAt: observedAt.toISOString(),
         localTime: this.#timePolicy.formatLocalTime(observedAt),
         activity: claimed.activity,
         observations: claimed.observations,
-      });
+        }));
       this.#finishThreadMaintenance(claimed, result);
       return { disposition: "thread_maintenance_completed" };
     } catch (error) {
@@ -2552,7 +2664,10 @@ class SqliteRuntime implements Runtime {
     this.#activeActivityAttemptId = claimed.attemptId;
     this.#startHeartbeat("activity_recording", claimed.activity.segmentId, claimed.fencingToken);
     try {
-      const receipt = await this.#activityRecorder.record(claimed.activity);
+      const receipt = await this.#runCognitiveOrgan(
+        this.#activityRecorder,
+        () => this.#activityRecorder!.record(claimed.activity),
+      );
       if (receipt.segmentId !== claimed.activity.segmentId) {
         throw new Error(`Recorder receipt belongs to ${receipt.segmentId}, not ${claimed.activity.segmentId}`);
       }
@@ -3269,21 +3384,23 @@ class SqliteRuntime implements Runtime {
   #claimPendingDelivery(observedAt: Date): { request: DeliveryAttemptRequest; fencingToken: number } | undefined {
     return this.#transaction(() => {
       const effect = this.#database.prepare(`
-        SELECT id, kind, payload_json, route_ref, destination_ref
+        SELECT effects.id, effects.kind, effects.payload_json, effects.route_ref,
+               effects.destination_ref, turns.segment_id
         FROM effects
-        WHERE status = 'pending' AND route_ref IS NOT NULL
-          AND (next_delivery_after IS NULL OR next_delivery_after <= ?)
+        JOIN turns ON turns.id = effects.turn_id
+        WHERE effects.status = 'pending' AND effects.route_ref IS NOT NULL
+          AND (effects.next_delivery_after IS NULL OR effects.next_delivery_after <= ?)
           AND NOT EXISTS (
             SELECT 1 FROM delivery_attempts
             WHERE delivery_attempts.effect_id = effects.id
               AND delivery_attempts.status = 'dispatching'
           )
-        ORDER BY created_at, id
+        ORDER BY effects.created_at, effects.id
         LIMIT 1
       `).get(observedAt.toISOString()) as unknown as Pick<
         EffectRow,
         "id" | "kind" | "payload_json" | "route_ref" | "destination_ref"
-      > | undefined;
+      > & { segment_id: string } | undefined;
       if (!effect?.route_ref) return undefined;
 
       const tokenRow = this.#database.prepare(`
@@ -3299,14 +3416,16 @@ class SqliteRuntime implements Runtime {
       const attemptId = this.#nextId();
       const idempotencyKey = `${effect.id}:${numberRow.attempt_number}`;
       const now = this.#now();
+      const segmentId = this.#ensureDeliverySegment(effect.segment_id, now);
       this.#database.prepare(`
         INSERT INTO delivery_attempts (
-          id, effect_id, attempt_number, status, idempotency_key,
+          id, effect_id, segment_id, attempt_number, status, idempotency_key,
           lease_owner, fencing_token, lease_expires_at, started_at
-        ) VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?)
       `).run(
         attemptId,
         effect.id,
+        segmentId,
         numberRow.attempt_number,
         idempotencyKey,
         this.#ownerId,
@@ -3320,7 +3439,7 @@ class SqliteRuntime implements Runtime {
         WHERE id = ? AND status = 'prepared'
       `).run(attemptId);
       this.#recordTransition("delivery", attemptId, "prepared", "dispatching", "external_io_started", now, tokenRow.value);
-      this.#touchSegmentForEffect(effect.id, now);
+      this.#touchSegment(segmentId, now);
 
       return {
         request: {
@@ -3345,10 +3464,11 @@ class SqliteRuntime implements Runtime {
     return this.#transaction(() => {
       const now = this.#now();
       const attempt = this.#database.prepare(`
-        SELECT effect_id, attempt_number FROM delivery_attempts
+        SELECT effect_id, segment_id, attempt_number FROM delivery_attempts
         WHERE id = ? AND status = 'dispatching' AND fencing_token = ? AND lease_owner = ?
       `).get(attemptId, fencingToken, this.#ownerId) as unknown as {
         effect_id: string;
+        segment_id: string;
         attempt_number: number;
       } | undefined;
       if (!attempt) throw new Error(`Delivery ${attemptId} no longer accepts writes from lease ${fencingToken}`);
@@ -3384,7 +3504,7 @@ class SqliteRuntime implements Runtime {
           WHERE id = ? AND status = 'pending'
         `).run(effectState, now.toISOString(), attempt.effect_id);
       }
-      this.#touchSegmentForEffect(attempt.effect_id, now);
+      this.#touchSegment(attempt.segment_id, now);
       this.#recordTransition("delivery", attemptId, "dispatching", observation.status, "integration_result", now, fencingToken);
       if (effectState !== "pending") {
         this.#recordTransition("effect", attempt.effect_id, "pending", effectState, `delivery_${observation.status}`, now, fencingToken);
@@ -3555,7 +3675,11 @@ class SqliteRuntime implements Runtime {
 
     for (const input of inputs) {
       const covered = coverage.position !== null && input.position <= coverage.position;
-      const next = covered ? "consumed" : "pending";
+      const next = covered
+        ? "consumed"
+        : reason === "failed" && input.kind !== "continuation"
+          ? "blocked"
+          : "pending";
       this.#database.prepare(`
         UPDATE inputs SET status = ?, active_turn_id = NULL
         WHERE id = ? AND status = 'active' AND active_turn_id = ?
@@ -3654,18 +3778,43 @@ class SqliteRuntime implements Runtime {
     );
   }
 
-  #touchSegmentForEffect(effectId: string, now: Date): void {
+  #ensureDeliverySegment(originalSegmentId: string, now: Date): string {
+    const active = this.#readActiveSegment();
+    if (active) return active.id;
+    const originalFrozen = this.#database.prepare(
+      "SELECT 1 FROM activities WHERE id = ? LIMIT 1",
+    ).get(originalSegmentId);
+    const segmentId = originalFrozen ? this.#nextId() : originalSegmentId;
+    const startingState = this.#readExecutionState().executionState;
+    this.#database.prepare(`
+      INSERT INTO active_segment (
+        singleton, id, opened_at, last_activity_at, starting_state_json, status
+      ) VALUES (1, ?, ?, ?, ?, 'active')
+    `).run(
+      segmentId,
+      now.toISOString(),
+      now.toISOString(),
+      startingState === undefined ? null : JSON.stringify(startingState),
+    );
+    this.#recordTransition(
+      "segment",
+      segmentId,
+      null,
+      "active",
+      originalFrozen ? "late_delivery_attempt" : "delivery_attempt",
+      now,
+      null,
+    );
+    return segmentId;
+  }
+
+  #touchSegment(segmentId: string, now: Date): void {
     this.#database.prepare(`
       UPDATE active_segment
       SET last_activity_at = MAX(last_activity_at, ?)
       WHERE singleton = 1 AND status = 'active'
-        AND id = (
-          SELECT turns.segment_id
-          FROM effects
-          JOIN turns ON turns.id = effects.turn_id
-          WHERE effects.id = ?
-        )
-    `).run(now.toISOString(), effectId);
+        AND id = ?
+    `).run(now.toISOString(), segmentId);
   }
 
   #recordTransition(

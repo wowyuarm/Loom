@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { openLoomHost, readLoomStatus, type LoomStatusReport } from "./host/index.js";
+import { openLoomHost, readLoomStatus, requeueLoomInput, type LoomStatusReport } from "./host/index.js";
 import { initializeLoomInstance } from "./instance/index.js";
 import { resolveInstanceLayout } from "./instance/layout.js";
 import {
@@ -20,7 +20,8 @@ import {
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
-  if (command !== "init" && command !== "run" && command !== "chat" && command !== "history" && command !== "status") {
+  if (command !== "init" && command !== "run" && command !== "chat" && command !== "history"
+    && command !== "status" && command !== "requeue") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -61,6 +62,15 @@ async function main(argv: string[]): Promise<void> {
     });
     console.log(options.json ? JSON.stringify(report) : formatStatus(report, options.since));
     if (report.host.state === "unavailable") process.exitCode = 1;
+    return;
+  }
+  if (command === "requeue") {
+    const remaining = remainingArguments(args, "--root");
+    if (remaining.length !== 1 || !remaining[0]!.trim()) throw new Error(usage("requeue"));
+    const inputId = remaining[0]!.trim();
+    const disposition = await requeueLoomInput(resolveInstanceLayout(root).statusSocketPath, inputId);
+    if (disposition !== "requeued") throw new Error(`Input ${inputId} is not blocked`);
+    console.log(`Requeued Input ${inputId}`);
     return;
   }
   const observe: OperationalEventObserver = event => writeOperationalEvent(event);
@@ -140,6 +150,12 @@ function formatStatus(report: LoomStatusReport, since?: string): string {
     `Runtime: active turn ${report.runtime.activeTurn ? "yes" : "no"}; ${report.runtime.pendingInputs} pending Inputs; ${report.runtime.pendingEffects} pending Effects; ${report.runtime.deliveriesNeedingAttention} Deliveries need attention`,
     "Agents:",
   ];
+  if (report.runtime.oldestPendingOrganAgeMs !== undefined) {
+    lines.splice(3, 0, `Oldest pending organ work: ${Math.floor(report.runtime.oldestPendingOrganAgeMs / 1_000)}s`);
+  }
+  for (const warning of report.runtime.integrityWarnings) {
+    lines.splice(3, 0, `Runtime integrity warning: ${warning.kind} (${warning.count})`);
+  }
   for (const agent of report.agents) {
     const latestAt = agent.latest?.endedAt ?? agent.latest?.startedAt;
     const outcome = agent.latest?.outcome ? `, ${agent.latest.outcome}` : "";
@@ -191,7 +207,9 @@ function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-function readRoot(args: string[], command: "init" | "run" | "chat" | "history" | "status"): string {
+type LoomCommand = "init" | "run" | "chat" | "history" | "status" | "requeue";
+
+function readRoot(args: string[], command: LoomCommand): string {
   const name = "--root";
   const index = args.indexOf(name);
   if (index < 0) return path.join(homedir(), ".loom");
@@ -200,7 +218,7 @@ function readRoot(args: string[], command: "init" | "run" | "chat" | "history" |
     throw new Error(usage(command));
   }
   const remaining = remainingArguments(args, name);
-  if (command !== "chat" && command !== "status" && remaining.length > 0) {
+  if (command !== "chat" && command !== "status" && command !== "requeue" && remaining.length > 0) {
     throw new Error(`Unknown argument: ${remaining[0]}`);
   }
   return value;
@@ -212,11 +230,12 @@ function remainingArguments(args: string[], flag: string): string[] {
   return args.filter((_, candidate) => candidate !== index && candidate !== index + 1);
 }
 
-function usage(command?: "init" | "run" | "chat" | "history" | "status"): string {
+function usage(command?: LoomCommand): string {
   if (command === "chat") return "Usage: loom chat [--root <instance-root>] <text>";
   if (command === "status") {
     return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
   }
+  if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
   if (command) return `Usage: loom ${command} [--root <instance-root>]`;
   return [
     "Usage:",
@@ -225,6 +244,7 @@ function usage(command?: "init" | "run" | "chat" | "history" | "status"): string
     "  loom chat [--root <instance-root>] <text>",
     "  loom history [--root <instance-root>]",
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
+    "  loom requeue [--root <instance-root>] <input-id>",
     "",
     "The default Instance Root is ~/.loom.",
   ].join("\n");

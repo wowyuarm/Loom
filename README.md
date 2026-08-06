@@ -85,13 +85,15 @@ loom history
 loom status
 loom status --json
 loom status --since 2026-08-03T00:00:00Z
+loom requeue <blocked-input-id>
 ```
 
 `chat` 和 `history` 通过启用的 Local Unix socket 读写互动视图；`status`
-通过独立的本机只读 socket 查询正在运行的 Host，因此在 Raft-only 或
+通过独立的本机 operator socket 查询正在运行的 Host，因此在 Raft-only 或
 Weixin-only 实例上同样可用。Host 不在时返回 `unavailable`，不会直接打开
 Runtime Store 猜测当前状态，并以退出码 1 结束。`--since` 只增加该时间后的
-无内容 Agent 运行摘要。
+无内容 Agent 运行摘要。`requeue` 通过同一 Host 将一条明确 `blocked` 的 Input
+恢复为 `pending`；它不接受其他状态，也不直接修改 Runtime Store。
 
 Instance Root 布局：
 

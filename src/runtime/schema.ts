@@ -14,6 +14,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (statusMigrated.user_version === 15) migrateVersion15(database);
   const waveMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (waveMigrated.user_version === 16) migrateVersion16(database);
+  const lateDeliveryMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (lateDeliveryMigrated.user_version === 17) migrateVersion17(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -114,6 +116,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS delivery_attempts (
       id TEXT PRIMARY KEY,
       effect_id TEXT NOT NULL REFERENCES effects(id),
+      segment_id TEXT NOT NULL,
       attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
       status TEXT NOT NULL CHECK (status IN ('prepared', 'dispatching', 'delivered', 'not_sent', 'unknown')),
       idempotency_key TEXT NOT NULL,
@@ -266,9 +269,71 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 17;
+    PRAGMA user_version = 18;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion17(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const deliveryTable = database.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'delivery_attempts'
+    `).get();
+    if (deliveryTable) {
+      database.exec(`
+        CREATE TABLE delivery_attempts_v18 (
+          id TEXT PRIMARY KEY,
+          effect_id TEXT NOT NULL REFERENCES effects(id),
+          segment_id TEXT NOT NULL,
+          attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+          status TEXT NOT NULL CHECK (status IN ('prepared', 'dispatching', 'delivered', 'not_sent', 'unknown')),
+          idempotency_key TEXT NOT NULL,
+          lease_owner TEXT NOT NULL,
+          fencing_token INTEGER NOT NULL,
+          lease_expires_at TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          ended_at TEXT,
+          remote_id TEXT,
+          error TEXT,
+          UNIQUE (effect_id, attempt_number),
+          UNIQUE (idempotency_key)
+        ) STRICT;
+
+        INSERT INTO delivery_attempts_v18 (
+          id, effect_id, segment_id, attempt_number, status, idempotency_key,
+          lease_owner, fencing_token, lease_expires_at, started_at, ended_at, remote_id, error
+        )
+        SELECT delivery_attempts.id, delivery_attempts.effect_id, turns.segment_id,
+               delivery_attempts.attempt_number, delivery_attempts.status,
+               delivery_attempts.idempotency_key, delivery_attempts.lease_owner,
+               delivery_attempts.fencing_token, delivery_attempts.lease_expires_at,
+               delivery_attempts.started_at, delivery_attempts.ended_at,
+               delivery_attempts.remote_id, delivery_attempts.error
+        FROM delivery_attempts
+        JOIN effects ON effects.id = delivery_attempts.effect_id
+        JOIN turns ON turns.id = effects.turn_id;
+      `);
+      const sourceCount = database.prepare("SELECT COUNT(*) AS count FROM delivery_attempts").get() as unknown as {
+        count: number;
+      };
+      const migratedCount = database.prepare("SELECT COUNT(*) AS count FROM delivery_attempts_v18").get() as unknown as {
+        count: number;
+      };
+      if (sourceCount.count !== migratedCount.count) {
+        throw new Error("Runtime Store version 17 has a Delivery attempt without an owning Turn Segment");
+      }
+      database.exec(`
+        DROP TABLE delivery_attempts;
+        ALTER TABLE delivery_attempts_v18 RENAME TO delivery_attempts;
+      `);
+    }
+    database.exec("PRAGMA user_version = 18");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion16(database: DatabaseSync): void {

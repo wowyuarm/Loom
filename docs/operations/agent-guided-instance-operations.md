@@ -62,6 +62,8 @@ configuration and acceptance belong to the corresponding Integration guide.
 - `loom run` owns one prepared Instance Root and stops gracefully on `SIGTERM`.
 - `loom status` queries the running Host; `--json` is the structured form and
   `--since <ISO timestamp>` adds bounded Agent run history.
+- `loom requeue <input-id>` returns one repaired, explicitly blocked Input to
+  pending through the running Host.
 - `loom chat` and `loom history` are clients of an enabled Local Integration.
 
 Finish by reporting what changed, what evidence was actually observed, what

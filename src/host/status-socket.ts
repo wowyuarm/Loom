@@ -58,6 +58,8 @@ export interface LiveLoomStatusReport {
     pendingInputs: number;
     pendingEffects: number;
     deliveriesNeedingAttention: number;
+    oldestPendingOrganAgeMs?: number;
+    integrityWarnings: Array<{ kind: string; count: number }>;
   };
   agents: LoomAgentStatus[];
   integrations: LoomIntegrationStatus[];
@@ -73,8 +75,13 @@ export interface UnavailableLoomStatusReport {
 
 export type LoomStatusReport = LiveLoomStatusReport | UnavailableLoomStatusReport;
 
-type StatusRequest = { type: "status"; since?: string };
-type StatusResponse = { ok: true; report: LiveLoomStatusReport } | { ok: false; error: string };
+type StatusRequest =
+  | { type: "status"; since?: string }
+  | { type: "requeue_input"; inputId: string };
+type StatusResponse =
+  | { ok: true; type: "status"; report: LiveLoomStatusReport }
+  | { ok: true; type: "requeue_input"; disposition: "requeued" | "not_blocked" }
+  | { ok: false; error: string };
 const MAX_STATUS_REQUEST_BYTES = 8 * 1024;
 
 export interface LoomStatusServer {
@@ -85,6 +92,7 @@ export interface LoomStatusServer {
 export function createLoomStatusServer(options: {
   socketPath: string;
   read(since?: string): LiveLoomStatusReport;
+  requeueInput(inputId: string): "requeued" | "not_blocked";
 }): LoomStatusServer {
   const socketPath = path.resolve(options.socketPath);
   let server: Server | undefined;
@@ -116,7 +124,15 @@ export function createLoomStatusServer(options: {
             return;
           }
           try {
-            writeResponse(socket, { ok: true, report: options.read(request.since) });
+            if (request.type === "requeue_input") {
+              writeResponse(socket, {
+                ok: true,
+                type: "requeue_input",
+                disposition: options.requeueInput(request.inputId),
+              });
+            } else {
+              writeResponse(socket, { ok: true, type: "status", report: options.read(request.since) });
+            }
           } catch {
             writeResponse(socket, { ok: false, error: "Loom status is unavailable" });
           }
@@ -183,6 +199,7 @@ export async function readLoomStatus(
       try {
         const response = JSON.parse(buffer.slice(0, newline)) as StatusResponse;
         if (!response.ok) throw new Error(response.error);
+        if (response.type !== "status") throw new Error("Loom status endpoint returned the wrong response type");
         settled = true;
         socket.destroy();
         resolve(response.report);
@@ -197,12 +214,41 @@ export async function readLoomStatus(
   });
 }
 
+export async function requeueLoomInput(
+  socketPath: string,
+  inputId: string,
+): Promise<"requeued" | "not_blocked"> {
+  if (!inputId.trim()) throw new Error("Loom requeue requires an Input id");
+  let response: Extract<StatusResponse, { ok: true }>;
+  try {
+    response = await sendStatusRequest(socketPath, {
+      type: "requeue_input",
+      inputId: inputId.trim(),
+    });
+  } catch (error) {
+    if (error instanceof Error && isUnavailable(error)) {
+      throw new Error("Loom Host is not running; start it with `loom run` before requeueing Input");
+    }
+    throw error;
+  }
+  if (response.type !== "requeue_input") {
+    throw new Error("Loom status endpoint returned the wrong response type");
+  }
+  return response.disposition;
+}
+
 function parseStatusRequest(source: string): StatusRequest {
   const value = JSON.parse(source) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Loom status request must be an object");
   }
   const request = value as Record<string, unknown>;
+  if (request.type === "requeue_input") {
+    if (typeof request.inputId !== "string" || !request.inputId.trim()) {
+      throw new Error("Loom requeue requires an Input id");
+    }
+    return { type: "requeue_input", inputId: request.inputId.trim() };
+  }
   if (request.type !== "status") throw new Error("Unsupported Loom status request");
   if (request.since !== undefined && typeof request.since !== "string") {
     throw new Error("Loom status since must be an ISO timestamp");
@@ -211,6 +257,43 @@ function parseStatusRequest(source: string): StatusRequest {
     type: "status",
     ...(typeof request.since === "string" ? { since: request.since } : {}),
   };
+}
+
+async function sendStatusRequest(
+  socketPath: string,
+  request: StatusRequest,
+): Promise<Extract<StatusResponse, { ok: true }>> {
+  const socket = createConnection(path.resolve(socketPath));
+  socket.setEncoding("utf8");
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    let settled = false;
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      reject(error);
+    };
+    socket.once("error", fail);
+    socket.once("close", () => {
+      if (!settled) fail(new Error("Loom Host status endpoint closed without a response"));
+    });
+    socket.on("data", chunk => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline)) as StatusResponse;
+        if (!response.ok) throw new Error(response.error);
+        settled = true;
+        socket.destroy();
+        resolve(response);
+      } catch (error) {
+        fail(error);
+      }
+    });
+    socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+  });
 }
 
 function writeResponse(socket: Socket, response: StatusResponse): void {

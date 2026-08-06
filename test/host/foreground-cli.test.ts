@@ -8,7 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { openLoomHost } from "../../src/host/index.js";
 import { initializeLoomInstance } from "../../src/instance/index.js";
+import { openRuntime } from "../../src/runtime/index.js";
 
 test("initializes the default ~/.loom Instance through the foreground CLI", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-"));
@@ -80,6 +82,46 @@ test("rejects an invalid status history timestamp before contacting the Host", a
   assert.equal(result.code, 1);
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /Usage: loom status/);
+});
+
+test("requeues one blocked Input through the running Host", async t => {
+  const root = await preparedInstanceRoot();
+  const runtime = openRuntime({
+    root: path.join(root, "runtime"),
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState({ version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.reject(new Error("provider failed")),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  const accepted = await runtime.acceptInput({
+    source: "test",
+    sourceId: "blocked-input",
+    kind: "interaction",
+    payload: { text: "retry after repair" },
+  });
+  await assert.rejects(runtime.advance(), /provider failed/);
+  runtime.close();
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+
+  const result = await runCli(cli, ["requeue", "--root", root, accepted.inputId], process.env);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), `Requeued Input ${accepted.inputId}`);
+  assert.equal(
+    host.status().instance.runtime.inputs.find(input => input.id === accepted.inputId)?.status,
+    "pending",
+  );
 });
 
 test("runs one prepared Instance until a termination signal requests graceful stop", async t => {

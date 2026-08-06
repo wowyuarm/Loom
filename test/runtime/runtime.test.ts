@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -710,6 +711,170 @@ test("continues interaction from the successor state while recording is pending"
   assert.equal(runtime.status().activities[0]?.status, "recorded");
 });
 
+test("cancels a running cognitive organ after durably accepting human Input", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-cancel-organ-"));
+  const started = deferred<void>();
+  const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
+  let runtime!: ReturnType<typeof openRuntime>;
+  let acceptedBeforeCancel = false;
+  const activityRecorder: ActivityRecorder = {
+    record: async () => {
+      started.resolve();
+      return recording.promise;
+    },
+    cancel: async () => {
+      acceptedBeforeCancel = runtime.status().inputs.some(input =>
+        input.sourceId === "interrupting-human" && input.status === "pending");
+      recording.reject(new Error("recording cancelled for human Input"));
+    },
+  };
+  runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder,
+    now: () => new Date("2026-07-19T11:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "first", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  const organRun = runtime.advance();
+  await started.promise;
+
+  const human = await runtime.acceptInput({
+    source: "test",
+    sourceId: "interrupting-human",
+    kind: "interaction",
+    payload: { text: "please answer now" },
+  });
+  assert.equal(acceptedBeforeCancel, true);
+  assert.deepEqual(await organRun, { disposition: "activity_recording_failed" });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+  assert.equal(runtime.status().inputs.find(input => input.id === human.inputId)?.status, "consumed");
+});
+
+test("does not cancel a running cognitive organ for a non-human Interaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-keep-organ-for-agent-"));
+  const started = deferred<void>();
+  const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
+  let cancelled = false;
+  let recordingSegmentId = "";
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => {
+        recordingSegmentId = activity.segmentId;
+        started.resolve();
+        return recording.promise;
+      },
+      cancel: async () => { cancelled = true; },
+    },
+    now: () => new Date("2026-07-19T11:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "first", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  const organRun = runtime.advance();
+  await started.promise;
+
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "external-agent",
+    kind: "interaction",
+    payload: { text: "agent update" },
+    interaction: {
+      ...interactionContext("external-agent-dm"),
+      actor: { actorRef: "external:test:agent", kind: "agent" },
+    },
+  });
+  assert.equal(cancelled, false);
+  recording.resolve({
+    version: 1,
+    segmentId: recordingSegmentId,
+    runId: "recorder-after-agent-input",
+    recordedAt: "2026-07-19T11:00:00.000Z",
+    daily: { status: "no_change", path: "daily/2026-07-19.md" },
+    episodes: [],
+  });
+  assert.deepEqual(await organRun, { disposition: "activity_recorded" });
+});
+
+test("returns after a short cancellation grace while the cognitive organ remains visible", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-cancel-grace-"));
+  const started = deferred<void>();
+  const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
+  let recordingSegmentId = "";
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => {
+        recordingSegmentId = activity.segmentId;
+        started.resolve();
+        return recording.promise;
+      },
+      cancel: async () => new Promise<void>(() => {}),
+    },
+    now: () => new Date("2026-07-19T11:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "first", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  const organRun = runtime.advance();
+  await started.promise;
+
+  const human = await Promise.race([
+    runtime.acceptInput({
+      source: "test",
+      sourceId: "human-after-grace",
+      kind: "interaction",
+      payload: { text: "please answer" },
+    }),
+    delay(1_500).then(() => { throw new Error("cognitive organ cancellation grace did not end"); }),
+  ]);
+  assert.equal(runtime.status().inputs.find(input => input.id === human.inputId)?.status, "pending");
+  assert.equal(runtime.status().activities[0]?.status, "recording");
+
+  recording.resolve({
+    version: 1,
+    segmentId: recordingSegmentId,
+    runId: "recorder-after-cancel-grace",
+    recordedAt: "2026-07-19T11:00:00.000Z",
+    daily: { status: "no_change", path: "daily/2026-07-19.md" },
+    episodes: [],
+  });
+  assert.deepEqual(await organRun, { disposition: "activity_recorded" });
+});
+
+test("exposes the age of the oldest pending cognitive organ work", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-oldest-organ-work-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "pending-recording", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  now = new Date("2026-07-19T11:05:00.000Z");
+
+  assert.equal(runtime.status().oldestPendingOrganAt, "2026-07-19T11:00:00.000Z");
+  assert.equal(runtime.status().oldestPendingOrganAgeMs, 5 * 60_000);
+});
+
 test("supplies recently recorded Activities to the next lifecycle close", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-recent-activity-"));
   const observed: Parameters<ActivityLifecycle["freeze"]>[0][] = [];
@@ -1293,7 +1458,7 @@ test("keeps prepared execution state when its first Turn fails", async t => {
     },
   };
   const failed = openRuntime({ root, execution: failingExecution });
-  await failed.acceptInput({
+  const accepted = await failed.acceptInput({
     source: "test-channel",
     sourceId: "message-1",
     kind: "interaction",
@@ -1315,6 +1480,7 @@ test("keeps prepared execution state when its first Turn fails", async t => {
   };
   const recovered = openRuntime({ root, execution: recoveringExecution });
   t.after(() => recovered.close());
+  assert.deepEqual(recovered.requeueInput(accepted.inputId), { disposition: "requeued" });
   const advance = recovered.advance();
   const request = await started.promise;
 
@@ -1661,7 +1827,7 @@ test("steers same-wave Inputs that were already pending when the Turn starts", a
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
-test("commits a wave after retrying an Input from a failed Turn", async t => {
+test("requeues a blocked Input explicitly after a failed Turn", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-retried-interaction-wave-"));
   let now = Date.parse("2026-08-05T10:00:00.000Z");
   const failing = openRuntime({
@@ -1679,19 +1845,24 @@ test("commits a wave after retrying an Input from a failed Turn", async t => {
       },
     },
   });
-  await failing.acceptInput({
+  const accepted = await failing.acceptInput({
     source: "test-channel",
     sourceId: "message-1",
     kind: "interaction",
     payload: { text: "retry me" },
   });
   await assert.rejects(failing.advance(), /provider failed/);
+  assert.deepEqual(failing.inputOutcome(accepted.inputId), {
+    state: "blocked",
+    reason: "input_blocked",
+  });
   failing.close();
 
   now += 2_000;
   const execution = new InteractionDecisionExecution();
   const recovered = openRuntime({ root, execution, now: () => new Date(now) });
   t.after(() => recovered.close());
+  assert.deepEqual(recovered.requeueInput(accepted.inputId), { disposition: "requeued" });
   const advancing = recovered.advance();
   const turn = await execution.started.promise;
   const control = await execution.control.promise;
@@ -1706,7 +1877,46 @@ test("commits a wave after retrying an Input from a failed Turn", async t => {
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
-test("commits the unfinished part of a wave after an earlier Input has durable coverage", async t => {
+test("reports a terminal Turn whose Segment has no active, frozen, or discarded outcome", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-integrity-warning-"));
+  const runtime = openRuntime({
+    root,
+    execution: {
+      start(request, control) {
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.reject(new Error("provider failed")),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "orphaned-turn",
+    kind: "interaction",
+    payload: { text: "fail once" },
+  });
+  await assert.rejects(runtime.advance(), /provider failed/);
+  const failedTurn = runtime.status().turns[0]!;
+  const segmentId = runtime.status().activeSegment!.id;
+  runtime.close();
+
+  const database = new DatabaseSync(path.join(root, "runtime.db"));
+  database.prepare("DELETE FROM active_segment").run();
+  database.close();
+
+  const reopened = openRuntime({ root });
+  t.after(() => reopened.close());
+  assert.deepEqual(reopened.status().integrityWarnings, [{
+    kind: "unexplained_terminal_turn_segment",
+    segmentId,
+    turnIds: [failedTurn.id],
+  }]);
+});
+
+test("requeues the unfinished part of a wave after an earlier Input has durable coverage", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-partly-covered-interaction-wave-"));
   let now = Date.parse("2026-08-05T10:00:00.000Z");
   const started = deferred<TurnRequest>();
@@ -1757,6 +1967,7 @@ test("commits the unfinished part of a wave after an earlier Input has durable c
   const execution = new InteractionDecisionExecution();
   const recovered = openRuntime({ root, execution, now: () => new Date(now) });
   t.after(() => recovered.close());
+  assert.deepEqual(recovered.requeueInput(second.inputId), { disposition: "requeued" });
   const advancing = recovered.advance();
   const turn = await execution.started.promise;
   assert.deepEqual(turn.inputs.map(input => input.id), [second.inputId]);

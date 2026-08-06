@@ -45,6 +45,31 @@ export interface RevisionBoundOrganOptions {
   externalAttentionSource?: InteractionChannelAttentionSource;
 }
 
+interface CancellableOrgan {
+  cancel?(reason: string): Promise<void>;
+}
+
+class RevisionBoundOrganRun {
+  #active: CancellableOrgan | undefined;
+  #cancelReason: string | undefined;
+
+  async execute<Result>(organ: CancellableOrgan, run: () => Promise<Result>): Promise<Result> {
+    this.#active = organ;
+    if (this.#cancelReason) await organ.cancel?.(this.#cancelReason);
+    try {
+      return await run();
+    } finally {
+      if (this.#active === organ) this.#active = undefined;
+      this.#cancelReason = undefined;
+    }
+  }
+
+  async cancel(reason: string): Promise<void> {
+    this.#cancelReason = reason;
+    await this.#active?.cancel?.(reason);
+  }
+}
+
 class RevisionBoundOrientation implements Orientation {
   constructor(private readonly options: RevisionBoundOrganOptions) {}
 
@@ -78,6 +103,8 @@ class RevisionBoundOrientation implements Orientation {
 }
 
 class RevisionBoundLifeRecorder implements ActivityRecorder {
+  readonly #run = new RevisionBoundOrganRun();
+
   constructor(private readonly options: RevisionBoundOrganOptions) {}
 
   async record(activity: FrozenActivity): Promise<LifeRecorderReceipt> {
@@ -92,11 +119,17 @@ class RevisionBoundLifeRecorder implements ActivityRecorder {
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
       ...(this.options.now ? { now: this.options.now } : {}),
     });
-    return recorder.record(activity);
+    return this.#run.execute(recorder, () => recorder.record(activity));
+  }
+
+  cancel(reason: string): Promise<void> {
+    return this.#run.cancel(reason);
   }
 }
 
 class RevisionBoundThreadMaintenance implements ThreadMaintenance {
+  readonly #run = new RevisionBoundOrganRun();
+
   constructor(private readonly options: RevisionBoundOrganOptions & {
     loadActivity: (activityId: string) => Promise<FrozenActivity | undefined>;
   }) {}
@@ -118,11 +151,17 @@ class RevisionBoundThreadMaintenance implements ThreadMaintenance {
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
       loadActivity: this.options.loadActivity,
     });
-    return maintainer.maintain(request);
+    return this.#run.execute(maintainer, () => maintainer.maintain(request));
+  }
+
+  cancel(reason: string): Promise<void> {
+    return this.#run.cancel(reason);
   }
 }
 
 class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
+  readonly #run = new RevisionBoundOrganRun();
+
   constructor(private readonly options: RevisionBoundOrganOptions) {}
 
   async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
@@ -135,11 +174,17 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
       model: selection.model,
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
     });
-    return maintainer.maintain(request);
+    return this.#run.execute(maintainer, () => maintainer.maintain(request));
+  }
+
+  cancel(reason: string): Promise<void> {
+    return this.#run.cancel(reason);
   }
 }
 
 class RevisionBoundMemoryReflection implements MemoryReflection {
+  readonly #run = new RevisionBoundOrganRun();
+
   constructor(private readonly options: RevisionBoundOrganOptions & {
     workingMemoryReader?: NmemWorkingMemoryReader;
     nmemRecallTool?: ToolDefinition;
@@ -159,7 +204,11 @@ class RevisionBoundMemoryReflection implements MemoryReflection {
       ...(this.options.workingMemoryReader ? { workingMemoryReader: this.options.workingMemoryReader } : {}),
       ...(this.options.nmemRecallTool ? { nmemRecallTool: this.options.nmemRecallTool } : {}),
     });
-    return reflector.reflect(request);
+    return this.#run.execute(reflector, () => reflector.reflect(request));
+  }
+
+  cancel(reason: string): Promise<void> {
+    return this.#run.cancel(reason);
   }
 }
 

@@ -127,20 +127,30 @@ class RuntimeScheduler implements Scheduler {
       });
     }
 
+    let deferredLane: SchedulerRunResult | undefined;
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
       const advanced = await this.#runtime.advance({ agentWork, observedAt });
       const terminal = deferredResult(advanced, observedAt);
-      if (terminal) return terminal;
+      if (terminal) {
+        if (terminal.reason === "activity_recording_failed" || terminal.reason === "thread_maintenance_failed") {
+          deferredLane = terminal;
+        } else {
+          return terminal;
+        }
+      }
       if (advanced.disposition === "busy") return { disposition: "busy" };
-      if (advanced.disposition !== "idle") continue;
+      if (advanced.disposition !== "idle" && !deferredLane) continue;
 
       const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
-      if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") continue;
+      if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") {
+        if (deferredLane) return { disposition: "busy" };
+        continue;
+      }
       if (afterChat.disposition === "agent_work_deferred") {
         return { disposition: "deferred", reason: "agent_work_not_admitted" };
       }
-      if (afterChat.disposition === "busy") return { disposition: "busy" };
+      if (afterChat.disposition === "busy") return deferredLane ?? { disposition: "busy" };
       const afterChatWaiting = afterChat.disposition === "waiting" ? afterChat : undefined;
 
       const status = this.#runtime.status();
@@ -148,10 +158,11 @@ class RuntimeScheduler implements Scheduler {
       const active = status.activeSegment;
       if (!active) {
         const maintenance = await this.#runAttentionMaintenance(observedAt, agentWork);
-        if (maintenance && maintenance.disposition !== "waiting") return maintenance;
+        if (maintenance && maintenance.disposition !== "waiting") deferredLane ??= maintenance;
         const reflection = await this.#runMemoryReflection(observedAt, agentWork);
-        if (reflection && reflection.disposition !== "waiting") return reflection;
+        if (reflection && reflection.disposition !== "waiting") deferredLane ??= reflection;
         if (!this.#proactivePulse) {
+          if (deferredLane) return deferredLane;
           return earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting)
             ?? { disposition: "idle" };
         }
@@ -162,8 +173,12 @@ class RuntimeScheduler implements Scheduler {
           retryDelayMs: this.#proactivePulse.retryDelayMs ?? DEFAULT_PULSE_RETRY_MS,
           agentWork,
         });
-        if (pulse.disposition === "accepted" || pulse.disposition === "stale") continue;
+        if (pulse.disposition === "accepted" || pulse.disposition === "stale") {
+          if (deferredLane) return { disposition: "busy" };
+          continue;
+        }
         if (pulse.disposition === "waiting" || pulse.disposition === "none") {
+          if (deferredLane) return deferredLane;
           return {
             disposition: "waiting",
             nextRunAt: earlierTime(
@@ -183,13 +198,14 @@ class RuntimeScheduler implements Scheduler {
             error: pulse.error,
           };
         }
-        return { disposition: "busy" };
+        return deferredLane ?? { disposition: "busy" };
       }
       const nextRunAt = new Date(Math.min(
         new Date(active.lastActivityAt).getTime() + this.#activityIdleMs,
         new Date(active.openedAt).getTime() + this.#activityMaxMs,
       ));
       if (observedAt < nextRunAt) {
+        if (deferredLane) return deferredLane;
         return earliestWaiting(
           { disposition: "waiting", nextRunAt: nextRunAt.toISOString() },
           afterChatWaiting,
@@ -200,8 +216,9 @@ class RuntimeScheduler implements Scheduler {
       const inactiveBefore = new Date(observedAt.getTime() - this.#activityIdleMs).toISOString();
       const openedBefore = new Date(observedAt.getTime() - this.#activityMaxMs).toISOString();
       const closed = await this.#runtime.closeActivity({ inactiveBefore, openedBefore });
-      if (closed.disposition === "busy") return { disposition: "busy" };
+      if (closed.disposition === "busy") return deferredLane ?? { disposition: "busy" };
       if (closed.disposition === "not_due") {
+        if (deferredLane) return deferredLane;
         return earliestWaiting(
           {
             disposition: "waiting",
@@ -214,7 +231,7 @@ class RuntimeScheduler implements Scheduler {
           deliveryWaiting,
         )!;
       }
-      if (closed.disposition === "no_activity") return { disposition: "idle" };
+      if (closed.disposition === "no_activity") return deferredLane ?? { disposition: "idle" };
     }
   }
 
@@ -349,7 +366,10 @@ function assertPositiveDuration(value: number, label: string): void {
   }
 }
 
-function deferredResult(result: AdvanceResult, observedAt: Date): SchedulerRunResult | undefined {
+function deferredResult(
+  result: AdvanceResult,
+  observedAt: Date,
+): Extract<SchedulerRunResult, { disposition: "deferred" }> | undefined {
   switch (result.disposition) {
     case "activity_recording_failed":
     case "thread_maintenance_failed":

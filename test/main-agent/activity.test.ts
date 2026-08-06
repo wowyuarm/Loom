@@ -253,6 +253,65 @@ test("preserves Interaction Context when Frozen Activity has no transcript", asy
   assert.deepEqual(activity.events.find(event => event.eventId === "input:input-no-transcript")?.interaction, interaction);
 });
 
+test("freezes a later Delivery as its own Activity without replaying the original Effect", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-late-delivery-"));
+  const lifecycle = createMainAgentActivityLifecycle({
+    agentWorkspace: new AgentWorkspace(path.join(root, "workspace")),
+    transcriptDirectory: path.join(root, "transcripts"),
+    nextWindowId: () => "window-after-delivery",
+  });
+  const state = serializeContextWindowState({
+    version: 1,
+    id: "window-before-delivery",
+    frozenSeed: [],
+    recentActivityReferences: [],
+    committedTrace: [],
+    transcriptSources: [],
+  });
+
+  const { activity } = await lifecycle.freeze({
+    segment: {
+      id: "segment-late-delivery",
+      openedAt: "2026-08-05T10:05:00.000Z",
+      closedAt: "2026-08-05T10:06:00.000Z",
+      recordingDay: "2026-08-05",
+    },
+    recentActivities: [],
+    startingExecutionState: state,
+    executionState: state,
+    inputs: [],
+    turns: [],
+    toolActivities: [],
+    effects: [],
+    deliveries: [{
+      id: "delivery-late",
+      effectId: "effect-from-prior-activity",
+      turnId: "turn-from-prior-activity",
+      attempt: 2,
+      status: "delivered",
+      startedAt: "2026-08-05T10:05:00.000Z",
+      endedAt: "2026-08-05T10:05:02.000Z",
+      remoteId: "remote-late",
+    }],
+  });
+
+  assert.deepEqual(activity.turns, []);
+  assert.deepEqual(activity.events, [{
+    eventId: "delivery:delivery-late",
+    turnId: "turn-from-prior-activity",
+    at: "2026-08-05T10:05:02.000Z",
+    actorRef: "system",
+    kind: "delivery",
+    content: {
+      deliveryId: "delivery-late",
+      effectId: "effect-from-prior-activity",
+      attempt: 2,
+      status: "delivered",
+      remoteId: "remote-late",
+    },
+  }]);
+});
+
 test("omits a retried interrupted assistant attempt from Frozen Activity evidence", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-interrupted-attempt-"));
   const { transcriptDirectory } = await writePrimaryTranscript(root, transcriptWithInterruptedAttempt(root));
@@ -608,6 +667,7 @@ function request(): ActivityFreezeRequest {
     deliveries: [{
       id: "delivery-1",
       effectId: "effect-1",
+      turnId: "turn-1",
       attempt: 1,
       status: "delivered",
       startedAt: "2026-07-19T10:00:06.500Z",

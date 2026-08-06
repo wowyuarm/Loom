@@ -155,6 +155,7 @@ export interface ActivityFreezeRequest {
   deliveries: Array<{
     id: string;
     effectId: string;
+    turnId: string;
     attempt: number;
     status: RuntimeDeliveryStatus["status"];
     startedAt: string;
@@ -173,6 +174,7 @@ export interface ActivityLifecycle {
 
 export interface ActivityRecorder {
   record(activity: FrozenActivity): Promise<LifeRecorderReceipt>;
+  cancel?(reason: string): Promise<void>;
 }
 
 export interface ThreadActivityObservation {
@@ -198,6 +200,7 @@ export interface ThreadMaintenanceResult {
 export interface ThreadMaintenance {
   observationsFor(activity: FrozenActivity): ThreadActivityObservation[];
   maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult>;
+  cancel?(reason: string): Promise<void>;
 }
 
 export interface AttentionMaintenanceRequest {
@@ -214,6 +217,7 @@ export interface AttentionMaintenanceResult {
 
 export interface AttentionMaintenance {
   maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
+  cancel?(reason: string): Promise<void>;
 }
 
 export interface MemoryReflectionRequest {
@@ -231,6 +235,7 @@ export interface MemoryReflectionResult {
 
 export interface MemoryReflection {
   reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult>;
+  cancel?(reason: string): Promise<void>;
 }
 
 export interface OrientationRequest {
@@ -396,6 +401,10 @@ export type RuntimeInputOutcome =
   | { state: "failed"; reason: string }
   | { state: "blocked"; reason: string };
 
+export type RequeueInputResult =
+  | { disposition: "requeued" }
+  | { disposition: "not_blocked" };
+
 export interface RuntimeTurnStatus {
   id: string;
   status: "running" | "completed" | "failed" | "timed_out" | "cancelled" | "interrupted";
@@ -502,6 +511,15 @@ export interface RuntimeStatus {
   memoryReflection?: RuntimeMemoryReflectionStatus;
   proactivePulse?: RuntimePulseStatus;
   afterChatContinuation?: RuntimeAfterChatContinuationStatus;
+  oldestPendingOrganAt?: string;
+  oldestPendingOrganAgeMs?: number;
+  integrityWarnings: RuntimeIntegrityWarning[];
+}
+
+export interface RuntimeIntegrityWarning {
+  kind: "unexplained_terminal_turn_segment";
+  segmentId: string;
+  turnIds: string[];
 }
 
 export type RuntimeAgentName =
@@ -648,6 +666,7 @@ export type RunOpportunityPulseResult =
 
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
+  requeueInput(inputId: string): RequeueInputResult;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
   runAfterChatContinuation(options: RunAfterChatContinuationOptions): Promise<RunAfterChatContinuationResult>;
