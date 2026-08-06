@@ -1014,6 +1014,18 @@ class DefaultRaftChannel implements RaftChannel {
     return `external:raft:${refPart(this.options.serverId)}:${refPart(memberId)}`;
   }
 
+  #materializeRef(kind: RaftReferenceKind, remoteValue: string): string {
+    const digest = createHash("sha256")
+      .update(`${this.options.serverId}\0${kind}\0${remoteValue}`)
+      .digest("hex")
+      .slice(0, 24);
+    const ref = `raft:${kind}:${digest}`;
+    this.#database.prepare(`
+      INSERT OR IGNORE INTO refs (ref, kind, remote_value) VALUES (?, ?, ?)
+    `).run(ref, kind, remoteValue);
+    return ref;
+  }
+
   #storeRef(
     kind: RaftReferenceKind,
     remoteValue: string,
@@ -1023,14 +1035,7 @@ class DefaultRaftChannel implements RaftChannel {
       observedAt: string;
     },
   ): string {
-    const digest = createHash("sha256")
-      .update(`${this.options.serverId}\0${kind}\0${remoteValue}`)
-      .digest("hex")
-      .slice(0, 24);
-    const ref = `raft:${kind}:${digest}`;
-    this.#database.prepare(`
-      INSERT OR IGNORE INTO refs (ref, kind, remote_value) VALUES (?, ?, ?)
-    `).run(ref, kind, remoteValue);
+    const ref = this.#materializeRef(kind, remoteValue);
     if (kind === "destination") {
       this.#upsertKnownDestination({
         destinationRef: ref,
@@ -1041,6 +1046,10 @@ class DefaultRaftChannel implements RaftChannel {
       });
     }
     return ref;
+  }
+
+  #storeEvidenceRef(kind: RaftReferenceKind, remoteValue: string): string {
+    return this.#materializeRef(kind, remoteValue);
   }
 
   #lookupRef(ref: string): { kind: RaftReferenceKind; remoteValue: string } {
@@ -1078,7 +1087,7 @@ class DefaultRaftChannel implements RaftChannel {
   }
 
   #referenceEvidence(reference: { kind: RaftReferenceKind; value: string }) {
-    return { kind: reference.kind, ref: this.#storeRef(reference.kind, reference.value) };
+    return { kind: reference.kind, ref: this.#storeEvidenceRef(reference.kind, reference.value) };
   }
 
   #openEvidence(value: JsonValue): JsonValue {
@@ -1087,7 +1096,7 @@ class DefaultRaftChannel implements RaftChannel {
     const result: { [key: string]: JsonValue } = {};
     for (const [key, child] of Object.entries(value)) {
       if (key === "replyDestination" && typeof child === "string") {
-        result.replyDestinationRef = this.#storeRef("destination", child);
+        result.replyDestinationRef = this.#storeEvidenceRef("destination", child);
         continue;
       }
       result[key] = this.#openEvidence(child);

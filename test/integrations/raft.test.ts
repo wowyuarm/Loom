@@ -762,6 +762,98 @@ test("offers bounded Raft tools that keep remote targets behind opaque refs", as
   assert.ok(!Number.isNaN(Date.parse(activityRequests[0]!.after!)));
 });
 
+test("raft_open evidence does not promote a read-only reply destination to known", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-open-no-known-"));
+  const opened: Array<{ kind: string; value: string }> = [];
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2026-08-05T05:00:00.000Z",
+      signal: "mention",
+      content: "A mention in research.",
+      sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+      place: {
+        target: "#research",
+        kind: "channel",
+        visibility: "public",
+        label: "research",
+        audience: "Members of #research can read this.",
+      },
+    }),
+    openReference: async request => {
+      opened.push({ kind: request.kind, value: request.value });
+      return {
+        objectKind: "message",
+        evidence: {
+          content: "A thread message",
+          place: { kind: "reply_thread", visibility: "public", label: "research reply thread" },
+          thread: {
+            anchor: { content: "The anchor", visibility: "public" },
+            replies: [{ content: "A reply", replyDestination: "#unfamiliar:abcd1234" }],
+          },
+        },
+        references: [{ kind: "destination", value: "#unfamiliar:abcd1234" }],
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-research-1",
+    messageId: "message-research-1",
+    receivedAt: "2026-08-05T05:00:01.000Z",
+  });
+  await eventually(() => inputs.length === 1);
+
+  const tools = channel.agentTools({ prepareEffect: () => ({ effectId: "unused" }) });
+  const messageRef = inputs[0]!.interaction!.references
+    .find(reference => reference.kind === "message")!.ref;
+  const openedMessage = await executeTool(tools, "raft_open", { ref: messageRef });
+  const details = openedMessage.details as {
+    evidence: { thread: { replies: Array<{ replyDestinationRef: string }> } };
+    references: Array<{ kind: string; ref: string }>;
+  };
+  const replyDestinationRef = details.evidence.thread.replies[0]!.replyDestinationRef;
+  assert.match(replyDestinationRef, /^raft:destination:/);
+  assert.equal(
+    replyDestinationRef,
+    details.references.find(reference => reference.kind === "destination")!.ref,
+  );
+
+  await channel.acceptWake({
+    attemptId: "attempt-research-2",
+    messageId: "message-research-2",
+    receivedAt: "2026-08-05T05:01:01.000Z",
+  });
+  await eventually(() => inputs.length === 2);
+
+  const destinations = inputs[1]!.interaction!.destinations;
+  assert.ok(
+    !destinations.some(destination => destination.destinationRef === replyDestinationRef),
+    "raft_open must not promote a read-only reply destination to a known Destination",
+  );
+  assert.ok(
+    !destinations.some(destination => destination.label?.includes("unfamiliar")),
+    "raft_open must not expose a read-only reply destination among known Destinations",
+  );
+});
+
 test("prepares and delivers one task claim through an opaque task ref", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-task-claim-"));
   const taskActions: unknown[] = [];
