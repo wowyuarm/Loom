@@ -61,8 +61,8 @@ secret command. The supplied `loom@.service` does not load an EnvironmentFile.
 
 | Channel | Configuration | Credential rule |
 | --- | --- | --- |
-| Weixin | `configuration/channels/weixin/config.json` | Put the bot token only in `auth.json`. See [Weixin](../../integrations/weixin.md). |
-| Raft | `configuration/channels/raft/config.json` | The Raft CLI owns its profile credential under the Instance Unix account; never copy it into Loom configuration. See [Raft](../../integrations/raft.md). |
+| Weixin | `configuration/channels/weixin/config.json` | Put the bot token only in `auth.json`. See [Weixin](../../channels/weixin.md). |
+| Raft | `configuration/channels/raft/config.json` | The Raft CLI owns its profile credential under the Instance Unix account; never copy it into Loom configuration. See [Raft](../../channels/raft.md). |
 
 ## Integration Credentials
 

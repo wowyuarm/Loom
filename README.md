@@ -115,8 +115,8 @@ Instance Root 布局：
 │   ├── host-lock.db           Host 独占锁
 │   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
-│   ├── channels/              weixin.db · raft.db
-│   └── integrations/          raft-bridge/ · nmem.db · attachments/
+│   ├── channels/              weixin.db · raft.db · raft-bridge/
+│   └── integrations/          nmem.db · attachments/
 ├── transcripts/{main,organs}/
 └── backups/                   认知器官写前备份
 ```

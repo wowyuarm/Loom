@@ -10,7 +10,7 @@ human review surface and never replaces a complete Instance backup.
 ## Backup Boundary
 
 The backup unit is the complete Instance Root. It includes Workspace, Runtime
-and Integration state, Transcripts, configuration, credentials, attachments and
+and Channel and Integration state, Transcripts, configuration, credentials, attachments and
 protected Workspace-write recovery material. Do not select subdirectories.
 
 Do not copy a live Instance Root. Loom has SQLite WAL databases and ordinary
@@ -44,12 +44,12 @@ Restore the complete root, preserve its owner and permissions, and never merge
 files from two Instance revisions.
 
 Before starting it, verify the intended Unix account, service configuration,
-Loom build and target-specific Integration dependencies. Do not run the original
+Loom build and target-specific Channel and Integration dependencies. Do not run the original
 and restored Instance with the same external channel credentials at once; that
 can create duplicate external activity.
 
 Start the restored Host only in the authorized environment, then use `loom
-status` and the relevant Integration acceptance checks. A restore drill has
+status` and the relevant Channel or Integration acceptance checks. A restore drill has
 succeeded only to the extent those checks were actually performed. Loom does
 not yet provide a separate read-only restore-validation command.
 
@@ -57,7 +57,7 @@ not yet provide a separate read-only restore-validation command.
 
 Migration uses the same complete backup and restore boundary. Keep the source
 Host stopped after the final backup while validating the target. Review
-host-specific paths, ownership, service configuration and Integration
+host-specific paths, ownership, service configuration and Channel and Integration
 dependencies on the target; do not edit private Runtime databases to adapt the
 Instance.
 

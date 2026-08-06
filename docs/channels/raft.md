@@ -89,7 +89,7 @@ loom run --root /home/loom-example/.loom
 
 Host 会自动建立仅监听 loopback 的临时 wake endpoint，并启动固定版本的
 `raft agent bridge`。端口和随机 token 只存在于当前进程，不需要用户配置；bridge
-自己的持久重放状态位于 `runtime/integrations/raft-bridge/`，Loom 已接住的 wake、
+自己的持久重放状态位于 `runtime/channels/raft-bridge/`，Loom 已接住的 wake、
 不透明引用和 Attention 状态位于 `runtime/channels/raft.db`。不要手工编辑或只
 复制其中一部分来代替完整 Instance 备份。
 

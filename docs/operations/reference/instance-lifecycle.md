@@ -27,13 +27,13 @@ user. `facts.json` must contain `version: 1` and object sections named
 is not a ready Individual.
 
 Follow [Configuration And Credentials](configuration-and-credentials.md) for
-model selection, secret files, permissions and Integration enablement. Optional
-Integrations remain disabled until every required file is deliberately supplied.
-Then follow the matching guide under `docs/integrations/` before enabling one.
+model selection, secret files, permissions and Channel or Integration enablement. Optional
+Channels and Integrations remain disabled until every required file is deliberately supplied.
+Then follow the matching guide under `docs/channels/` or `docs/integrations/` before enabling one.
 
 `loom run` owns one prepared Instance Root. It accepts `SIGTERM` and waits for
 current work to finish, so an external supervisor owns boot startup and restart.
-After starting the Host, use `loom status` and the enabled Integration's real
+After starting the Host, use `loom status` and the enabled Channel or Integration's real
 acceptance checks. Startup alone does not prove that the Instance works.
 
 ## Multiple Individuals On One Host
@@ -97,7 +97,7 @@ sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js history --root /home
 An already running Host continues to use its current build. For each affected
 Instance, obtain authorization, gracefully stop its service, update and build
 the shared checkout, then start the service and verify it with `loom status` and
-the relevant Integration checks.
+the relevant Channel or Integration checks.
 
 Do not replace Instance Roots or credentials during a code update. If the Host
 does not stop normally, investigate before forcing it; durable recovery does not
