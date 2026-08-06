@@ -23,6 +23,7 @@ import type {
   OutboundDelivery,
   RuntimeInput,
 } from "../../runtime/index.js";
+import { initializeRaftState } from "./raft-state.js";
 
 type RaftReferenceKind = "message" | "place" | "destination" | "thread" | "task" | "member" | "reminder";
 
@@ -238,60 +239,7 @@ class DefaultRaftChannel implements RaftChannel {
 
   constructor(private readonly options: OpenRaftChannelOptions) {
     this.#database = new DatabaseSync(options.stateFile);
-    this.#database.exec(`
-      PRAGMA journal_mode = WAL;
-      PRAGMA synchronous = FULL;
-      CREATE TABLE IF NOT EXISTS wakes (
-        message_id TEXT PRIMARY KEY,
-        attempt_id TEXT NOT NULL,
-        received_at TEXT NOT NULL,
-        delivery_order INTEGER,
-        status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
-        input_id TEXT,
-        last_error TEXT
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS refs (
-        ref TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('message', 'place', 'destination', 'thread', 'task', 'member', 'reminder')),
-        remote_value TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS known_destinations (
-        destination_ref TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('top_level', 'reply_thread')),
-        label TEXT,
-        observed_at TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS ambient_activity (
-        revision INTEGER PRIMARY KEY AUTOINCREMENT,
-        message_id TEXT NOT NULL UNIQUE,
-        occurred_at TEXT NOT NULL,
-        place_ref TEXT NOT NULL,
-        place_kind TEXT NOT NULL,
-        place_label TEXT,
-        visibility TEXT NOT NULL,
-        actor_ref TEXT NOT NULL,
-        actor_kind TEXT NOT NULL,
-        actor_label TEXT,
-        message_ref TEXT NOT NULL
-      ) STRICT;
-      CREATE TABLE IF NOT EXISTS attention_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        presented_revision INTEGER NOT NULL
-      ) STRICT;
-      INSERT OR IGNORE INTO attention_state (singleton, presented_revision) VALUES (1, 0);
-      CREATE TABLE IF NOT EXISTS integration_state (
-        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        activated_at TEXT NOT NULL
-      ) STRICT;
-    `);
-    const wakeColumns = this.#database.prepare("PRAGMA table_info(wakes)").all() as unknown as Array<{ name: string }>;
-    if (!wakeColumns.some(column => column.name === "delivery_order")) {
-      this.#database.exec("ALTER TABLE wakes ADD COLUMN delivery_order INTEGER");
-    }
-    this.#database.prepare(`
-      INSERT OR IGNORE INTO integration_state (singleton, activated_at) VALUES (1, ?)
-    `).run((options.now?.() ?? new Date()).toISOString());
-    this.#backfillKnownDestinations();
+    initializeRaftState(this.#database, (options.now?.() ?? new Date()).toISOString());
   }
 
   async start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): Promise<void> {
@@ -967,23 +915,6 @@ class DefaultRaftChannel implements RaftChannel {
       destination.label ?? null,
       destination.observedAt,
     );
-  }
-
-  #backfillKnownDestinations(): void {
-    const activation = this.#database.prepare(`
-      SELECT activated_at FROM integration_state WHERE singleton = 1
-    `).get() as unknown as { activated_at: string };
-    const rows = this.#database.prepare(`
-      SELECT ref, remote_value FROM refs WHERE kind = 'destination' ORDER BY rowid
-    `).all() as unknown as Array<{ ref: string; remote_value: string }>;
-    for (const row of rows) {
-      const identity = knownDestinationIdentity(row.remote_value);
-      this.#upsertKnownDestination({
-        destinationRef: row.ref,
-        ...identity,
-        observedAt: activation.activated_at,
-      });
-    }
   }
 
   #otherKnownDestinations(excludedDestinationRefs: string[], limit: number): InteractionDestination[] {
