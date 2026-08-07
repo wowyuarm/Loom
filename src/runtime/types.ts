@@ -273,6 +273,23 @@ export interface ExecutionInput {
   interaction?: InteractionContext;
   occurredAt: string;
   inclusionPosition: number;
+  /**
+   * True when this Interaction arrived after the previous reply of its
+   * scope was committed (its reply gate closed) but before that reply's
+   * Delivery was confirmed. The mark is fixed at accept time and persists
+   * even if the Delivery is confirmed later. The next Turn carries it so
+   * the agent can answer in context instead of treating the message as a
+   * fresh, unrelated one. An unconfirmed Delivery only means the human
+   * may not have seen the reply yet, not that they certainly had not.
+   */
+  lateArriving?: boolean;
+  /**
+   * True when this Interaction joined a running Turn only because its
+   * reply gate was still open: it arrived after its wave was sealed but
+   * before the first reply commit. The agent is told it arrived before
+   * the reply was committed and should re-evaluate the current reply.
+   */
+  lateSteered?: boolean;
 }
 
 export interface TurnRequest {

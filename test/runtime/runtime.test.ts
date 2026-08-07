@@ -2027,7 +2027,7 @@ test("rejects a stale reply while a newer Input in the same wave is still queued
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
-test("starts a new wave after 1.5 seconds of quiet", async t => {
+test("starts a new wave after 1.5 seconds of quiet and steers it into the open reply gate", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-quiet-"));
   const execution = new HeldExecution();
   let now = Date.parse("2026-08-05T10:00:00.000Z");
@@ -2059,15 +2059,21 @@ test("starts a new wave after 1.5 seconds of quiet", async t => {
     kind: "interaction",
     payload: { text: "third" },
   });
-  await delay(10);
-  assert.equal(runtime.status().turns[0]?.inputIds.includes(nextWave.inputId), false);
-  assert.equal(runtime.status().inputs.find(input => input.id === nextWave.inputId)?.status, "pending");
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(nextWave.inputId) === true);
+  // The quiet window split the waves, but the same scope still folds into the
+  // running reply while the reply gate is open (the gate closes on commit).
+  assert.notEqual(
+    runtime.status().inputs.find(input => input.id === sameWave.inputId)?.interactionWaveId,
+    runtime.status().inputs.find(input => input.id === nextWave.inputId)?.interactionWaveId,
+  );
+  const steered = execution.steered.find(input => input.id === nextWave.inputId);
+  assert.equal(steered?.lateSteered, true);
 
   execution.complete(turn);
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
-test("seals a continuously extended wave after 6 seconds", async t => {
+test("seals a continuously extended wave after 6 seconds and steers the overflow into the open reply gate", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-interaction-wave-maximum-"));
   const execution = new HeldExecution();
   let now = Date.parse("2026-08-05T10:00:00.000Z");
@@ -2083,6 +2089,7 @@ test("seals a continuously extended wave after 6 seconds", async t => {
   const advancing = runtime.advance();
   const turn = await execution.started.promise;
 
+  let lastAcceptedId = "";
   for (let index = 1; index <= 5; index += 1) {
     now += 1_000;
     const accepted = await runtime.acceptInput({
@@ -2091,6 +2098,7 @@ test("seals a continuously extended wave after 6 seconds", async t => {
       kind: "interaction",
       payload: { text: `part ${index}` },
     });
+    lastAcceptedId = accepted.inputId;
     await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(accepted.inputId) === true);
   }
 
@@ -2101,9 +2109,14 @@ test("seals a continuously extended wave after 6 seconds", async t => {
     kind: "interaction",
     payload: { text: "after maximum" },
   });
-  await delay(10);
-  assert.equal(runtime.status().turns[0]?.inputIds.includes(nextWave.inputId), false);
-  assert.equal(runtime.status().inputs.find(input => input.id === nextWave.inputId)?.status, "pending");
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(nextWave.inputId) === true);
+  // The 6 second maximum sealed the wave, but the same scope still folds into
+  // the running reply while the reply gate is open (the gate closes on commit).
+  const lastInputWave = runtime.status().inputs.find(input => input.id === lastAcceptedId)!.interactionWaveId;
+  const nextWaveId = runtime.status().inputs.find(input => input.id === nextWave.inputId)!.interactionWaveId;
+  assert.notEqual(nextWaveId, lastInputWave);
+  const steered = execution.steered.find(input => input.id === nextWave.inputId);
+  assert.equal(steered?.lateSteered, true);
 
   execution.complete(turn);
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
@@ -2365,4 +2378,708 @@ test("marks an expired dispatch as unknown and rejects its late result", async t
   outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
   await assert.rejects(lateDelivery, /no longer accepts writes/);
   assert.equal(replacement.status().deliveries[0]?.status, "unknown");
+});
+
+class MultiTurnExecution implements AgentExecution {
+  readonly turns: TurnRequest[] = [];
+  readonly steered: TurnRequest["inputs"] = [];
+  readonly controls: TurnControl[] = [];
+  readonly pending: Array<((value: Awaited<RunningExecution["result"]>) => void) | undefined> = [];
+
+  start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.prepareExecutionState(request.executionState ?? {
+      generation: 0,
+      items: [],
+    });
+    control.includeInput(request.inputs[0]!.id);
+    this.turns.push(request);
+    this.controls.push(control);
+    let resolveResult!: (value: Awaited<RunningExecution["result"]>) => void;
+    const result = new Promise<Awaited<RunningExecution["result"]>>(resolve => {
+      resolveResult = resolve;
+    });
+    this.pending.push(resolveResult);
+    return {
+      result,
+      steer: async input => {
+        this.steered.push(input);
+        control.includeInput(input.id);
+      },
+      abort: async () => {},
+    };
+  }
+
+  complete(): void {
+    for (const [index, request] of this.turns.entries()) {
+      if (this.pending[index] === undefined) continue;
+      const inputs = [...request.inputs, ...this.steered];
+      this.pending[index]?.({
+        outcome: "completed",
+        inputAnchors: inputs.map(input => ({
+          inputId: input.id,
+          transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-multi", entryId: `input-${input.id}` },
+        })),
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-multi", entryId: `entry-${request.turnId}` },
+        ...executionResult(request, {
+          sourceId: request.recordingDay,
+          sessionId: "session-multi",
+          entryId: `entry-${request.turnId}`,
+        }),
+      });
+      this.pending[index] = undefined;
+    }
+  }
+}
+
+test("steers a same-scope Input that arrives after its wave was sealed while the reply gate is open", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-reply-gate-steer-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await execution.started.promise;
+
+  // The 6 second wave maximum has passed: message-2 starts a new wave, but the
+  // reply gate of the running Turn is still open, so it may still join.
+  now += 7_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  await waitUntil(() => execution.steered.some(input => input.id === second.inputId));
+  const steered = execution.steered.find(input => input.id === second.inputId);
+  assert.equal(steered?.lateSteered, true);
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+  execution.complete(await execution.started.promise);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("blocks a commit until a held reply-gate steering settles, then commits", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-reply-gate-held-steer-"));
+  const execution = new SlowSteeringExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 7_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const steeredInput = await execution.steeringStarted.promise;
+  assert.equal(steeredInput.id, second.inputId);
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  // Commit arrives while the steering is still in flight: it must wait for
+  // the steering tail instead of racing the includeInput write.
+  let committed = false;
+  const pendingCommit = control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "test-route" },
+  }).then(receipt => {
+    committed = true;
+    return receipt;
+  });
+  await delay(30);
+  assert.equal(committed, false);
+
+  execution.steeringFinished.resolve(undefined);
+  const decision = await pendingCommit;
+  assert.equal(decision.outcome, "send");
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("rejects a reply-gate commit while a scope Input is not included", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-reply-gate-uncovered-"));
+  const execution = new QueuedSteeringExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 7_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  // This execution accepts the steering but never includes the Input, so the
+  // commit must refuse to reply while the scope is uncovered.
+  await waitUntil(() => execution.steered.some(input => input.id === second.inputId));
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  await assert.rejects(
+    control.commitInteractionDecision!({
+      outcome: "send",
+      effect: { kind: "message", payload: { text: "stale reply" }, routeRef: "test-route" },
+    }),
+    /Interaction scope has newer Inputs/,
+  );
+
+  // The agent reviews, includes the late Input, and retries.
+  control.includeInput(second.inputId);
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("leaves a same-scope Input for the next Turn when the reply gate is already closed", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-reply-gate-closed-"));
+  const execution = new MultiTurnExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const control = await execution.controls[0]!;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+
+  // Gate closed: message-2 must not join the running Turn.
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  await delay(30);
+  assert.equal(execution.steered.some(input => input.id === second.inputId), false);
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  execution.complete();
+  await advancing2;
+  assert.equal(execution.turns[1]!.inputs[0]!.id, second.inputId);
+});
+
+test("marks an Input as late when it arrives after the reply commit but before Delivery is confirmed", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-unconfirmed-"));
+  const execution = new MultiTurnExecution();
+  const outboundDelivery = new HeldOutboundDelivery();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, outboundDelivery, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  // Delivery dispatch starts but is not confirmed yet.
+  const delivering = runtime.advance();
+  await outboundDelivery.started.promise;
+
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  // The relation was fixed at accept time (commit done, no delivered
+  // Delivery transition yet): the later delivered outcome must not erase
+  // the durable mark carried into the next Turn.
+  outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  assert.deepEqual(await delivering, { disposition: "delivery_completed" });
+
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  execution.complete();
+  await advancing2;
+  const secondTurn = execution.turns[1]!;
+  assert.equal(secondTurn.inputs[0]!.id, second.inputId);
+  assert.equal(secondTurn.inputs[0]!.lateArriving, true);
+});
+
+test("does not mark an Input as late when the previous reply Delivery was already confirmed", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-confirmed-"));
+  const execution = new MultiTurnExecution();
+  const outboundDelivery = new HeldOutboundDelivery();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, outboundDelivery, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  const delivering = runtime.advance();
+  await outboundDelivery.started.promise;
+  outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  await waitUntil(() => runtime.status().deliveries.some(delivery => delivery.status === "delivered"));
+  await delivering;
+
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  execution.complete();
+  await advancing2;
+  assert.equal(execution.turns[1]!.inputs[0]!.id, second.inputId);
+  assert.equal(execution.turns[1]!.inputs[0]!.lateArriving, undefined);
+});
+
+test("does not mark an Input as late after a no_reply decision", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-noreply-"));
+  const execution = new MultiTurnExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({ outcome: "no_reply" });
+  assert.deepEqual(decision, { outcome: "no_reply" });
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  execution.complete();
+  await advancing2;
+  assert.equal(execution.turns[1]!.inputs[0]!.id, second.inputId);
+  assert.equal(execution.turns[1]!.inputs[0]!.lateArriving, undefined);
+});
+
+test("does not mark an Input as late after a no_reply Turn that follows an unconfirmed send", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-noreply-unsent-"));
+  const execution = new MultiTurnExecution();
+  // The send stays permanently unconfirmed (channel rejected; the 60s retry
+  // backoff never fires within this test's simulated clock).
+  const outboundDelivery: OutboundDelivery = {
+    deliver: async () => ({ status: "not_sent", error: "channel rejected" }),
+  };
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, outboundDelivery, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  const delivering = runtime.advance();
+  assert.deepEqual(await delivering, {
+    disposition: "delivery_not_sent",
+    nextRunAt: new Date(now + 60_000).toISOString(),
+  });
+
+  // Arrives after the send commit, while the Delivery is (and stays) unconfirmed.
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  assert.equal(execution.turns[1]!.inputs[0]!.id, second.inputId);
+  assert.equal(execution.turns[1]!.inputs[0]!.lateArriving, true);
+
+  // The following no_reply Turn is the newest closed boundary of the scope:
+  // an Input arriving after it must not be marked late, even though the
+  // older reply is still unconfirmed.
+  now += 1_500;
+  const noReply = await execution.controls[1]!.commitInteractionDecision!({ outcome: "no_reply" });
+  assert.deepEqual(noReply, { outcome: "no_reply" });
+  execution.complete();
+  assert.deepEqual(await advancing2, { disposition: "turn_completed" });
+
+  now += 1_000;
+  const third = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-3",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "third" },
+  });
+  const advancing3 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 3);
+  execution.complete();
+  await advancing3;
+  assert.equal(execution.turns[2]!.inputs[0]!.id, third.inputId);
+  assert.equal(execution.turns[2]!.inputs[0]!.lateArriving, undefined);
+});
+
+test("breaks a same-timestamp gate tie toward the later Turn, not the id order", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-tie-"));
+  const execution = new MultiTurnExecution();
+  const outboundDelivery: OutboundDelivery = {
+    deliver: async () => ({ status: "not_sent", error: "channel rejected" }),
+  };
+  // Descending ids: later-created objects get LOWER ids. Both reply gates
+  // close at the same `now`, so the "latest closed Turn" lookup must break
+  // the tie by insert order (rowid), not by id — a random-UUID id order
+  // would otherwise pick the older unconfirmed send Turn.
+  let seq = 0;
+  const now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution,
+    outboundDelivery,
+    nextId: () => `id-${1000 - ++seq}`,
+    now: () => new Date(now),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  const delivering = runtime.advance();
+  assert.deepEqual(await delivering, { disposition: "delivery_not_sent", nextRunAt: new Date(now + 60_000).toISOString() });
+
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  assert.equal(execution.turns[1]!.inputs[0]!.lateArriving, true);
+
+  // Same `now` as the send commit: both gates close at the identical timestamp.
+  const noReply = await execution.controls[1]!.commitInteractionDecision!({ outcome: "no_reply" });
+  assert.deepEqual(noReply, { outcome: "no_reply" });
+  execution.complete();
+  assert.deepEqual(await advancing2, { disposition: "turn_completed" });
+
+  const third = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-3",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "third" },
+  });
+  const advancing3 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 3);
+  execution.complete();
+  await advancing3;
+  assert.equal(execution.turns[2]!.inputs[0]!.id, third.inputId);
+  assert.equal(execution.turns[2]!.inputs[0]!.lateArriving, undefined);
+});
+
+test("does not relate late arrival across different scopes", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-scope-"));
+  const execution = new MultiTurnExecution();
+  const outboundDelivery = new HeldOutboundDelivery();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, outboundDelivery, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  const delivering = runtime.advance();
+  await outboundDelivery.started.promise;
+
+  // A different place is a different scope: no prior reply of that scope, so no late mark.
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-2"),
+    payload: { text: "second" },
+  });
+  outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  assert.deepEqual(await delivering, { disposition: "delivery_completed" });
+
+  const advancing2 = runtime.advance();
+  await waitUntil(() => execution.turns.length === 2);
+  execution.complete();
+  await advancing2;
+  assert.equal(execution.turns[1]!.inputs[0]!.id, second.inputId);
+  assert.equal(execution.turns[1]!.inputs[0]!.lateArriving, undefined);
+});
+
+test("preserves the late arrival mark across a Runtime restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-late-arrival-restart-"));
+  const execution = new MultiTurnExecution();
+  const outboundDelivery = new HeldOutboundDelivery();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const firstRuntime = openRuntime({ root, execution, outboundDelivery, now: () => new Date(now) });
+
+  await firstRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = firstRuntime.advance();
+  await waitUntil(() => execution.turns.length === 1);
+
+  now += 1_500;
+  const decision = await execution.controls[0]!.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete();
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+  const delivering = firstRuntime.advance();
+  await outboundDelivery.started.promise;
+
+  now += 1_000;
+  const second = await firstRuntime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  outboundDelivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  assert.deepEqual(await delivering, { disposition: "delivery_completed" });
+  firstRuntime.close();
+
+  const restartedExecution = new MultiTurnExecution();
+  const restarted = openRuntime({ root, execution: restartedExecution, now: () => new Date(now) });
+  t.after(() => restarted.close());
+  const advancing2 = restarted.advance();
+  await waitUntil(() => restartedExecution.turns.length === 1);
+  restartedExecution.complete();
+  await advancing2;
+  assert.equal(restartedExecution.turns[0]!.inputs[0]!.id, second.inputId);
+  assert.equal(restartedExecution.turns[0]!.inputs[0]!.lateArriving, true);
+});
+
+test("fixes the interaction scope when the first Interaction joins a proactive Turn and isolates other places", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-proactive-scope-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-05T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "opportunity-1",
+    kind: "opportunity",
+    payload: { reason: "continue private work" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  now += 500;
+  const human = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "hello" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(human.inputId) === true);
+
+  // The proactive Turn is now bound to place-1: a different place must not join.
+  now += 500;
+  const otherPlace = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-2"),
+    payload: { text: "other place" },
+  });
+  await delay(30);
+  assert.equal(runtime.status().turns[0]?.inputIds.includes(otherPlace.inputId), false);
+  assert.equal(runtime.status().inputs.find(input => input.id === otherPlace.inputId)?.status, "pending");
+
+  // The same place still joins while the gate is open, even in a later wave.
+  now += 2_000;
+  const samePlace = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-3",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "same place" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(samePlace.inputId) === true);
+  const steered = execution.steered.find(input => input.id === samePlace.inputId);
+  assert.equal(steered?.lateSteered, true);
+
+  // The first reply closes the gate; a later same-scope Input goes to the next Turn.
+  now += 1_500;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+
+  now += 1_000;
+  const afterGate = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-4",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "after reply" },
+  });
+  await delay(30);
+  assert.equal(runtime.status().turns[0]?.inputIds.includes(afterGate.inputId), false);
+  assert.equal(runtime.status().inputs.find(input => input.id === afterGate.inputId)?.status, "pending");
 });

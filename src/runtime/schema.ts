@@ -16,6 +16,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (waveMigrated.user_version === 16) migrateVersion16(database);
   const lateDeliveryMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (lateDeliveryMigrated.user_version === 17) migrateVersion17(database);
+  const replyGateMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (replyGateMigrated.user_version === 18) migrateVersion18(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -48,6 +50,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       accepted_at TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'consumed', 'blocked')),
       active_turn_id TEXT,
+      late_arriving INTEGER CHECK (late_arriving IS NULL OR late_arriving IN (0, 1)),
       UNIQUE (source, source_id)
     ) STRICT;
 
@@ -61,6 +64,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       lease_expires_at TEXT NOT NULL,
       started_at TEXT NOT NULL,
       recording_day TEXT NOT NULL,
+      interaction_scope_key TEXT,
+      reply_gate_closed_at TEXT,
       ended_at TEXT,
       transcript_anchor_json TEXT,
       execution_record_json TEXT,
@@ -269,9 +274,43 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 18;
+    PRAGMA user_version = 19;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion18(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const tableExists = (table: string): boolean =>
+      database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(table) !== undefined;
+    if (tableExists("turns")) {
+      const turnColumns = database.prepare("PRAGMA table_info(turns)").all() as unknown as Array<{
+        name: string;
+      }>;
+      if (!turnColumns.some(column => column.name === "interaction_scope_key")) {
+        database.exec(`ALTER TABLE turns ADD COLUMN interaction_scope_key TEXT`);
+      }
+      if (!turnColumns.some(column => column.name === "reply_gate_closed_at")) {
+        database.exec(`ALTER TABLE turns ADD COLUMN reply_gate_closed_at TEXT`);
+      }
+    }
+    if (tableExists("inputs")) {
+      const inputColumns = database.prepare("PRAGMA table_info(inputs)").all() as unknown as Array<{
+        name: string;
+      }>;
+      if (!inputColumns.some(column => column.name === "late_arriving")) {
+        database.exec(`ALTER TABLE inputs ADD COLUMN late_arriving INTEGER`);
+      }
+    }
+    database.exec("PRAGMA user_version = 19");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion17(database: DatabaseSync): void {

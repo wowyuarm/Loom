@@ -852,6 +852,19 @@ function interactionInputText(
     "Treat it as a real current Interaction, not as part of the earlier background opportunity or continuation.",
     "",
   ] : [];
+  if (input.lateSteered) {
+    lines.push(
+      "This message arrived after your previous user message but before the final reply was committed.",
+      "Re-evaluate the current reply with this message included.",
+      "",
+    );
+  } else if (input.lateArriving) {
+    lines.push(
+      "This message arrived after your previous reply of this conversation was committed but before its delivery was confirmed.",
+      "At that moment the delivery was not yet confirmed, so the human may not have seen the previous reply; treat this as the continuation of the previous exchange, not as a fresh message.",
+      "",
+    );
+  }
   lines.push(
     "<interaction_context>",
     `Route: ${interaction.routeRef}`,

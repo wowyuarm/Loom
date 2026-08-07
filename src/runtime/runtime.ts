@@ -84,6 +84,7 @@ interface InputRow {
   interaction_wave_id: string | null;
   occurred_at: string;
   status: RuntimeInputStatus["status"];
+  late_arriving: 0 | 1 | null;
 }
 
 interface TurnRow {
@@ -235,6 +236,7 @@ interface ActiveExecution {
   finishing: boolean;
   steeringTail: Promise<void>;
   interactionWaveId: string | undefined;
+  interactionScopeKey: string | undefined;
 }
 
 interface ActiveOrientation {
@@ -313,11 +315,24 @@ class SqliteRuntime implements Runtime {
       const interactionWaveId = input.kind === "interaction"
         ? this.#joinInteractionWave(input, now, id)
         : undefined;
+      const interactionScopeKey = interactionWaveId
+        ? (this.#database.prepare(`
+            SELECT scope_key FROM interaction_waves WHERE id = ?
+          `).get(interactionWaveId) as unknown as { scope_key: string } | undefined)?.scope_key
+        : undefined;
+      // Durable arrival context: an Interaction accepted after the same scope's
+      // first message Effect was committed but before its Delivery was confirmed
+      // was sent while the human likely had not seen the previous reply yet.
+      // This fact is fixed at accept time; a Delivery that confirms later must
+      // not erase it.
+      const lateArriving = interactionScopeKey
+        ? this.#deliveryUnconfirmedAfterCommit(interactionScopeKey) ? 1 : 0
+        : 0;
       const result = this.#database.prepare(`
         INSERT OR IGNORE INTO inputs (
           id, source, source_id, kind, payload_json, interaction_json,
-          interaction_wave_id, occurred_at, accepted_at, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+          interaction_wave_id, occurred_at, accepted_at, status, late_arriving
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
       `).run(
         id,
         input.source,
@@ -328,6 +343,7 @@ class SqliteRuntime implements Runtime {
         interactionWaveId ?? null,
         input.occurredAt ?? now.toISOString(),
         now.toISOString(),
+        lateArriving,
       );
       if (result.changes === 1) {
         if (input.kind === "interaction") {
@@ -335,7 +351,12 @@ class SqliteRuntime implements Runtime {
           this.#discardUnclaimedOpportunities(now);
         }
         this.#recordTransition("input", id, null, "pending", "accepted", now, null);
-        return { disposition: "accepted", inputId: id, interactionWaveId } as const;
+        return {
+          disposition: "accepted",
+          inputId: id,
+          interactionWaveId,
+          interactionScopeKey,
+        } as const;
       }
       const duplicate = this.#findInput(input.source, input.sourceId);
       if (!duplicate) throw new Error("Input dedupe conflict did not preserve an existing input");
@@ -350,19 +371,56 @@ class SqliteRuntime implements Runtime {
         }
       }
       const active = this.#active;
-      if (active && !active.finishing
-        && input.kind === "interaction"
-        && (active.interactionWaveId === undefined
-          || active.interactionWaveId === accepted.interactionWaveId)) {
-        active.interactionWaveId ??= accepted.interactionWaveId;
-        const steering = active.steeringTail.then(async () => {
-          await this.#steerInput(active, id);
-        });
-        active.steeringTail = steering.catch(() => {});
+      if (active && !active.finishing && input.kind === "interaction") {
+        const sameWave = active.interactionWaveId === undefined
+          || active.interactionWaveId === accepted.interactionWaveId;
+        if (sameWave) {
+          active.interactionWaveId ??= accepted.interactionWaveId;
+        }
+        // Wave mismatch is not a dead end: an Input of the same scope may still
+        // steer into the running Turn while its reply gate is open. The
+        // authoritative gate check happens inside the steering transaction.
+        const scopeMatches = active.interactionScopeKey !== undefined
+          && active.interactionScopeKey === accepted.interactionScopeKey;
+        if (sameWave || scopeMatches) {
+          const steering = active.steeringTail.then(async () => {
+            await this.#steerInput(active, id);
+          });
+          active.steeringTail = steering.catch(() => {});
+        }
       }
       return { disposition: "accepted", inputId: id };
     }
     return accepted;
+  }
+
+  #deliveryUnconfirmedAfterCommit(scopeKey: string): boolean {
+    // Lock onto the most recently closed Turn of this scope. A no_reply Turn
+    // has no message Effect and must count as a clean boundary: Inputs that
+    // arrive after it are not late, even if an older reply is still
+    // unconfirmed. Only the latest Turn's own reply (if any) decides.
+    // Tie-break by rowid (insert order), not by id (a random UUID): the
+    // one_running_turn index serializes Turns, so start order equals gate
+    // close order and rowid DESC is the reliable "latest closed" ordering.
+    const prior = this.#database.prepare(`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM effects e WHERE e.turn_id = t.id AND e.kind = 'message'
+        ) AS has_message,
+        EXISTS (
+          SELECT 1 FROM effects e
+          WHERE e.turn_id = t.id AND e.kind = 'message'
+            AND EXISTS (
+              SELECT 1 FROM delivery_attempts da
+              WHERE da.effect_id = e.id AND da.status = 'delivered'
+            )
+        ) AS delivered
+      FROM turns t
+      WHERE t.interaction_scope_key = ? AND t.reply_gate_closed_at IS NOT NULL
+      ORDER BY t.reply_gate_closed_at DESC, t.rowid DESC
+      LIMIT 1
+    `).get(scopeKey) as unknown as { has_message: number; delivered: number } | undefined;
+    return prior?.has_message === 1 && prior?.delivered !== 1;
   }
 
   requeueInput(inputId: string): RequeueInputResult {
@@ -739,6 +797,7 @@ class SqliteRuntime implements Runtime {
             finishing: false,
             steeringTail: Promise.resolve(),
             interactionWaveId: claimed.interactionWaveId,
+            interactionScopeKey: claimed.interactionScopeKey,
           };
           this.#active = active;
           if (claimed.interactionWaveId) {
@@ -2828,6 +2887,7 @@ class SqliteRuntime implements Runtime {
     recordingDay: string;
     input: ExecutionInput;
     interactionWaveId?: string;
+    interactionScopeKey?: string;
     executionState?: JsonValue;
   } | undefined {
     return this.#transaction(() => {
@@ -2835,13 +2895,13 @@ class SqliteRuntime implements Runtime {
       const existingSegment = this.#readActiveSegment();
       if (existingSegment?.status === "closing") return undefined;
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json, interaction_json, interaction_wave_id, occurred_at
+        SELECT id, kind, payload_json, interaction_json, interaction_wave_id, occurred_at, late_arriving
         FROM inputs
         WHERE status = 'pending'
         ORDER BY accepted_at, id
         LIMIT 1
       `).get() as unknown as Pick<InputRow,
-        "id" | "kind" | "payload_json" | "interaction_json" | "interaction_wave_id" | "occurred_at"
+        "id" | "kind" | "payload_json" | "interaction_json" | "interaction_wave_id" | "occurred_at" | "late_arriving"
       > | undefined;
       if (!input) return undefined;
 
@@ -2868,12 +2928,17 @@ class SqliteRuntime implements Runtime {
         WHERE name = 'fencing_token'
         RETURNING value
       `).get() as unknown as { value: number };
+      const interactionScopeKey = input.interaction_wave_id
+        ? (this.#database.prepare(`
+            SELECT scope_key FROM interaction_waves WHERE id = ?
+          `).get(input.interaction_wave_id) as unknown as { scope_key: string } | undefined)?.scope_key
+        : undefined;
       const turnId = this.#nextId();
       this.#database.prepare(`
         INSERT INTO turns (
           id, segment_id, status, lease_owner, fencing_token, lease_expires_at, started_at,
-          recording_day
-        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?)
+          recording_day, interaction_scope_key
+        ) VALUES (?, ?, 'running', ?, ?, ?, ?, ?, ?)
       `).run(
         turnId,
         segmentId,
@@ -2882,6 +2947,7 @@ class SqliteRuntime implements Runtime {
         new Date(now.getTime() + this.#leaseDurationMs).toISOString(),
         now.toISOString(),
         recordingDay,
+        interactionScopeKey ?? null,
       );
       this.#startAgentRun(turnId, "main-agent", now);
       this.#database.prepare(`
@@ -2904,8 +2970,10 @@ class SqliteRuntime implements Runtime {
             : {}),
           occurredAt: input.occurred_at,
           inclusionPosition: 1,
+          ...(input.late_arriving === 1 ? { lateArriving: true } : {}),
         },
         ...(input.interaction_wave_id ? { interactionWaveId: input.interaction_wave_id } : {}),
+        ...(interactionScopeKey ? { interactionScopeKey } : {}),
         ...this.#readExecutionState(),
       };
     });
@@ -3210,9 +3278,13 @@ class SqliteRuntime implements Runtime {
 
     return this.#transaction(() => {
       const turn = this.#database.prepare(`
-        SELECT id FROM turns
+        SELECT id, interaction_scope_key, reply_gate_closed_at FROM turns
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
-      `).get(turnId, fencingToken, this.#ownerId);
+      `).get(turnId, fencingToken, this.#ownerId) as unknown as {
+        id: string;
+        interaction_scope_key: string | null;
+        reply_gate_closed_at: string | null;
+      } | undefined;
       if (!turn) {
         throw new Error(`Turn ${turnId} no longer accepts an interaction decision from lease ${fencingToken}`);
       }
@@ -3246,6 +3318,54 @@ class SqliteRuntime implements Runtime {
         if (coverage.included !== coverage.total) {
           throw new Error("Interaction wave has newer Inputs; review them before replying");
         }
+      }
+      // Reply gate coverage: every Interaction of this scope accepted while
+      // the gate was open must be included in the Turn before the first
+      // reply may be committed. A later commit (after_send=continue) re-checks
+      // the same window with the closed boundary, so post-commit arrivals are
+      // never demanded from a running Turn.
+      if (turn.interaction_scope_key !== null) {
+        const boundary = turn.reply_gate_closed_at ?? this.#now().toISOString();
+        // Coverage is judged by this Turn's own rows only. An Input whose rows
+        // live in an earlier failed or interrupted Turn is requeued and gets a
+        // fresh row here when re-claimed, so rows in other Turns must not
+        // exclude it from the count (they belong to the requeue path, not to
+        // another live Turn: claims are serialized).
+        const scopeCoverage = this.#database.prepare(`
+          SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE
+              WHEN i.status = 'consumed' OR EXISTS (
+                SELECT 1
+                FROM turn_inputs
+                WHERE turn_inputs.input_id = i.id
+                  AND turn_inputs.turn_id = ?
+                  AND turn_inputs.inclusion_status = 'included'
+              ) THEN 1
+              ELSE 0
+            END), 0) AS included
+          FROM inputs i
+          JOIN interaction_waves w ON w.id = i.interaction_wave_id
+          WHERE i.kind = 'interaction' AND i.status IN ('pending', 'active')
+            AND w.scope_key = ?
+            AND i.accepted_at <= ?
+        `).get(turnId, turn.interaction_scope_key, boundary) as unknown as {
+          total: number;
+          included: number;
+        };
+        if (scopeCoverage.included !== scopeCoverage.total) {
+          throw new Error("Interaction scope has newer Inputs; review them before replying");
+        }
+      }
+      // Atomically close the reply gate: the first committed reply (send or
+      // no_reply) fixes the boundary. Anything arriving after this point
+      // belongs to the next Turn.
+      if (turn.interaction_scope_key !== null && turn.reply_gate_closed_at === null) {
+        this.#database.prepare(`
+          UPDATE turns SET reply_gate_closed_at = ?
+          WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
+            AND reply_gate_closed_at IS NULL
+        `).run(this.#now().toISOString(), turnId, fencingToken, this.#ownerId);
       }
       if (decision.outcome === "no_reply") return { outcome: "no_reply" };
       return {
@@ -3594,15 +3714,63 @@ class SqliteRuntime implements Runtime {
   ): Promise<void> {
     const prepared = this.#transaction(() => {
       const input = this.#database.prepare(`
-        SELECT id, kind, payload_json, interaction_json, occurred_at
+        SELECT id, kind, payload_json, interaction_json, occurred_at, interaction_wave_id, late_arriving
         FROM inputs WHERE id = ? AND status = 'pending'
-      `).get(inputId) as unknown as Pick<InputRow, "id" | "kind" | "payload_json" | "interaction_json" | "occurred_at"> | undefined;
+      `).get(inputId) as unknown as Pick<InputRow,
+        "id" | "kind" | "payload_json" | "interaction_json" | "occurred_at" | "interaction_wave_id" | "late_arriving"
+      > | undefined;
       if (!input) return undefined;
       const turn = this.#database.prepare(`
-        SELECT id FROM turns
+        SELECT id, interaction_scope_key, reply_gate_closed_at FROM turns
         WHERE id = ? AND status = 'running' AND fencing_token = ? AND lease_owner = ?
-      `).get(active.turnId, active.fencingToken, this.#ownerId);
+      `).get(active.turnId, active.fencingToken, this.#ownerId) as unknown as {
+        id: string;
+        interaction_scope_key: string | null;
+        reply_gate_closed_at: string | null;
+      } | undefined;
       if (!turn) return undefined;
+      // Authoritative reply gate: an Interaction may join this Turn only when
+      // its scope matches the Turn and the gate is still open. A closed gate
+      // means the first reply was already committed; the Input stays pending
+      // for the next Turn.
+      let lateSteered = false;
+      if (input.kind === "interaction") {
+        const inputScope = input.interaction_wave_id
+          ? (this.#database.prepare(`
+              SELECT scope_key FROM interaction_waves WHERE id = ?
+            `).get(input.interaction_wave_id) as unknown as { scope_key: string } | undefined)?.scope_key
+          : undefined;
+        if (!inputScope) return undefined;
+        if (turn.interaction_scope_key === null) {
+          // A proactive (non-interaction) Turn hosting its first Interaction
+          // becomes an Interaction Turn for that route+place: fix the scope
+          // atomically and mirror it in memory so later Interactions are held
+          // to the same scope and the first reply closes the gate.
+          this.#database.prepare(`
+            UPDATE turns SET interaction_scope_key = ?
+            WHERE id = ? AND status = 'running' AND interaction_scope_key IS NULL
+          `).run(inputScope, active.turnId);
+          turn.interaction_scope_key = inputScope;
+          active.interactionScopeKey = inputScope;
+        }
+        if (inputScope !== turn.interaction_scope_key) {
+          return undefined;
+        }
+        if (turn.reply_gate_closed_at !== null) return undefined;
+        // The baseline for "late" is the first user Interaction of this Turn:
+        // for a proactive Turn that is not the position-1 (opportunity) input.
+        const firstInputWave = this.#database.prepare(`
+          SELECT inputs.interaction_wave_id
+          FROM turn_inputs
+          JOIN inputs ON inputs.id = turn_inputs.input_id
+          WHERE turn_inputs.turn_id = ? AND inputs.kind = 'interaction'
+          ORDER BY turn_inputs.position
+          LIMIT 1
+        `).get(active.turnId) as unknown as { interaction_wave_id: string | null } | undefined;
+        lateSteered = firstInputWave !== undefined
+          && firstInputWave.interaction_wave_id !== null
+          && firstInputWave.interaction_wave_id !== input.interaction_wave_id;
+      }
       const next = this.#database.prepare(`
         SELECT COALESCE(MAX(position), 0) + 1 AS position FROM turn_inputs WHERE turn_id = ?
       `).get(active.turnId) as unknown as { position: number };
@@ -3620,6 +3788,8 @@ class SqliteRuntime implements Runtime {
             : {}),
           occurredAt: input.occurred_at,
           inclusionPosition: next.position,
+          ...(lateSteered ? { lateSteered: true } : {}),
+          ...(input.late_arriving === 1 ? { lateArriving: true } : {}),
         } satisfies ExecutionInput,
       };
     });
