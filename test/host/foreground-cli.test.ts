@@ -11,6 +11,8 @@ import test from "node:test";
 import { openLoomHost } from "../../src/host/index.js";
 import { initializeLoomInstance } from "../../src/instance/index.js";
 import { openRuntime } from "../../src/runtime/index.js";
+import { createTimePolicy } from "../../src/configuration/index.js";
+import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 
 test("initializes the default ~/.loom Instance through the foreground CLI", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-"));
@@ -138,6 +140,167 @@ test("requeues one blocked Input through the running Host", async t => {
     host.status().instance.runtime.inputs.find(input => input.id === accepted.inputId)?.status,
     "pending",
   );
+});
+
+test("requeues one held Cognitive Organ work through the running Host", async t => {
+  const root = await preparedInstanceRoot();
+  let now = new Date("2026-07-19T12:00:00.000Z");
+  const attentionHang: { promise: Promise<{ outcome: "no_change"; runId: string; path: string }>; resolve: () => void } = {
+    promise: new Promise(() => {}),
+    resolve: () => {},
+  };
+  let resolveStarted!: () => void;
+  const attentionStarted = new Promise<void>(resolve => { resolveStarted = resolve; });
+  const runtime = openRuntime({
+    root: path.join(root, "runtime"),
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState({ version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.resolve({
+            outcome: "completed",
+            inputAnchors: request.inputs.map(input => ({
+              inputId: input.id,
+              transcriptAnchor: {
+                sourceId: request.recordingDay,
+                sessionId: "session-1",
+                entryId: `input-${input.id}`,
+              },
+            })),
+            transcriptAnchor: {
+              sourceId: request.recordingDay,
+              sessionId: "session-1",
+              entryId: `entry-${request.turnId}`,
+            },
+            executionState: { version: 1, turnId: request.turnId },
+            executionRecord: { version: 1, turnId: request.turnId },
+          }),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+    activityLifecycle: {
+      freeze: async request => ({
+        activity: {
+          version: 1,
+          segmentId: request.segment.id,
+          recordingDay: request.segment.recordingDay,
+          openedAt: request.segment.openedAt,
+          closedAt: request.segment.closedAt,
+          events: [],
+          turns: [],
+        },
+        successorExecutionState: { version: 1 },
+      }),
+    },
+    activityRecorder: {
+      record: async activity => ({
+        version: 1,
+        segmentId: activity.segmentId,
+        runId: "record-day-one",
+        recordedAt: "2026-07-19T12:00:00.000Z",
+        daily: { status: "no_change", path: "daily/2026-07-19.md" },
+        episodes: [],
+      }),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        resolveStarted();
+        return attentionHang.promise;
+      },
+      cancel: async () => {},
+    },
+    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+    now: () => now,
+  });
+
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "day-one",
+    kind: "interaction",
+    payload: { text: "day one" },
+  });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+  assert.deepEqual(
+    await runtime.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    { disposition: "waiting", nextRunAt: "2026-07-19T12:00:00.001Z" },
+  );
+  now = new Date("2026-07-19T12:00:01.000Z");
+  const heldRun = runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  await attentionStarted;
+  // The human input preempts the held organ; its cancel is ignored, so the
+  // grace expiry persists intervention_required in the ledger.
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "human-while-held",
+    kind: "interaction",
+    payload: { text: "please answer" },
+  });
+  runtime.close();
+  // heldRun intentionally stays unsettled: the organ never released.
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+
+  // The Host status exposes the discoverable local work id.
+  const held = host.status().instance.runtime.cognitiveOrganWork
+    .find(work => work.organ === "attention-maintainer")!;
+  assert.match(held.workId, /^attention-maintainer-\d+$/);
+  assert.equal(held.status, "intervention_required");
+
+  const result = await runCli(cli, ["requeue-organ", "--root", root, held.workId], process.env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), `Requeued Cognitive Organ work ${held.workId}`);
+
+  // The successor is the current cycle, referencing the held work by its local id.
+  const successor = host.status().instance.runtime.cognitiveOrganWork
+    .find(work => work.organ === "attention-maintainer")!;
+  assert.equal(successor.status, "running");
+  assert.equal(successor.attemptCount, 1);
+  assert.equal(successor.requeuedFrom, held.workId);
+
+  // Human status output shows the current cycle (the held record is history
+  // after the requeue) with local ids only, never raw error text.
+  const status = await runCli(cli, ["status", "--root", root], process.env);
+  assert.equal(status.code, 0, status.stderr);
+  assert.match(status.stdout, /Cognitive Organ Work:/);
+  assert.match(
+    status.stdout,
+    new RegExp(`attention-maintainer-\\d+: running, attempt 1, requeued from ${held.workId}`),
+  );
+  // The running successor also shows its per-attempt soft deadline, but no
+  // transcript or result reference yet.
+  assert.match(status.stdout, /soft deadline \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  assert.doesNotMatch(status.stdout, /transcript organs\/attention-maintainer/);
+  assert.doesNotMatch(status.stdout, /lastError/);
+
+  // Unknown and missing ids fail with a clear message before touching anything.
+  const unknown = await runCli(cli, ["requeue-organ", "--root", root, "attention-maintainer-999999"], process.env);
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.stderr, /Unknown cognitive organ work attention-maintainer-999999/);
+  const missing = await runCli(cli, ["requeue-organ", "--root", root], process.env);
+  assert.equal(missing.code, 1);
+  assert.match(missing.stderr, /Usage: loom requeue-organ/);
 });
 
 test("runs one prepared Instance until a termination signal requests graceful stop", async t => {

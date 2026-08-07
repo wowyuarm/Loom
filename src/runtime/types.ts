@@ -1,4 +1,5 @@
 import type { TimePolicy } from "../configuration/index.js";
+import type { CognitiveOrganName } from "./cognitive-organ-execution.js";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type InputKind = "interaction" | "opportunity" | "continuation";
@@ -524,6 +525,7 @@ export interface RuntimeStatus {
   };
   activities: RuntimeActivityStatus[];
   threadMaintenance: RuntimeThreadMaintenanceStatus[];
+  cognitiveOrganWork: RuntimeCognitiveOrganWorkStatus[];
   attentionMaintenance?: RuntimeAttentionMaintenanceStatus;
   memoryReflection?: RuntimeMemoryReflectionStatus;
   proactivePulse?: RuntimePulseStatus;
@@ -537,6 +539,32 @@ export interface RuntimeIntegrityWarning {
   kind: "unexplained_terminal_turn_segment";
   segmentId: string;
   turnIds: string[];
+}
+
+/**
+ * Bounded operator-facing summary of one Cognitive Organ budget cycle.
+ * Deliberately excludes raw error text; failureCategory is a stable enum and
+ * domainRef is an internal identifier without message/Workspace content.
+ */
+export interface RuntimeCognitiveOrganWorkStatus {
+  /** Stable opaque local id (`organ-<rowid>`), usable with requeue-organ. */
+  workId: string;
+  organ: CognitiveOrganName;
+  domainRef: string;
+  status: "running" | "retry_wait" | "blocked" | "cancelled" | "completed" | "intervention_required";
+  attemptCount: number;
+  createdAt: string;
+  totalDeadlineAt: string;
+  nextAttemptAt?: string;
+  requeuedFrom?: string;
+  lastCancelReason?: string;
+  lastFailureCategory?: string;
+  /** Soft deadline of the work's current (latest) attempt. */
+  softDeadlineAt?: string;
+  /** Transcript reference produced by the current attempt, when completed. */
+  transcriptRef?: string;
+  /** Result reference produced by the current attempt, when completed. */
+  resultRef?: string;
 }
 
 export type RuntimeAgentName =
@@ -690,9 +718,14 @@ export type RunOpportunityPulseResult =
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; nextRunAt: string; error: string };
 
+export interface RequeueCognitiveOrganWorkResult {
+  disposition: "requeued";
+}
+
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   requeueInput(inputId: string): RequeueInputResult;
+  requeueCognitiveOrganWork(localWorkId: string): RequeueCognitiveOrganWorkResult;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
   runAfterChatContinuation(options: RunAfterChatContinuationOptions): Promise<RunAfterChatContinuationResult>;

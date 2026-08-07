@@ -402,6 +402,15 @@ test("fixes the Model Runtime Revision per attempt and links transcript and resu
   now = new Date("2026-07-19T11:01:00.001Z");
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
 
+  // The operator status carries the completed attempt's per-attempt soft
+  // deadline and its transcript and result references.
+  const done = runtime.status().cognitiveOrganWork
+    .find(entry => entry.organ === "life-recorder")!;
+  assert.equal(done.status, "completed");
+  assert.ok(done.softDeadlineAt);
+  assert.equal(done.transcriptRef, "organs/life-recorder/run-2.jsonl");
+  assert.equal(done.resultRef, "daily/2026-07-19.md");
+
   runtime.close();
   const db = new DatabaseSync(path.join(root, "runtime.db"));
   const ledger = readLedger(db);
@@ -745,4 +754,692 @@ test("a retry continues the same reflection day on the same work", async t => {
     { workId: work[0]!.id, attemptNumber: 1, status: "failed" },
     { workId: work[0]!.id, attemptNumber: 2, status: "completed" },
   ]);
+});
+
+test("requeue refuses an active attempt, unknown ids and empty ids", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-active-"));
+  let now = new Date("2026-07-19T12:00:00.000Z");
+  const attentionHang = deferred<{ outcome: "no_change"; runId: string; path: string }>();
+  const attentionStarted = deferred<void>();
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record-requeue-active"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionStarted.resolve();
+        return attentionHang.promise;
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "day-one",
+    kind: "interaction",
+    payload: { text: "day one" },
+  });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+  assert.deepEqual(
+    await runtime.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    { disposition: "waiting", nextRunAt: "2026-07-19T12:00:00.001Z" },
+  );
+
+  now = new Date("2026-07-19T12:00:01.000Z");
+  const attentionRun = runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  await attentionStarted.promise;
+
+  // Status exposes the discoverable local id, never a raw UUID or error text.
+  const work = runtime.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.match(work.workId, /^attention-maintainer-\d+$/);
+  assert.equal(work.status, "running");
+  assert.equal("lastError" in work, false);
+  assert.equal(work.lastFailureCategory, undefined);
+
+  // An active attempt blocks requeue regardless of the ledger state.
+  assert.throws(() => runtime.requeueCognitiveOrganWork(work.workId), /has an active attempt/);
+  assert.throws(
+    () => runtime.requeueCognitiveOrganWork("attention-maintainer-999999"),
+    /Unknown cognitive organ work attention-maintainer-999999/,
+  );
+  assert.throws(() => runtime.requeueCognitiveOrganWork("  "), /requires a work id/);
+  // attentionRun intentionally stays unsettled: the organ never releases.
+});
+
+test("requeue rejects retry_wait and completed work without touching the ledger", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-states-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  let attempts = 0;
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("provider unavailable");
+        return receiptFor(activity, `record-${attempts}`);
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "pending-recording",
+    kind: "interaction",
+    payload: { text: "record me" },
+  });
+  await runtime.advance();
+  await runtime.closeActivity();
+  assert.deepEqual(await runtime.advance(), { disposition: "activity_recording_failed" });
+
+  const waiting = runtime.status().cognitiveOrganWork
+    .find(entry => entry.organ === "life-recorder")!;
+  assert.equal(waiting.status, "retry_wait");
+  assert.equal(waiting.lastFailureCategory, "provider");
+  assert.equal("lastError" in waiting, false);
+  assert.throws(() => runtime.requeueCognitiveOrganWork(waiting.workId), /in state retry_wait/);
+
+  // The rejected requeue did not touch the row: the same work still completes
+  // through the normal retry path once the backoff has elapsed.
+  now = new Date("2026-07-19T11:01:00.001Z");
+  assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
+  const done = runtime.status().cognitiveOrganWork
+    .find(entry => entry.organ === "life-recorder")!;
+  assert.equal(done.status, "completed");
+  // The completed work's domain input is gone (the activity is recorded), so
+  // the runtime-level eligibility check refuses it as stale; the ledger-level
+  // state rejection is covered by the execution unit tests.
+  assert.throws(() => runtime.requeueCognitiveOrganWork(done.workId), /no Activity awaits recording/);
+});
+
+test("intervention_required survives a restart; requeue runs the successor through the organ entry", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-restart-"));
+  let now = new Date("2026-07-19T12:00:00.000Z");
+  const attentionHang = deferred<{ outcome: "no_change"; runId: string; path: string }>();
+  const attentionStarted = deferred<void>();
+  const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
+  const first = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record-day-one"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionStarted.resolve();
+        return attentionHang.promise;
+      },
+      cancel: async () => {},
+    },
+    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+    organCancelTimer: (delayMs, callback) => {
+      timerCalls.push({ delayMs, callback });
+      return { clear: () => {} };
+    },
+    now: () => now,
+  });
+
+  await first.acceptInput({
+    source: "test",
+    sourceId: "day-one",
+    kind: "interaction",
+    payload: { text: "day one" },
+  });
+  await first.advance();
+  await first.closeActivity();
+  await first.advance();
+  assert.deepEqual(
+    await first.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    { disposition: "waiting", nextRunAt: "2026-07-19T12:00:00.001Z" },
+  );
+
+  now = new Date("2026-07-19T12:00:01.000Z");
+  const heldRun = first.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  await attentionStarted.promise;
+
+  // The soft deadline fires; the organ ignores the cancel, so the grace
+  // expiry persists intervention_required in the ledger. (The recording claim
+  // registered the first timer; the held attention claim registered the last.)
+  now = new Date("2026-07-19T12:10:01.000Z");
+  const attentionTimer = timerCalls[timerCalls.length - 1]!;
+  assert.equal(attentionTimer.delayMs, COGNITIVE_ORGAN_POLICY.softDeadlineMs);
+  attentionTimer.callback();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(
+    first.status().cognitiveOrganWork.find(entry => entry.organ === "attention-maintainer")?.status,
+    "intervention_required",
+  );
+  first.close();
+  // heldRun intentionally stays unsettled: the organ never released.
+
+  // Restart: reconcile leaves the held cycle untouched, so the operator can
+  // requeue it from the new process.
+  now = new Date("2026-07-19T12:05:00.000Z");
+  let attentionCalls = 0;
+  const recovered = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record-day-one"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionCalls += 1;
+        return { outcome: "no_change", runId: "attention-after-requeue", path: "attention/2026-07-20.md" };
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => recovered.close());
+
+  const held = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.equal(held.status, "intervention_required");
+  assert.equal("lastError" in held, false);
+  assert.throws(() => recovered.requeueCognitiveOrganWork("attention-maintainer-999999"), /Unknown/);
+
+  assert.deepEqual(recovered.requeueCognitiveOrganWork(held.workId), { disposition: "requeued" });
+
+  // The successor is a fresh budget cycle referencing the held work by its
+  // local id; the held record itself stays untouched.
+  const successor = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.notEqual(successor.workId, held.workId);
+  assert.equal(successor.status, "running");
+  assert.equal(successor.attemptCount, 1);
+  assert.equal(successor.requeuedFrom, held.workId);
+  // A running attempt exposes its per-attempt soft deadline; transcript and
+  // result references are omitted until the attempt completes.
+  assert.ok(successor.softDeadlineAt);
+  assert.equal("transcriptRef" in successor, false);
+  assert.equal("resultRef" in successor, false);
+
+  // The organ entry claims the successor through the normal path and runs its
+  // first attempt; domain preconditions were checked before the claim.
+  assert.deepEqual(
+    await recovered.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    {
+      disposition: "completed",
+      result: { outcome: "no_change", runId: "attention-after-requeue", path: "attention/2026-07-20.md" },
+      nextRunAt: "2026-07-19T12:06:00.000Z",
+    },
+  );
+  assert.equal(attentionCalls, 1);
+  const done = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.equal(done.status, "completed");
+  assert.equal(done.attemptCount, 1);
+  assert.equal(done.requeuedFrom, held.workId);
+  assert.ok(done.softDeadlineAt);
+  assert.equal(done.transcriptRef, "organs/attention-maintainer/attention-after-requeue.jsonl");
+  assert.equal(done.resultRef, "attention/2026-07-20.md");
+
+  // Immutable history: the held record and the successor are both preserved,
+  // linked by the successor's requeued_from reference to the same domain ref.
+  const db = new DatabaseSync(path.join(root, "runtime.db"));
+  const attentionWork = db.prepare(`
+    SELECT id, domain_ref, status, attempt_count, requeued_from
+    FROM cognitive_work WHERE organ = 'attention-maintainer'
+    ORDER BY created_at, rowid
+  `).all() as Array<Record<string, unknown>>;
+  db.close();
+  assert.equal(attentionWork.length, 2);
+  assert.equal(attentionWork[0]!.status, "intervention_required");
+  assert.equal(attentionWork[0]!.requeued_from, null);
+  assert.equal(attentionWork[1]!.status, "completed");
+  assert.equal(attentionWork[1]!.requeued_from, attentionWork[0]!.id);
+  assert.equal(attentionWork[1]!.domain_ref, attentionWork[0]!.domain_ref);
+});
+
+test("requeue refuses attention work whose window moved on; a successor whose domain advanced is not claimed", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-window-"));
+  let now = new Date("2026-07-19T12:00:00.000Z");
+  const attentionHang = deferred<{ outcome: "no_change"; runId: string; path: string }>();
+  const attentionStarted = deferred<void>();
+  const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
+  const first = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record-day-one"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionStarted.resolve();
+        return attentionHang.promise;
+      },
+      cancel: async () => {},
+    },
+    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+    organCancelTimer: (delayMs, callback) => {
+      timerCalls.push({ delayMs, callback });
+      return { clear: () => {} };
+    },
+    now: () => now,
+  });
+
+  // One recorded Activity; the attention window is 1 and its run hangs.
+  await first.acceptInput({
+    source: "test",
+    sourceId: "day-one",
+    kind: "interaction",
+    payload: { text: "day one" },
+  });
+  await first.advance();
+  await first.closeActivity();
+  await first.advance();
+  assert.deepEqual(
+    await first.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    { disposition: "waiting", nextRunAt: "2026-07-19T12:00:00.001Z" },
+  );
+  now = new Date("2026-07-19T12:00:01.000Z");
+  const heldRun = first.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  await attentionStarted.promise;
+  now = new Date("2026-07-19T12:10:01.000Z");
+  timerCalls[timerCalls.length - 1]!.callback();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(
+    first.status().cognitiveOrganWork.find(entry => entry.organ === "attention-maintainer")?.status,
+    "intervention_required",
+  );
+  first.close();
+  // heldRun intentionally stays unsettled: the organ never released.
+
+  // The domain moves on while the held work awaits recovery: the schedule
+  // window advances past the held window.
+  let db = new DatabaseSync(path.join(root, "runtime.db"));
+  db.prepare(`UPDATE attention_maintenance SET window_end_sequence = 2 WHERE singleton = 1`).run();
+  db.close();
+
+  let attentionCalls = 0;
+  const recovered = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record-day-one"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionCalls += 1;
+        return { outcome: "no_change", runId: "attention-after-requeue", path: "attention/2026-07-20.md" };
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => recovered.close());
+
+  const held = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.equal(held.status, "intervention_required");
+
+  // Requeue refuses a moved-on window: a successor for it could never run,
+  // and no work is created.
+  assert.throws(
+    () => recovered.requeueCognitiveOrganWork(held.workId),
+    /superseded by a newer attention window/,
+  );
+  assert.equal(
+    recovered.status().cognitiveOrganWork.find(entry => entry.organ === "attention-maintainer")?.workId,
+    held.workId,
+  );
+
+  // Requeue while the window still matches: the successor is created, then
+  // the domain advances again before the entry point runs.
+  db = new DatabaseSync(path.join(root, "runtime.db"));
+  db.prepare(`UPDATE attention_maintenance SET window_end_sequence = 1 WHERE singleton = 1`).run();
+  db.close();
+  assert.deepEqual(recovered.requeueCognitiveOrganWork(held.workId), { disposition: "requeued" });
+  const successor = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.equal(successor.status, "running");
+  assert.equal(successor.requeuedFrom, held.workId);
+
+  db = new DatabaseSync(path.join(root, "runtime.db"));
+  db.prepare(`UPDATE attention_maintenance SET window_end_sequence = 2 WHERE singleton = 1`).run();
+  db.close();
+  assert.deepEqual(
+    await recovered.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    }),
+    { disposition: "busy" },
+  );
+  // The successor is never executed against the moved-on window; it stays
+  // running and untouched.
+  assert.equal(attentionCalls, 0);
+  const untouched = recovered.status().cognitiveOrganWork
+    .find(entry => entry.organ === "attention-maintainer")!;
+  assert.equal(untouched.workId, successor.workId);
+  assert.equal(untouched.status, "running");
+  assert.equal(untouched.attemptCount, 1);
+});
+
+test("requeue refuses stale Life Recorder, Reflection and Thread work whose domain moved on", async t => {
+  // Life Recorder: the FIFO recording queue is empty because the held
+  // activity was recorded elsewhere.
+  {
+    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-life-"));
+    let now = new Date("2026-07-19T12:00:00.000Z");
+    const recordHang = deferred<Awaited<ReturnType<NonNullable<ActivityRecorder["record"]>>>>();
+    const recordStarted = deferred<void>();
+    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
+    const first = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async () => {
+          recordStarted.resolve();
+          return recordHang.promise;
+        },
+        cancel: async () => {},
+      },
+      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+      organCancelTimer: (delayMs, callback) => {
+        timerCalls.push({ delayMs, callback });
+        return { clear: () => {} };
+      },
+      now: () => now,
+    });
+    await first.acceptInput({
+      source: "test",
+      sourceId: "day-one",
+      kind: "interaction",
+      payload: { text: "day one" },
+    });
+    await first.advance();
+    await first.closeActivity();
+    const recordingRun = first.advance();
+    await recordStarted.promise;
+    now = new Date("2026-07-19T12:10:01.000Z");
+    timerCalls[0]!.callback();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(
+      first.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder")?.status,
+      "intervention_required",
+    );
+    first.close();
+    // recordingRun intentionally stays unsettled: the recorder never released.
+
+    // The activity is recorded elsewhere while held: no input awaits the
+    // organ, so a successor could never run.
+    let db = new DatabaseSync(path.join(root, "runtime.db"));
+    db.prepare(`UPDATE activities SET status = 'recorded' WHERE status <> 'recorded'`).run();
+    db.close();
+    const recovered = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async activity => receiptFor(activity, "record-day-one"),
+        cancel: async () => {},
+      },
+      now: () => now,
+    });
+    t.after(() => recovered.close());
+    const held = recovered.status().cognitiveOrganWork
+      .find(entry => entry.organ === "life-recorder")!;
+    assert.equal(held.status, "intervention_required");
+    assert.throws(
+      () => recovered.requeueCognitiveOrganWork(held.workId),
+      /no Activity awaits recording/,
+    );
+  }
+
+  // Memory Reflector: the schedule's next day moved past the held day.
+  {
+    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-reflection-"));
+    let now = new Date("2026-07-19T12:00:00.000Z");
+    const reflectHang = deferred<{ outcome: "no_change"; runId: string; changedMaterials: string[] }>();
+    const reflectStarted = deferred<void>();
+    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
+    const first = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async activity => receiptFor(activity, "record-day-one"),
+        cancel: async () => {},
+      },
+      memoryReflection: {
+        reflect: async () => {
+          reflectStarted.resolve();
+          return reflectHang.promise;
+        },
+        cancel: async () => {},
+      },
+      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+      organCancelTimer: (delayMs, callback) => {
+        timerCalls.push({ delayMs, callback });
+        return { clear: () => {} };
+      },
+      now: () => now,
+    });
+    await first.acceptInput({
+      source: "test",
+      sourceId: "day-one",
+      kind: "interaction",
+      payload: { text: "day one" },
+    });
+    await first.advance();
+    await first.closeActivity();
+    await first.advance();
+    assert.deepEqual(
+      await first.runMemoryReflection({
+        observedAt: now,
+        delayMs: 0,
+        retryDelayMs: 30_000,
+        agentWork: "allow",
+      }),
+      { disposition: "waiting", nextRunAt: "2026-07-20T03:00:00.000Z" },
+    );
+    now = new Date("2026-07-20T04:00:01.000Z");
+    const heldRun = first.runMemoryReflection({
+      observedAt: now,
+      delayMs: 0,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    });
+    await reflectStarted.promise;
+    now = new Date("2026-07-20T04:10:01.000Z");
+    timerCalls[timerCalls.length - 1]!.callback();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(
+      first.status().cognitiveOrganWork.find(entry => entry.organ === "memory-reflector")?.status,
+      "intervention_required",
+    );
+    first.close();
+    // heldRun intentionally stays unsettled: the reflector never released.
+
+    // The schedule moved on to a newer day while held.
+    let db = new DatabaseSync(path.join(root, "runtime.db"));
+    db.prepare(`UPDATE memory_reflection SET next_day = '2026-07-21' WHERE singleton = 1`).run();
+    db.close();
+    const recovered = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async activity => receiptFor(activity, "record-day-one"),
+        cancel: async () => {},
+      },
+      memoryReflection: {
+        reflect: async () => ({ outcome: "no_change", runId: "reflection", changedMaterials: [] }),
+        cancel: async () => {},
+      },
+      now: () => now,
+    });
+    t.after(() => recovered.close());
+    const held = recovered.status().cognitiveOrganWork
+      .find(entry => entry.organ === "memory-reflector")!;
+    assert.equal(held.status, "intervention_required");
+    assert.throws(
+      () => recovered.requeueCognitiveOrganWork(held.workId),
+      /superseded by a newer reflection day/,
+    );
+  }
+
+  // Thread Maintainer: the activity's maintenance row completed elsewhere.
+  {
+    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-thread-"));
+    let now = new Date("2026-07-19T12:00:00.000Z");
+    const threadHang = deferred<{ outcome: "no_change"; runId: string; changedPaths: string[] }>();
+    const threadStarted = deferred<void>();
+    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
+    const first = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async activity => receiptFor(activity, "record-day-one"),
+        cancel: async () => {},
+      },
+      threadMaintenance: {
+        observationsFor: () => [
+          { turnId: "turn-1", threadPath: "threads/t.md", relation: "changed", paths: ["threads/t.md"] },
+        ],
+        maintain: async () => {
+          threadStarted.resolve();
+          return threadHang.promise;
+        },
+        cancel: async () => {},
+      },
+      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
+      organCancelTimer: (delayMs, callback) => {
+        timerCalls.push({ delayMs, callback });
+        return { clear: () => {} };
+      },
+      now: () => now,
+    });
+    await first.acceptInput({
+      source: "test",
+      sourceId: "day-one",
+      kind: "interaction",
+      payload: { text: "day one" },
+    });
+    await first.advance();
+    await first.closeActivity();
+    await first.advance();
+    const threadRun = first.advance();
+    await threadStarted.promise;
+    now = new Date("2026-07-19T12:10:01.000Z");
+    timerCalls[timerCalls.length - 1]!.callback();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(
+      first.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status,
+      "intervention_required",
+    );
+    first.close();
+    // threadRun intentionally stays unsettled: the maintainer never released.
+
+    // The maintenance row completed elsewhere while held.
+    let db = new DatabaseSync(path.join(root, "runtime.db"));
+    db.prepare(`UPDATE thread_maintenance SET status = 'completed' WHERE status <> 'completed'`).run();
+    db.close();
+    const recovered = openRuntime({
+      root,
+      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+      execution: completingExecution,
+      activityLifecycle: activityLifecycle(),
+      activityRecorder: {
+        record: async activity => receiptFor(activity, "record-day-one"),
+        cancel: async () => {},
+      },
+      threadMaintenance: {
+        observationsFor: () => [
+          { turnId: "turn-1", threadPath: "threads/t.md", relation: "changed", paths: ["threads/t.md"] },
+        ],
+        maintain: async () => ({ outcome: "no_change", runId: "thread", changedPaths: [] }),
+        cancel: async () => {},
+      },
+      now: () => now,
+    });
+    t.after(() => recovered.close());
+    const held = recovered.status().cognitiveOrganWork
+      .find(entry => entry.organ === "thread-maintainer")!;
+    assert.equal(held.status, "intervention_required");
+    assert.throws(
+      () => recovered.requeueCognitiveOrganWork(held.workId),
+      /thread maintenance is already completed/,
+    );
+  }
 });

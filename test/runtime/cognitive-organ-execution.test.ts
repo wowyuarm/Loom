@@ -376,3 +376,24 @@ test("persisted ledger survives reopen (restart boundary)", () => {
   db2.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("requeue clears the held gate for its organ but not for others", () => {
+  let now = new Date("2026-08-07T10:00:00.000Z");
+  const { ledger } = openLedger(() => now);
+
+  const heldA = ledger.begin("attention-maintainer", "place:p", "rev-1").work;
+  ledger.cancel(heldA.id, "new_human_input");
+  ledger.markInterventionRequired(heldA.id, "cancel grace expired");
+  assert.equal(ledger.hasInterventionRequired(), true);
+
+  // Requeue replaces the held cycle: the historical held record no longer
+  // gates the organ entry, and the successor becomes the current work.
+  ledger.requeue(heldA.id, "rev-2");
+  assert.equal(ledger.hasInterventionRequired(), false);
+
+  // A different organ that is still held keeps the gate closed.
+  const heldB = ledger.begin("life-recorder", "activity:abc", "rev-1").work;
+  ledger.cancel(heldB.id, "new_human_input");
+  ledger.markInterventionRequired(heldB.id, "cancel grace expired");
+  assert.equal(ledger.hasInterventionRequired(), true);
+});

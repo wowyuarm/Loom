@@ -65,6 +65,11 @@ acceptance specifics belong to the corresponding Channel or Integration guide.
   `--since <ISO timestamp>` adds bounded Agent run history.
 - `loom requeue <input-id>` returns one repaired, explicitly blocked Input to
   pending through the running Host.
+- `loom requeue-organ <work-id>` starts a fresh budget cycle for Cognitive
+  Organ work stuck in `intervention_required` or `blocked` (work id is listed
+  in `loom status`); it is refused while that work has an active attempt or
+  its domain input has moved on, and the successor runs through the organ's
+  normal entry path.
 - `loom history` reads the Interaction View of enabled Channels through the
   Host status socket; `loom status` reports each enabled Channel and
   Integration with a bounded failure category when one is failing.

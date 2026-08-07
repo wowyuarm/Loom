@@ -7,6 +7,7 @@ export {
 export {
   readLoomInteractionHistory,
   readLoomStatus,
+  requeueLoomCognitiveOrganWork,
   requeueLoomInput,
   retryLoomChannelIngress,
   type LoomStatusReport,

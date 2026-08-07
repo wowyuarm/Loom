@@ -15,6 +15,7 @@ both the evidence obtained and the conclusion that evidence supports.
 | What is the live Instance state? | Run `loom status`; use `--json` for structured output. | The running Host's current model, Runtime, Agent, Channel and stateful Integration state. | Why an unavailable Host stopped, what private activity contains or whether a stateless tool will succeed on its next request. |
 | What happened during a period? | Run `loom status --since <ISO timestamp>` and, when needed, read the matching journal range. | Bounded Agent run history and emitted lifecycle events for that period. | A complete private history or facts that neither source records. |
 | How can a repaired blocked Input run again? | Run `loom requeue <input-id>` against the live Host. | That one Input was still `blocked` and is now pending again. | That its original failure is repaired or the next Turn will succeed. |
+| How can held Cognitive Organ work run again? | Read the `Cognitive Organ Work` entries in `loom status`, then run `loom requeue-organ <work-id>`. | That the work was `intervention_required` or `blocked`, had no active attempt and now has a fresh budget cycle. | That the next run will succeed or that the original domain input is still valid. |
 | How can a failed Channel ingress item run again? | Run `loom retry-ingress <channel-id> [item-id]` against the live Host. | That one or all failed ingress items moved back to pending and are retried. | That the remote failure is repaired or the retry will succeed. |
 | Can an enabled Channel answer? | Read the Channel entry in `loom status`, then run `loom history`. | The Channel reached the Host and the Host delivered its result. | That another Channel or Integration is connected or Runtime has no pending work. |
 | Is Raft connected? | Read the Raft entry in `loom status`, then run Raft acceptance checks when behavior must be proved. | Current bridge state and a bounded failure category. | That DM, thread, ambient and replay behavior all passed. |
@@ -35,14 +36,30 @@ adds content-free Agent run summaries that overlap the requested period.
 The snapshot distinguishes Host, Model Runtime, pending Runtime work, each
 Agent's latest result, and Channels and Integrations with meaningful live or durable operating
 state. It contains no message, prompt, tool trace, Workspace content, Effect
-payload, credential, path, remote object id or raw provider error. A stopped or unreachable Host is
-explicitly `unavailable`; use systemd and the service journal to determine why.
+payload, credential, raw provider error or unbounded path; only bounded relative
+references are exposed, such as the Cognitive Organ transcript and result refs.
+A stopped or unreachable Host is explicitly `unavailable`; use systemd and the service journal to determine why.
 
-The same socket accepts two narrow recovery commands. `loom requeue <input-id>`
+The snapshot also lists each Cognitive Organ's current budget cycle under
+`Cognitive Organ Work`, addressed by a stable local work id (`organ-<rowid>`)
+so an operator never handles a raw work UUID or domain content. Each entry
+carries attempt count, the current attempt's soft deadline, the total
+deadline, next retry time when backing off, and the transcript and result
+references once the attempt completes. A work stuck in `intervention_required`
+(a cancel that was not released) or `blocked` (retries exhausted) appears
+there together with a bounded failure category; the raw error text is
+deliberately not exposed.
+
+The same socket accepts three narrow recovery commands. `loom requeue <input-id>`
 changes only an Input currently in `blocked` to `pending` and wakes the existing
-Host. `loom retry-ingress <channel-id> [item-id]` moves one or all permanently
-failed Channel ingress items back to `pending` without a restart. Neither retries
-Effects, reconciles unknown Deliveries or bypasses model admission.
+Host. `loom requeue-organ <work-id>` starts a fresh budget cycle for a Cognitive
+Organ work whose status is `intervention_required` or `blocked`; it is refused
+while the work has an active attempt or its domain input has already moved on
+(stale or superseded — no successor is created for input the organ will not act
+on), and the successor is executed through the organ's normal entry path
+(domain preconditions still decide) rather than bypassed. `loom retry-ingress <channel-id> [item-id]` moves one or all permanently
+failed Channel ingress items back to `pending` without a restart. None of them
+retries Effects, reconciles unknown Deliveries or bypasses model admission.
 
 The Host version is the package version. When Loom runs from a Git checkout, it
 also includes that checkout's short commit as build metadata, such as

@@ -14,6 +14,14 @@ import {
   type CognitiveOrganPolicy,
   type CognitiveWorkRecord,
 } from "./cognitive-organ-execution.js";
+
+/** Organs the Runtime executes through the shared Cognitive Organ ledger. */
+const RUNTIME_COGNITIVE_ORGANS: readonly CognitiveOrganName[] = [
+  "life-recorder",
+  "attention-maintainer",
+  "memory-reflector",
+  "thread-maintainer",
+];
 import type {
   AcceptedInput,
   AdvanceOptions,
@@ -55,11 +63,13 @@ import type {
   RuntimeInput,
   RuntimeInputOutcome,
   RequeueInputResult,
+  RequeueCognitiveOrganWorkResult,
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
   RuntimeAgentName,
   RuntimeAgentRunSummary,
+  RuntimeCognitiveOrganWorkStatus,
   RuntimeOperationalStatus,
   ThreadActivityObservation,
   ThreadMaintenance,
@@ -1451,6 +1461,10 @@ class SqliteRuntime implements Runtime {
           : {}),
         ...(row.last_error ? { lastError: row.last_error } : {}),
       })),
+      cognitiveOrganWork: RUNTIME_COGNITIVE_ORGANS
+        .map(organ => this.#cognitiveOrgan.currentWork(organ))
+        .filter((work): work is NonNullable<typeof work> => work !== undefined)
+        .map(work => this.#cognitiveOrganWorkStatus(work)),
       ...(attentionMaintenance ? {
         attentionMaintenance: {
           ...(attentionMaintenance.last_completed_at
@@ -1621,6 +1635,19 @@ class SqliteRuntime implements Runtime {
         // through to start a fresh work cycle for the new input.
       } else if (previous.status === "running" || previous.status === "intervention_required"
         || previous.status === "blocked") {
+        // A work requeued by an operator is created running but has no active
+        // attempt: the organ entry point claims it through the normal path
+        // (domain preconditions were checked before this call) and runs its
+        // first attempt. Like retry_wait, the immutable domain input must
+        // still be the current one: a requeued successor whose domainRef no
+        // longer matches must not be executed against different input.
+        if (previous.status === "running" && previous.requeuedFrom && !this.#activeCognitiveOrgan
+          && previous.domainRef === domainRef) {
+          const attempt = this.#cognitiveOrgan.attempts(previous.id)[0];
+          if (attempt) {
+            return { claim: { workId: previous.id, work: previous, attempt, agentRunId: attempt.id } };
+          }
+        }
         return {};
       }
     }
@@ -1801,6 +1828,134 @@ class SqliteRuntime implements Runtime {
 
   #hasHeldCognitiveOrganWork(): boolean {
     return this.#cognitiveOrgan.hasInterventionRequired();
+  }
+
+  /**
+   * Operator-facing work summary. Deliberately omits the raw error text and
+   * exposes only bounded identifiers (local work id, domain ref, failure
+   * category) so status output cannot leak model/Workspace/credential content.
+   */
+  #cognitiveOrganWorkStatus(work: CognitiveWorkRecord): RuntimeCognitiveOrganWorkStatus {
+    // Local ids are the only exposed work identifiers; an unresolvable one is
+    // corrupt state and fails closed instead of leaking a raw work UUID.
+    const workId = this.#cognitiveOrgan.localIdOf(work.id);
+    if (!workId) {
+      throw new Error(`Cognitive organ work ${work.id} is not addressable by a local work id`);
+    }
+    const requeuedFrom = work.requeuedFrom
+      ? this.#cognitiveOrgan.localIdOf(work.requeuedFrom)
+      : undefined;
+    if (work.requeuedFrom && !requeuedFrom) {
+      throw new Error(`Cognitive organ work ${work.id} references an unresolvable predecessor`);
+    }
+    // The current attempt is the most recently started one (highest attempt
+    // number): for a retried or completed work its transcript and result
+    // references live on that record, not the first attempt.
+    const attempt = this.#cognitiveOrgan.attempts(work.id).at(-1);
+    return {
+      workId,
+      organ: work.organ,
+      domainRef: work.domainRef,
+      status: work.status,
+      attemptCount: work.attemptCount,
+      createdAt: work.createdAt,
+      totalDeadlineAt: work.totalDeadlineAt,
+      ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
+      ...(requeuedFrom ? { requeuedFrom } : {}),
+      ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
+      ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
+      ...(attempt ? { softDeadlineAt: attempt.softDeadlineAt } : {}),
+      ...(attempt?.transcriptRef ? { transcriptRef: attempt.transcriptRef } : {}),
+      ...(attempt?.resultRef ? { resultRef: attempt.resultRef } : {}),
+    };
+  }
+
+  /**
+   * Manual recovery: create a successor budget cycle for a blocked or
+   * intervention_required work. Only the ledger is touched; the successor is
+   * executed by the organ's normal claim path on its next entry, so domain
+   * preconditions (pending/FIFO/lease) still decide the work. Rejected when
+   * the work is unknown, not recoverable, still has an active attempt, or its
+   * domain input has already moved on (stale/superseded).
+   */
+  requeueCognitiveOrganWork(localId: string): RequeueCognitiveOrganWorkResult {
+    if (!localId.trim()) throw new Error("Loom requeue-organ requires a work id");
+    const work = this.#cognitiveOrgan.resolveLocalId(localId);
+    if (!work) throw new Error(`Unknown cognitive organ work ${localId}`);
+    if (this.#activeCognitiveOrgan) {
+      throw new Error(
+        `Cognitive organ work ${localId} has an active attempt; resolve the intervention before requeue`,
+      );
+    }
+    this.#assertOrganRequeueEligible(work, localId);
+    this.#cognitiveOrgan.requeue(work.id, this.#revisions?.current().id ?? "unpinned");
+    return { disposition: "requeued" } as const;
+  }
+
+  /**
+   * Requeue eligibility per organ: the work's immutable domain input must
+   * still be what the organ's entry point will next act on. Requeuing against
+   * moved-on input would create a successor that can never run — rejected
+   * explicitly instead of creating work and waiting for the entry point to
+   * discover it.
+   */
+  #assertOrganRequeueEligible(work: CognitiveWorkRecord, localId: string): void {
+    switch (work.organ) {
+      case "life-recorder": {
+        // The recording domain is a single FIFO queue of unrecorded
+        // activities; the successor will claim the first one.
+        const pending = this.#database.prepare(`
+          SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1
+        `).get();
+        if (!pending) {
+          throw new Error(
+            `Cognitive organ work ${localId} is stale: no Activity awaits recording`,
+          );
+        }
+        return;
+      }
+      case "attention-maintainer": {
+        const schedule = this.#readAttentionSchedule();
+        const windowEnd = schedule?.window_end_sequence ?? this.#latestActivitySequence();
+        if (work.domainRef !== `window:${windowEnd}`) {
+          throw new Error(
+            `Cognitive organ work ${localId} is superseded by a newer attention window`,
+          );
+        }
+        return;
+      }
+      case "memory-reflector": {
+        const schedule = this.#readMemoryReflectionSchedule();
+        if (!schedule || work.domainRef !== `day:${schedule.next_day}`) {
+          throw new Error(
+            `Cognitive organ work ${localId} is superseded by a newer reflection day`,
+          );
+        }
+        return;
+      }
+      case "thread-maintainer": {
+        const activitySegmentId = work.domainRef.startsWith("activity:")
+          ? work.domainRef.slice("activity:".length)
+          : "";
+        if (!activitySegmentId) {
+          throw new Error(`Cognitive organ work ${localId} has an invalid thread domain ref`);
+        }
+        const pending = this.#database.prepare(`
+          SELECT 1
+          FROM thread_maintenance
+          JOIN activities ON activities.id = thread_maintenance.activity_id
+          WHERE thread_maintenance.status <> 'completed'
+            AND json_extract(activities.frozen_activity_json, '$.segmentId') = ?
+          LIMIT 1
+        `).get(activitySegmentId);
+        if (!pending) {
+          throw new Error(
+            `Cognitive organ work ${localId} is superseded: thread maintenance is already completed`,
+          );
+        }
+        return;
+      }
+    }
   }
 
   #agentRetryAt(name: RuntimeAgentName): string | undefined {

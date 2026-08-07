@@ -422,10 +422,22 @@ export class CognitiveOrganExecution {
     };
   }
 
-  /** True when any work is held for human intervention (blocks parallel starts). */
+  /**
+   * True when any organ's current cycle is held for human intervention
+   * (blocks parallel starts). A requeued cycle replaces the held one, so the
+   * historical held record must not keep blocking the organ entry point.
+   */
   hasInterventionRequired(): boolean {
     return Boolean(this.#database.prepare(`
-      SELECT 1 FROM cognitive_work WHERE status = 'intervention_required' LIMIT 1
+      SELECT 1 FROM cognitive_work held
+      WHERE held.status = 'intervention_required'
+        AND NOT EXISTS (
+          SELECT 1 FROM cognitive_work newer
+          WHERE newer.organ = held.organ
+            AND (newer.created_at > held.created_at
+              OR (newer.created_at = held.created_at AND newer.rowid > held.rowid))
+        )
+      LIMIT 1
     `).get());
   }
 
@@ -445,6 +457,28 @@ export class CognitiveOrganExecution {
 
   work(workId: string): CognitiveWorkRecord | undefined {
     return this.#workRecord(workId);
+  }
+
+  /**
+   * Opaque, stable local work id (`organ-<rowid>`) for operator-facing
+   * surfaces; never exposes the raw UUID or domain content.
+   */
+  localIdOf(workId: string): string | undefined {
+    const row = this.#database.prepare(`
+      SELECT rowid, organ FROM cognitive_work WHERE id = ?
+    `).get(workId) as { rowid: number; organ: string } | undefined;
+    return row ? `${row.organ}-${row.rowid}` : undefined;
+  }
+
+  /** Resolve an operator-supplied local work id back to the work record. */
+  resolveLocalId(localId: string): CognitiveWorkRecord | undefined {
+    const match = /^(.+)-(\d+)$/.exec(localId);
+    if (!match) return undefined;
+    const row = this.#database.prepare(`
+      SELECT id, organ FROM cognitive_work WHERE rowid = ?
+    `).get(Number(match[2])) as { id: string; organ: string } | undefined;
+    if (!row || row.organ !== match[1]) return undefined;
+    return this.#workRecord(row.id);
   }
 
   attempts(workId: string): CognitiveAttemptRecord[] {

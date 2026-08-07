@@ -17,6 +17,7 @@ import {
   type RuntimeInput,
   type RuntimeInputOutcome,
   type RequeueInputResult,
+  type RequeueCognitiveOrganWorkResult,
   type OutboundDelivery,
   type RuntimeStatus,
   type RuntimeOperationalStatus,
@@ -93,6 +94,8 @@ export interface LoomInstance {
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   inputOutcome(inputId: string): RuntimeInputOutcome;
   requeueInput(inputId: string): RequeueInputResult;
+  /** Create a successor budget cycle for blocked / intervention_required Cognitive Organ work. */
+  requeueCognitiveOrganWork(workId: string): RequeueCognitiveOrganWorkResult;
   runOnce(observedAt: Date): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
@@ -142,6 +145,10 @@ class AssembledLoomInstance implements LoomInstance {
 
   requeueInput(inputId: string): RequeueInputResult {
     return this.runtime.requeueInput(inputId);
+  }
+
+  requeueCognitiveOrganWork(workId: string): RequeueCognitiveOrganWorkResult {
+    return this.runtime.requeueCognitiveOrganWork(workId);
   }
 
   async runOnce(observedAt: Date): Promise<LoomInstanceRunResult> {

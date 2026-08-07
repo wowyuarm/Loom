@@ -43,6 +43,7 @@ import {
 import { LOOM_VERSION } from "../version.js";
 import {
   createLoomStatusServer,
+  type LoomCognitiveOrganWorkStatus,
   type LiveLoomStatusReport,
   type LoomIntegrationStatus,
   type LoomModelStatus,
@@ -54,6 +55,8 @@ export interface LoomHost {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   requeueInput(inputId: string): RequeueInputResult;
+  /** Create a successor budget cycle for blocked / intervention_required Cognitive Organ work. */
+  requeueCognitiveOrganWork(workId: string): void;
   /** Move failed ingress items on one channel back to pending without a restart. */
   retryChannelIngress(channelId: string, itemId?: string): Promise<number>;
   wake(): void;
@@ -113,6 +116,7 @@ class DefaultLoomHost implements LoomHost {
       socketPath: options.statusSocketPath,
       read: since => this.#operatorStatus(since),
       requeueInput: inputId => this.requeueInput(inputId).disposition,
+      requeueCognitiveOrganWork: workId => this.requeueCognitiveOrganWork(workId),
       retryChannelIngress: (channelId, itemId) => this.retryChannelIngress(channelId, itemId),
       interactionView: options => this.interactionView(options),
     });
@@ -165,6 +169,22 @@ class DefaultLoomHost implements LoomHost {
         }] : [],
       },
       agents: agentStatus.agents.map(agent => operatorAgentStatus(agent, status.driver)),
+      cognitiveOrganWork: runtime.cognitiveOrganWork.map(work => ({
+        workId: work.workId,
+        organ: work.organ,
+        domainRef: work.domainRef,
+        status: work.status,
+        attemptCount: work.attemptCount,
+        createdAt: work.createdAt,
+        totalDeadlineAt: work.totalDeadlineAt,
+        ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
+        ...(work.requeuedFrom ? { requeuedFrom: work.requeuedFrom } : {}),
+        ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
+        ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
+        ...(work.softDeadlineAt ? { softDeadlineAt: work.softDeadlineAt } : {}),
+        ...(work.transcriptRef ? { transcriptRef: work.transcriptRef } : {}),
+        ...(work.resultRef ? { resultRef: work.resultRef } : {}),
+      } satisfies LoomCognitiveOrganWorkStatus)),
       channels: operatorChannelStatuses(status),
       integrations: operatorIntegrationStatuses(status),
     };
@@ -197,6 +217,13 @@ class DefaultLoomHost implements LoomHost {
     const result = this.#instance.requeueInput(inputId);
     if (result.disposition === "requeued") this.#driver.wake();
     return result;
+  }
+
+  requeueCognitiveOrganWork(workId: string): void {
+    if (this.#state !== "running") {
+      throw new Error(`Loom Host cannot requeue Cognitive Organ work while ${this.#state}`);
+    }
+    this.#instance.requeueCognitiveOrganWork(workId);
   }
 
   retryChannelIngress(channelId: string, itemId?: string): Promise<number> {

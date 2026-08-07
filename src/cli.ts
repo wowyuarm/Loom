@@ -8,6 +8,7 @@ import {
   openLoomHost,
   readLoomInteractionHistory,
   readLoomStatus,
+  requeueLoomCognitiveOrganWork,
   requeueLoomInput,
   retryLoomChannelIngress,
   type LoomStatusReport,
@@ -24,7 +25,8 @@ import {
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
   if (command !== "init" && command !== "run" && command !== "history"
-    && command !== "status" && command !== "requeue" && command !== "retry-ingress") {
+    && command !== "status" && command !== "requeue" && command !== "requeue-organ"
+    && command !== "retry-ingress") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -58,6 +60,14 @@ async function main(argv: string[]): Promise<void> {
     const disposition = await requeueLoomInput(resolveInstanceLayout(root).statusSocketPath, inputId);
     if (disposition !== "requeued") throw new Error(`Input ${inputId} is not blocked`);
     console.log(`Requeued Input ${inputId}`);
+    return;
+  }
+  if (command === "requeue-organ") {
+    const remaining = remainingArguments(args, "--root");
+    if (remaining.length !== 1 || !remaining[0]!.trim()) throw new Error(usage("requeue-organ"));
+    const workId = remaining[0]!.trim();
+    await requeueLoomCognitiveOrganWork(resolveInstanceLayout(root).statusSocketPath, workId);
+    console.log(`Requeued Cognitive Organ work ${workId}`);
     return;
   }
   if (command === "retry-ingress") {
@@ -164,6 +174,19 @@ function formatStatus(report: LoomStatusReport, since?: string): string {
     const retry = agent.nextRunAt ? `, next ${agent.nextRunAt}` : "";
     lines.push(`  ${agentLabel(agent.name)}: ${agent.state}${latestAt ? ` at ${latestAt}` : ""}${outcome}${retry}`);
   }
+  lines.push("Cognitive Organ Work:");
+  if (report.cognitiveOrganWork.length === 0) lines.push("  None");
+  for (const work of report.cognitiveOrganWork) {
+    const requeued = work.requeuedFrom ? `, requeued from ${work.requeuedFrom}` : "";
+    const next = work.nextAttemptAt ? `, next ${work.nextAttemptAt}` : "";
+    const failure = work.lastFailureCategory ? `, last failure ${work.lastFailureCategory}` : "";
+    const softDeadline = work.softDeadlineAt ? `, soft deadline ${work.softDeadlineAt}` : "";
+    const transcript = work.transcriptRef ? `, transcript ${work.transcriptRef}` : "";
+    const result = work.resultRef ? `, result ${work.resultRef}` : "";
+    lines.push(
+      `  ${work.workId}: ${work.status}, attempt ${work.attemptCount}${requeued}${next}${failure}${softDeadline}${transcript}${result}`,
+    );
+  }
   lines.push("Channels:");
   if (report.channels.length === 0) lines.push("  None enabled");
   for (const channel of report.channels) {
@@ -215,7 +238,7 @@ function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-type LoomCommand = "init" | "run" | "history" | "status" | "requeue" | "retry-ingress";
+type LoomCommand = "init" | "run" | "history" | "status" | "requeue" | "requeue-organ" | "retry-ingress";
 
 function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
@@ -240,7 +263,7 @@ function readRoot(args: string[], command: LoomCommand): string {
   }
   const remaining = remainingArguments(args, name);
   if (command !== "init" && command !== "status" && command !== "requeue"
-    && command !== "retry-ingress" && remaining.length > 0) {
+    && command !== "requeue-organ" && command !== "retry-ingress" && remaining.length > 0) {
     throw new Error(`Unknown argument: ${remaining[0]}`);
   }
   return value;
@@ -257,6 +280,9 @@ function usage(command?: LoomCommand): string {
     return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
   }
   if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
+  if (command === "requeue-organ") {
+    return "Usage: loom requeue-organ [--root <instance-root>] <work-id>";
+  }
   if (command === "retry-ingress") {
     return "Usage: loom retry-ingress [--root <instance-root>] <channel-id> [item-id]";
   }
@@ -271,6 +297,7 @@ function usage(command?: LoomCommand): string {
     "  loom history [--root <instance-root>]",
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
     "  loom requeue [--root <instance-root>] <input-id>",
+    "  loom requeue-organ [--root <instance-root>] <work-id>",
     "  loom retry-ingress [--root <instance-root>] <channel-id> [item-id]",
     "",
     "The default Instance Root is ~/.loom.",

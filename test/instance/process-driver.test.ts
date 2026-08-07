@@ -220,6 +220,7 @@ function fakeInstance(overrides: Partial<LoomInstance>): LoomInstance {
     interactionView: () => ({ entries: [], hasMore: false }),
     inputOutcome: () => ({ state: "pending" }),
     requeueInput: () => ({ disposition: "not_blocked" }),
+    requeueCognitiveOrganWork: () => ({ disposition: "requeued" }),
     runOnce: async (): Promise<LoomInstanceRunResult> => ({ disposition: "idle" }),
     formOpportunity: async () => ({ disposition: "busy" }),
     status: () => { throw new Error("status is not used by process driver tests"); },
