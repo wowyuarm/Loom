@@ -15,6 +15,7 @@ both the evidence obtained and the conclusion that evidence supports.
 | What is the live Instance state? | Run `loom status`; use `--json` for structured output. | The running Host's current model, Runtime, Agent, Channel and stateful Integration state. | Why an unavailable Host stopped, what private activity contains or whether a stateless tool will succeed on its next request. |
 | What happened during a period? | Run `loom status --since <ISO timestamp>` and, when needed, read the matching journal range. | Bounded Agent run history and emitted lifecycle events for that period. | A complete private history or facts that neither source records. |
 | How can a repaired blocked Input run again? | Run `loom requeue <input-id>` against the live Host. | That one Input was still `blocked` and is now pending again. | That its original failure is repaired or the next Turn will succeed. |
+| How can a failed Channel ingress item run again? | Run `loom retry-ingress <channel-id> [item-id]` against the live Host. | That one or all failed ingress items moved back to pending and are retried. | That the remote failure is repaired or the retry will succeed. |
 | Can an enabled Channel answer? | Read the Channel entry in `loom status`, then run `loom history`. | The Channel reached the Host and the Host delivered its result. | That another Channel or Integration is connected or Runtime has no pending work. |
 | Is Raft connected? | Read the Raft entry in `loom status`, then run Raft acceptance checks when behavior must be proved. | Current bridge state and a bounded failure category. | That DM, thread, ambient and replay behavior all passed. |
 
@@ -37,9 +38,11 @@ state. It contains no message, prompt, tool trace, Workspace content, Effect
 payload, credential, path, remote object id or raw provider error. A stopped or unreachable Host is
 explicitly `unavailable`; use systemd and the service journal to determine why.
 
-The same socket accepts one narrow recovery command: `loom requeue <input-id>`.
-It changes only an Input currently in `blocked` to `pending` and wakes the existing
-Host. It does not retry Effects, reconcile unknown Deliveries or bypass model admission.
+The same socket accepts two narrow recovery commands. `loom requeue <input-id>`
+changes only an Input currently in `blocked` to `pending` and wakes the existing
+Host. `loom retry-ingress <channel-id> [item-id]` moves one or all permanently
+failed Channel ingress items back to `pending` without a restart. Neither retries
+Effects, reconciles unknown Deliveries or bypasses model admission.
 
 The Host version is the package version. When Loom runs from a Git checkout, it
 also includes that checkout's short commit as build metadata, such as

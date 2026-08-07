@@ -7,7 +7,11 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { InteractionChannel } from "../channel.js";
+import type {
+  InteractionChannel,
+  InteractionChannelFailureCategory,
+  InteractionChannelIngressStatus,
+} from "../channel.js";
 import type {
   ExternalAttentionEvidence,
   InteractionChannelAgentSurface,
@@ -27,6 +31,16 @@ import type {
 import { initializeRaftState } from "./raft-state.js";
 
 type RaftReferenceKind = "message" | "place" | "destination" | "thread" | "task" | "member" | "reminder";
+
+/**
+ * Marks an ingress failure that is expected to be transient (CLI unavailable,
+ * timeout, connection failure, rate limit, server 5xx). Adapters throw it so
+ * the Channel can classify permanent data errors from retryable infrastructure
+ * failures without knowing adapter internals.
+ */
+export class RaftRetryableError extends Error {}
+
+export type RaftFailureCategory = InteractionChannelFailureCategory;
 
 export interface RaftWake {
   attemptId: string;
@@ -69,6 +83,10 @@ export interface RaftInboxEntry {
 
 export interface RaftInboxBatch {
   entries: RaftInboxEntry[];
+  /** Receipts still held unresolved in the remote recovery spool after this drain. */
+  spooled: number;
+  /** Earliest received time among the spooled receipts, when any remain. */
+  spooledOldestAt?: string;
   acknowledge(): Promise<void>;
 }
 
@@ -186,7 +204,8 @@ export interface RaftRemoteOpenResult {
 
 export interface RaftChannelStatus {
   state: "stopped" | "connecting" | "connected" | "degraded";
-  pendingWakes: number;
+  /** Channel-neutral ingress health for Host/operator consumption. */
+  ingress: InteractionChannelIngressStatus;
   lastError?: string;
   available?: boolean;
   cliVersion?: string;
@@ -199,6 +218,8 @@ export interface RaftChannel extends InteractionChannel, OutboundDelivery {
   readonly label: "Raft";
   start(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>): Promise<void>;
   acceptWake(wake: RaftWake): Promise<{ ok: true }>;
+  /** Move one failed ingress item (by local id), or all of them, back to pending without a restart. */
+  retryFailedIngress(itemId?: string): Promise<number>;
   agentTools(control: InteractionChannelEffectControl): ToolDefinition[];
   channelGuidance(): string;
   defaultDestination(): InteractionDestination;
@@ -210,6 +231,8 @@ export interface RaftChannel extends InteractionChannel, OutboundDelivery {
 export interface OpenRaftChannelOptions {
   stateFile: string;
   now?: () => Date;
+  /** First retry backoff for a transiently failing wake; doubles per attempt up to 15x. */
+  retryBaseDelayMs?: number;
   routeRef: string;
   serverId: string;
   selfMemberId: string;
@@ -226,6 +249,7 @@ export interface OpenConfiguredRaftChannelOptions {
 
 interface WakeRow {
   message_id: string;
+  attempt_count: number;
 }
 
 class DefaultRaftChannel implements RaftChannel {
@@ -238,7 +262,10 @@ class DefaultRaftChannel implements RaftChannel {
   #inboxDrainRequested = false;
   #state: RaftChannelStatus["state"] = "stopped";
   #lastError: string | undefined;
-  #finalPendingWakes = 0;
+  #finalStatus: InteractionChannelIngressStatus | undefined;
+  #retryTimer: ReturnType<typeof setTimeout> | undefined;
+  #spooledCount = 0;
+  #spooledOldestAt: string | undefined;
   #stopped = false;
   #stopping: Promise<void> | undefined;
 
@@ -643,9 +670,10 @@ class DefaultRaftChannel implements RaftChannel {
   status(): RaftChannelStatus {
     const remote = this.options.remote.status?.();
     const remoteUnavailable = remote && !remote.available && this.#state !== "stopped" && !this.#stopped;
+    const ingress = this.#stopped && this.#finalStatus ? this.#finalStatus : this.#liveStatus();
     return {
       state: remoteUnavailable ? "degraded" : this.#state,
-      pendingWakes: this.#stopped ? this.#finalPendingWakes : this.#pendingWakeCount(),
+      ingress,
       ...(remote ? {
         available: remote.available,
         cliVersion: remote.cliVersion,
@@ -658,6 +686,36 @@ class DefaultRaftChannel implements RaftChannel {
     };
   }
 
+  async retryFailedIngress(itemId?: string): Promise<number> {
+    if (this.#stopped) throw new Error("Raft Channel cannot retry ingress after stop");
+    const named = itemId?.trim();
+    if (named !== undefined && !named) throw new Error("Raft ingress item id cannot be blank");
+    const rowId = named === undefined ? undefined : wakeItemRowId(named);
+    if (rowId !== undefined) {
+      const row = this.#database.prepare(`
+        SELECT status FROM wakes WHERE rowid = ?
+      `).get(rowId) as unknown as { status: string } | undefined;
+      if (!row) throw new Error(`Raft ingress item ${named} is not known`);
+      if (row.status !== "failed") throw new Error(`Raft ingress item ${named} is not failed`);
+    }
+    const result = rowId !== undefined
+      ? this.#database.prepare(`
+          UPDATE wakes
+          SET status = 'pending', attempt_count = 0, last_attempt_at = NULL,
+              next_retry_at = NULL, last_error = NULL, failure_category = NULL
+          WHERE status = 'failed' AND rowid = ?
+        `).run(rowId)
+      : this.#database.prepare(`
+          UPDATE wakes
+          SET status = 'pending', attempt_count = 0, last_attempt_at = NULL,
+              next_retry_at = NULL, last_error = NULL, failure_category = NULL
+          WHERE status = 'failed'
+        `).run();
+    const retried = Number(result.changes);
+    if (retried > 0) this.#schedule();
+    return retried;
+  }
+
   async stop(): Promise<void> {
     if (this.#stopping) return this.#stopping;
     if (this.#stopped) return;
@@ -667,11 +725,12 @@ class DefaultRaftChannel implements RaftChannel {
   }
 
   async #finishStop(): Promise<void> {
+    this.#clearRetryTimer();
     try {
       await this.options.remote.stop?.();
     } finally {
       await this.#processing;
-      this.#finalPendingWakes = this.#pendingWakeCount();
+      this.#finalStatus = this.#liveStatus();
       this.#state = "stopped";
       this.#database.close();
     }
@@ -681,8 +740,37 @@ class DefaultRaftChannel implements RaftChannel {
     if (!this.#acceptInput || this.#processing || this.#stopped) return;
     this.#processing = this.#drain().finally(() => {
       this.#processing = undefined;
-      if (!this.#stopped && (this.#inboxDrainRequested || this.#nextWake())) this.#schedule();
+      if (!this.#stopped) this.#scheduleAfter();
     });
+  }
+
+  #scheduleAfter(): void {
+    this.#clearRetryTimer();
+    if (this.#inboxDrainRequested || this.#nextWake()) {
+      this.#schedule();
+      return;
+    }
+    const delay = this.#nextRetryDelayMs();
+    if (delay !== undefined) {
+      this.#retryTimer = setTimeout(() => this.#schedule(), delay);
+    }
+  }
+
+  #nextRetryDelayMs(): number | undefined {
+    const row = this.#database.prepare(`
+      SELECT MIN(next_retry_at) AS next_retry_at
+      FROM wakes
+      WHERE status = 'retry_wait' AND next_retry_at IS NOT NULL
+    `).get() as unknown as { next_retry_at: string | null };
+    if (row.next_retry_at === null) return undefined;
+    return Math.max(Date.parse(row.next_retry_at) - this.#now().getTime(), 0);
+  }
+
+  #clearRetryTimer(): void {
+    if (this.#retryTimer !== undefined) {
+      clearTimeout(this.#retryTimer);
+      this.#retryTimer = undefined;
+    }
   }
 
   async #drain(): Promise<void> {
@@ -704,47 +792,98 @@ class DefaultRaftChannel implements RaftChannel {
         this.#lastError = undefined;
         return;
       }
+      let message: RaftRemoteMessage;
       try {
-        const message = await this.options.remote.resolveMessage(wake.message_id);
-        if (message.messageId !== wake.message_id) {
-          throw new Error("Raft resolved a different message than the persisted wake");
-        }
-        if (Date.parse(message.occurredAt) < Date.parse(this.#activationBoundary())) {
-          this.#completeWake(wake.message_id);
-          this.#state = "connected";
-          this.#lastError = undefined;
-          continue;
-        }
-        if (message.signal === "channel_activity") {
-          this.#recordAmbientActivity(message);
-          this.#completeWake(wake.message_id);
-          this.#state = "connected";
-          this.#lastError = undefined;
-          continue;
-        }
-        const input = this.#toRuntimeInput(message);
+        message = await this.options.remote.resolveMessage(wake.message_id);
+      } catch (error) {
+        // The remote already classifies failures: RaftRetryableError covers
+        // server unavailability, rate limits and timeouts; everything else is
+        // permanent (bad data, credentials or arguments).
+        this.#failWake(
+          wake,
+          error,
+          error instanceof RaftRetryableError ? "remote_unavailable" : "invalid_message",
+        );
+        continue;
+      }
+      if (message.messageId !== wake.message_id) {
+        this.#failWake(
+          wake,
+          new Error("Raft resolved a different message than the persisted wake"),
+          "invalid_message",
+        );
+        continue;
+      }
+      if (Date.parse(message.occurredAt) < Date.parse(this.#activationBoundary())) {
+        this.#completeWake(wake.message_id);
+        this.#state = "connected";
+        this.#lastError = undefined;
+        continue;
+      }
+      if (message.signal === "channel_activity") {
+        this.#recordAmbientActivity(message);
+        this.#completeWake(wake.message_id);
+        this.#state = "connected";
+        this.#lastError = undefined;
+        continue;
+      }
+      let input: RuntimeInput;
+      try {
+        input = this.#toRuntimeInput(message);
+      } catch (error) {
+        this.#failWake(wake, error, "invalid_message");
+        continue;
+      }
+      try {
         const accepted = await this.#acceptInput!(input);
         this.#database.prepare(`
           UPDATE wakes
-          SET status = 'complete', input_id = ?, last_error = NULL
+          SET status = 'complete', input_id = ?, last_error = NULL,
+              failure_category = NULL, next_retry_at = NULL
           WHERE message_id = ?
         `).run(accepted.inputId, wake.message_id);
         this.#state = "connected";
         this.#lastError = undefined;
       } catch (error) {
-        const message = errorMessage(error);
-        this.#database.prepare(`
-          UPDATE wakes SET last_error = ? WHERE message_id = ?
-        `).run(message.slice(0, 2_000), wake.message_id);
-        this.#state = "degraded";
-        this.#lastError = message;
-        return;
+        // Runtime admission failure is a shared/transient blocker, not bad data.
+        this.#failWake(wake, error, "admission_failed");
       }
     }
   }
 
+  #failWake(wake: WakeRow, error: unknown, category: RaftFailureCategory): void {
+    const now = this.#now();
+    const attempts = wake.attempt_count + 1;
+    const retryable = category === "remote_unavailable" || category === "admission_failed";
+    const summary = errorMessage(error).slice(0, 2_000);
+    this.#database.prepare(`
+      UPDATE wakes
+      SET status = ?, last_error = ?, failure_category = ?,
+          attempt_count = ?, last_attempt_at = ?, next_retry_at = ?
+      WHERE message_id = ?
+    `).run(
+      retryable ? "retry_wait" : "failed",
+      summary,
+      category,
+      attempts,
+      now.toISOString(),
+      retryable ? new Date(now.getTime() + this.#retryDelayMs(attempts)).toISOString() : null,
+      wake.message_id,
+    );
+    this.#state = "degraded";
+    this.#lastError = summary;
+  }
+
+  #retryDelayMs(attempts: number): number {
+    const base = this.options.retryBaseDelayMs ?? 60_000;
+    return Math.min(base * 2 ** (attempts - 1), base * 15);
+  }
+
   async #drainRemoteInbox(): Promise<void> {
     const batch = await this.options.remote.drainInbox!();
+    this.#spooledCount = batch.spooled;
+    if (batch.spooledOldestAt) this.#spooledOldestAt = batch.spooledOldestAt;
+    else this.#spooledOldestAt = undefined;
     const receiptIds = new Set<string>();
     const messageIds = new Set<string>();
     for (const entry of batch.entries) {
@@ -785,18 +924,56 @@ class DefaultRaftChannel implements RaftChannel {
 
   #nextWake(): WakeRow | undefined {
     return this.#database.prepare(`
-      SELECT message_id FROM wakes
+      SELECT message_id, attempt_count FROM wakes
       WHERE status = 'pending'
+         OR (status = 'retry_wait' AND next_retry_at IS NOT NULL AND next_retry_at <= ?)
       ORDER BY delivery_order IS NULL, delivery_order, received_at, message_id
       LIMIT 1
-    `).get() as unknown as WakeRow | undefined;
+    `).get(this.#now().toISOString()) as unknown as WakeRow | undefined;
   }
 
-  #pendingWakeCount(): number {
+  #now(): Date {
+    return this.options.now?.() ?? new Date();
+  }
+
+  #liveStatus(): InteractionChannelIngressStatus {
     const row = this.#database.prepare(`
-      SELECT COUNT(*) AS count FROM wakes WHERE status = 'pending'
-    `).get() as unknown as { count: number };
-    return row.count;
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+        COUNT(*) FILTER (WHERE status = 'retry_wait') AS retrying,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+        MIN(received_at) FILTER (WHERE status != 'complete') AS oldest_outstanding_at,
+        (
+          SELECT failure_category FROM wakes
+          WHERE status IN ('retry_wait', 'failed')
+          ORDER BY last_attempt_at DESC, rowid DESC
+          LIMIT 1
+        ) AS last_failure_category
+      FROM wakes
+    `).get() as unknown as {
+      pending: number;
+      retrying: number;
+      failed: number;
+      oldest_outstanding_at: string | null;
+      last_failure_category: RaftFailureCategory | null;
+    };
+    const failedIds = this.#database.prepare(`
+      SELECT rowid FROM wakes WHERE status = 'failed' ORDER BY rowid LIMIT 20
+    `).all() as Array<{ rowid: number }>;
+    const oldestWakes = row.oldest_outstanding_at;
+    const oldest = oldestWakes && this.#spooledOldestAt
+      ? (oldestWakes < this.#spooledOldestAt ? oldestWakes : this.#spooledOldestAt)
+      : (oldestWakes ?? this.#spooledOldestAt);
+    return {
+      pending: row.pending,
+      retrying: row.retrying,
+      failed: row.failed,
+      spooled: this.#spooledCount,
+      ...(oldest ? { oldestOutstandingAt: oldest } : {}),
+      ...(row.last_failure_category ? { lastFailureCategory: row.last_failure_category }
+        : this.#spooledCount > 0 ? { lastFailureCategory: "invalid_message" as const } : {}),
+      ...(failedIds.length > 0 ? { failedItemIds: failedIds.map(item => `wake-${item.rowid}`) } : {}),
+    };
   }
 
   #toRuntimeInput(message: RaftRemoteMessage): RuntimeInput {
@@ -1043,7 +1220,8 @@ class DefaultRaftChannel implements RaftChannel {
   #completeWake(messageId: string, inputId?: string): void {
     this.#database.prepare(`
       UPDATE wakes
-      SET status = 'complete', input_id = ?, last_error = NULL
+      SET status = 'complete', input_id = ?, last_error = NULL,
+          failure_category = NULL, next_retry_at = NULL
       WHERE message_id = ?
     `).run(inputId ?? null, messageId);
   }
@@ -1296,6 +1474,12 @@ function validateIso(value: string, label: string): void {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Local, content-free item id for targeted ingress recovery; rowid is stable across restarts. */
+function wakeItemRowId(itemId: string): number | undefined {
+  const match = /^wake-([1-9][0-9]*)$/.exec(itemId);
+  return match ? Number(match[1]) : undefined;
 }
 
 async function fileExists(file: string): Promise<boolean> {

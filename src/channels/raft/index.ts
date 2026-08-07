@@ -1,10 +1,12 @@
 export {
   openRaftChannel,
   openConfiguredRaftChannel,
+  RaftRetryableError,
   type OpenConfiguredRaftChannelOptions,
   type OpenRaftChannelOptions,
   type RaftChannel,
   type RaftChannelStatus,
+  type RaftFailureCategory,
   type RaftRemoteActivity,
   type RaftInboxBatch,
   type RaftInboxEntry,

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   openRaftCliRemote,
+  RaftRetryableError,
   SUPPORTED_RAFT_CLI_VERSION,
 } from "../../src/channels/raft/index.js";
 
@@ -250,6 +251,162 @@ test("rejects a Raft profile whose server binding differs from Instance Configur
   }), /Raft server binding does not match/);
 });
 
+test("classifies Raft CLI failures as permanent or retryable at the remote layer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-failure-"));
+  const cli = path.join(root, "fake-raft.mjs");
+  await writeFile(cli, fakeRaftCli(), "utf8");
+  const remote = await openRaftCliRemote({
+    profile: "loom-pilot",
+    expectedServerId: "server-1",
+    expectedSelfMemberId: "agent-loom",
+    expectedPrincipalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    bridgeStateDirectory: path.join(root, "bridge"),
+    cliEntrypoint: cli,
+  });
+
+  // Explicit permanent code: surfaces as a rejected mutation, never retried.
+  assert.ok(remote.mutateTask);
+  assert.deepEqual(await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 96,
+    messageId: "missing-task-message",
+  }), { disposition: "rejected", error: "Task not found" });
+
+  // Missing credential/profile: permanent, so it rejects the mutation instead
+  // of being retried as a remote failure.
+  assert.deepEqual(await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 97,
+    messageId: "missing-profile-task-message",
+  }), { disposition: "rejected", error: "Profile not found" });
+
+  // Deterministic conflict under the same *_FAILED code: permanent, so it
+  // surfaces as rejected instead of being retried forever.
+  assert.deepEqual(await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 99,
+    messageId: "conflicting-task-message",
+  }), { disposition: "rejected", error: "Task is already assigned" });
+
+  // The same *_FAILED code with a rate-limit summary: retryable, so the
+  // channel backs off instead of failing the wake permanently.
+  const rateLimited = await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 95,
+    messageId: "rate-limited-task-message",
+  }).then(() => null, error => error);
+  assert.ok(rateLimited instanceof RaftRetryableError);
+  assert.match(rateLimited.message, /HTTP 429 Too Many Requests/);
+
+  // Server unavailability: retryable, so the channel will back off and retry.
+  const unavailable = await remote.mutateTask({
+    action: "claim",
+    target: "#commons",
+    number: 98,
+    messageId: "unavailable-task-message",
+  }).then(() => null, error => error);
+  assert.ok(unavailable instanceof RaftRetryableError);
+  assert.match(unavailable.message, /Raft service did not confirm the action/);
+});
+
+test("isolates one bad inbox receipt in the spool while later receipts still become wakes", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-spool-"));
+  const cli = path.join(root, "fake-raft.mjs");
+  await writeFile(cli, spoolIsolationCli(), "utf8");
+  const remote = await openRaftCliRemote({
+    profile: "loom-pilot",
+    expectedServerId: "server-1",
+    expectedSelfMemberId: "agent-loom",
+    expectedPrincipalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    bridgeStateDirectory: path.join(root, "bridge"),
+    cliEntrypoint: cli,
+  });
+
+  // The bad receipt cannot be completed yet, so it stays in the spool and is
+  // reported as spooled; only the good one becomes a wake in this batch.
+  assert.ok(remote.drainInbox);
+  const first = await remote.drainInbox();
+  assert.deepEqual(first.entries, [{
+    receiptId: "dm:@yu:bbbb2222",
+    messageId: "bbbb2222-2222-2222-2222-222222222222",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  }]);
+  assert.equal(first.spooled, 1);
+  assert.equal(first.spooledOldestAt, "2026-08-03T05:00:00.000Z");
+
+  // Acknowledging the good batch keeps the isolated receipt for recovery.
+  await first.acknowledge();
+
+  // When the receipt becomes resolvable it is recovered on the next drain,
+  // and the spool is reported empty.
+  const second = await remote.drainInbox();
+  assert.deepEqual(second.entries, [{
+    receiptId: "dm:@yu:aaaa1111",
+    messageId: "aaaa1111-1111-1111-1111-111111111111",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  }]);
+  assert.equal(second.spooled, 0);
+  assert.equal(second.spooledOldestAt, undefined);
+
+  // Acknowledging the recovered batch leaves nothing behind: a fresh drain is
+  // empty, which is only possible if the spool was fully cleared.
+  await second.acknowledge();
+  const third = await remote.drainInbox();
+  assert.deepEqual(third.entries, []);
+  assert.equal(third.spooled, 0);
+});
+
+test("times out a hung Raft CLI command and reports it as retryable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-timeout-"));
+  const cli = path.join(root, "hang-raft.mjs");
+  await writeFile(cli, hangCli(), "utf8");
+  const remote = await openRaftCliRemote({
+    profile: "loom-pilot",
+    expectedServerId: "server-1",
+    expectedSelfMemberId: "agent-loom",
+    expectedPrincipalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    bridgeStateDirectory: path.join(root, "bridge"),
+    cliEntrypoint: cli,
+    commandTimeoutMs: 150,
+  });
+
+  // A CLI that never exits must not hang the drain: it is killed and the
+  // failure is retryable so the channel backs off instead of wedging.
+  const error = await remote.resolveMessage("12345678-1234-1234-1234-123456789abc")
+    .then(() => null, error => error);
+  assert.ok(error instanceof RaftRetryableError);
+  assert.match(error.message, /timed out after 150ms/);
+});
+
+function hangCli(): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const command = args[0] === "--profile" ? args.slice(2) : args;
+if (command[0] === "--version") {
+  process.stdout.write(${JSON.stringify(`${SUPPORTED_RAFT_CLI_VERSION}\n`)});
+} else if (command.join(" ") === "auth whoami") {
+  process.stdout.write(JSON.stringify({ ok: true, data: { agentId: "agent-loom", serverId: "server-1" } }) + "\\n");
+} else if (command[0] === "profile" && command[1] === "show") {
+  const target = command.find(value => value.startsWith("@"));
+  const profiles = {
+    self: { id: "agent-loom", kind: "agent", name: "loom", displayName: "Loom Individual", description: "A continuing Individual." },
+    "@yu": { id: "human-yu", kind: "human", name: "Yu", displayName: "Yu", description: "Long-term counterpart: operator" },
+  };
+  process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
+} else {
+  // Never exit: exercises the remote's command timeout.
+  setInterval(() => {}, 60_000);
+}
+`;
+}
+
 function fakeRaftCli(): string {
   return `#!/usr/bin/env node
 const args = process.argv.slice(2);
@@ -298,6 +455,15 @@ if (command[0] === "--version") {
     process.exitCode = 1;
   } else if (number === "98") {
     process.stderr.write("Error: Raft service did not confirm the action\\nCode: SERVER_5XX\\n");
+    process.exitCode = 1;
+  } else if (number === "97") {
+    process.stderr.write("Error: Profile not found\\nCode: MISSING_PROFILE\\n");
+    process.exitCode = 1;
+  } else if (number === "96") {
+    process.stderr.write("Error: Task not found\\nCode: NOT_FOUND\\n");
+    process.exitCode = 1;
+  } else if (number === "95") {
+    process.stderr.write("Error: HTTP 429 Too Many Requests\\nCode: TASK_CLAIM_FAILED\\n");
     process.exitCode = 1;
   } else process.stdout.write("Task action completed.\\n");
 } else if (command[0] === "thread" && command[1] === "unfollow") {
@@ -378,4 +544,48 @@ async function eventually(predicate: () => boolean): Promise<void> {
     if (Date.now() >= deadline) assert.fail("condition was not reached");
     await new Promise<void>(resolve => setTimeout(resolve, 10));
   }
+}
+
+function spoolIsolationCli(): string {
+  return `#!/usr/bin/env node
+import { existsSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+const command = args[0] === "--profile" ? args.slice(2) : args;
+if (command[0] === "--version") {
+  process.stdout.write(${JSON.stringify(`${SUPPORTED_RAFT_CLI_VERSION}\n`)});
+} else if (command.join(" ") === "auth whoami") {
+  process.stdout.write(JSON.stringify({ ok: true, data: { agentId: "agent-loom", serverId: "server-1" } }) + "\\n");
+} else if (command[0] === "profile" && command[1] === "show") {
+  const target = command.find(value => value.startsWith("@"));
+  const profiles = {
+    self: { id: "agent-loom", kind: "agent", name: "loom", displayName: "Loom Individual", description: "A continuing Individual." },
+    "@yu": { id: "human-yu", kind: "human", name: "Yu", displayName: "Yu", description: "Long-term counterpart: operator" },
+  };
+  process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
+} else if (command[0] === "message" && command[1] === "check") {
+  const marker = path.join(path.dirname(process.argv[1]), "check-marker");
+  if (!existsSync(marker)) {
+    writeFileSync(marker, "1");
+    process.stdout.write("[target=dm:@yu msg=aaaa1111 time=2026-08-03 05:00:00 type=human] @yu: First notice.\\n[target=dm:@yu msg=bbbb2222 time=2026-08-03 05:00:01 type=human] @yu: Second notice.\\n\\nNo more new messages.\\n");
+  } else {
+    process.stdout.write("\\nNo more new messages.\\n");
+  }
+} else if (command[0] === "message" && command[1] === "resolve") {
+  const id = command[2];
+  process.stdout.write("[target=dm:@yu msg=" + id + " time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: A missed notice.\\n");
+} else if (command[0] === "message" && command[1] === "read") {
+  const target = command[command.indexOf("--target") + 1];
+  const around = command[command.indexOf("--around") + 1];
+  const marker = path.join(path.dirname(process.argv[1]), "read-marker-" + around);
+  if (around === "aaaa1111" && !existsSync(marker)) {
+    writeFileSync(marker, "1");
+    process.stdout.write("## Message History for " + target + " around " + around + " (0 messages)\\n\\n");
+  } else if (around === "aaaa1111") {
+    process.stdout.write("## Message History for " + target + " around " + around + " (1 messages)\\n\\n[seq=1 msg=aaaa1111-1111-1111-1111-111111111111 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: A missed notice.\\n");
+  } else {
+    process.stdout.write("## Message History for " + target + " around " + around + " (1 messages)\\n\\n[seq=2 msg=bbbb2222-2222-2222-2222-222222222222 time=2026-08-03 05:00:01 type=human] @yu — Long-term counterpart: operator: Second notice.\\n");
+  }
+}
+`;
 }

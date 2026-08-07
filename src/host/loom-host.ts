@@ -54,6 +54,8 @@ export interface LoomHost {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   requeueInput(inputId: string): RequeueInputResult;
+  /** Move failed ingress items on one channel back to pending without a restart. */
+  retryChannelIngress(channelId: string, itemId?: string): Promise<number>;
   wake(): void;
   status(): LoomHostStatus;
   stop(): Promise<void>;
@@ -111,6 +113,7 @@ class DefaultLoomHost implements LoomHost {
       socketPath: options.statusSocketPath,
       read: since => this.#operatorStatus(since),
       requeueInput: inputId => this.requeueInput(inputId).disposition,
+      retryChannelIngress: (channelId, itemId) => this.retryChannelIngress(channelId, itemId),
       interactionView: options => this.interactionView(options),
     });
   }
@@ -194,6 +197,13 @@ class DefaultLoomHost implements LoomHost {
     const result = this.#instance.requeueInput(inputId);
     if (result.disposition === "requeued") this.#driver.wake();
     return result;
+  }
+
+  retryChannelIngress(channelId: string, itemId?: string): Promise<number> {
+    if (this.#state !== "running") {
+      throw new Error(`Loom Host cannot retry channel ingress while ${this.#state}`);
+    }
+    return this.#channels.retryFailedIngress(channelId, itemId);
   }
 
   wake(): void {
@@ -396,6 +406,7 @@ function operatorChannelStatuses(status: LoomHostStatus): LoomIntegrationStatus[
     .map(([name, channel]) => ({
       name,
       state: channel.state,
+      ...(channel.ingress ? { ingress: channel.ingress } : {}),
       ...(channel.lastError
         ? { lastFailure: { category: failureCategory(channel.lastError) } }
         : {}),

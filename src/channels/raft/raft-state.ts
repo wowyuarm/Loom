@@ -9,9 +9,13 @@ export function initializeRaftState(database: DatabaseSync, activatedAt: string)
       attempt_id TEXT NOT NULL,
       received_at TEXT NOT NULL,
       delivery_order INTEGER,
-      status TEXT NOT NULL CHECK (status IN ('pending', 'complete')),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'retry_wait', 'failed', 'complete')),
       input_id TEXT,
-      last_error TEXT
+      last_error TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      next_retry_at TEXT,
+      failure_category TEXT
     ) STRICT;
     CREATE TABLE IF NOT EXISTS refs (
       ref TEXT PRIMARY KEY,

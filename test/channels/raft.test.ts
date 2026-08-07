@@ -7,6 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import {
   openRaftChannel,
+  RaftRetryableError,
   type RaftRemote,
 } from "../../src/channels/raft/index.js";
 import type { EffectRequest, RuntimeInput } from "../../src/runtime/index.js";
@@ -46,7 +47,7 @@ test("persists a content-free wake before resolving and completing its Runtime I
     messageId: "message-42",
     receivedAt: "2026-08-03T05:00:01.000Z",
   }), { ok: true });
-  assert.equal(channel.status().pendingWakes, 1);
+  assert.equal(channel.status().ingress.pending, 1);
   assert.equal(resolveCalls, 1);
   assert.equal(inputs.length, 0);
 
@@ -69,7 +70,7 @@ test("persists a content-free wake before resolving and completing its Runtime I
       audience: "Only this Individual and Yu can see this DM.",
     },
   });
-  await eventually(() => channel.status().pendingWakes === 0 || channel.status().state === "degraded");
+  await eventually(() => channel.status().ingress.pending === 0 || channel.status().state === "degraded");
 
   assert.equal(channel.status().state, "connected");
   assert.equal(inputs.length, 1);
@@ -134,7 +135,37 @@ test("persists a content-free wake before resolving and completing its Runtime I
   });
   await delay(20);
   assert.equal(resolveCalls, 1);
-  assert.equal(recovered.status().pendingWakes, 0);
+  assert.equal(recovered.status().ingress.pending, 0);
+});
+
+test("isolates one unresolvable wake so a later DM still reaches Runtime", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-isolated-wake-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => {
+      if (messageId === "bad-wake") throw new Error("unsupported Raft message");
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        signal: "direct_message",
+        content: "This later DM must not be blocked.",
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: { target: "dm:@yu", kind: "direct", visibility: "private", audience: "Only this Individual and Yu can see this DM." },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"), now: activationTime, routeRef: "raft-primary",
+    serverId: "server-1", selfMemberId: "agent-hal", principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu", remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => { inputs.push(input); return { disposition: "accepted", inputId: input.sourceId }; });
+  await channel.acceptWake({ attemptId: "bad-attempt", messageId: "bad-wake", receivedAt: "2026-08-03T05:00:00.000Z" });
+  await channel.acceptWake({ attemptId: "good-attempt", messageId: "good-wake", receivedAt: "2026-08-03T05:00:01.000Z" });
+  await eventually(() => inputs.length === 1);
+  assert.equal(inputs[0]?.sourceId, "good-wake");
 });
 
 test("drains the authoritative inbox when an old wake is replayed and preserves Raft order", async t => {
@@ -151,6 +182,7 @@ test("drains the authoritative inbox when an old wake is replayed and preserves 
       exposeInbox = false;
       return {
         entries,
+        spooled: 0,
         acknowledge: async () => { acknowledged += entries.length; },
       };
     },
@@ -206,7 +238,7 @@ test("drains the authoritative inbox when an old wake is replayed and preserves 
 
   assert.deepEqual(accepted, ["message-missed", "message-later"]);
   assert.equal(acknowledged, 2);
-  assert.equal(channel.status().pendingWakes, 0);
+  assert.equal(channel.status().ingress.pending, 0);
 });
 
 test("recovers pending Raft inbox messages at startup without waiting for another wake", async t => {
@@ -219,6 +251,7 @@ test("recovers pending Raft inbox messages at startup without waiting for anothe
         messageId: "message-startup",
         receivedAt: "2026-08-03T05:00:00.000Z",
       }],
+      spooled: 0,
       acknowledge: async () => { acknowledged = true; },
     }),
     resolveMessage: async messageId => ({
@@ -601,7 +634,7 @@ test("delivers a persisted message through its opaque Destination and preserves 
     messageId: "message-with-destination",
     receivedAt: "2026-08-03T05:00:01.000Z",
   });
-  await eventually(() => channel.status().pendingWakes === 0);
+  await eventually(() => channel.status().ingress.pending === 0);
 
   assert.deepEqual(await channel.deliver({
     attemptId: "delivery-1",
@@ -1254,7 +1287,7 @@ test("keeps ordinary channel activity out of Runtime Inputs until Orientation co
     messageId: "ambient-1",
     receivedAt: "2026-08-03T05:00:01.000Z",
   });
-  await eventually(() => channel.status().pendingWakes === 0);
+  await eventually(() => channel.status().ingress.pending === 0);
 
   const source = channel.agentSurface().attentionSource;
   assert.ok(source);
@@ -1270,7 +1303,7 @@ test("keeps ordinary channel activity out of Runtime Inputs until Orientation co
     messageId: "ambient-2",
     receivedAt: "2026-08-03T05:01:01.000Z",
   });
-  await eventually(() => channel.status().pendingWakes === 0);
+  await eventually(() => channel.status().ingress.pending === 0);
   assert.equal((await source.capture())?.evidence.signalCount, 2);
   await source.markPresented(first.revision);
   const remaining = await source.capture();
@@ -1335,7 +1368,7 @@ test("does not create a Runtime Input for a message that predates activation", a
     messageId: "message-old",
     receivedAt: "2026-08-03T05:00:01.000Z",
   });
-  await eventually(() => channel.status().pendingWakes === 0);
+  await eventually(() => channel.status().ingress.pending === 0);
 
   assert.equal(inputs.length, 0);
 });
@@ -1359,6 +1392,18 @@ async function eventually(predicate: () => boolean): Promise<void> {
   }
 }
 
+async function eventuallyWithClock(
+  clock: { current: number },
+  predicate: () => boolean,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("Timed out waiting for Raft Channel state");
+    clock.current += 25;
+    await delay(5);
+  }
+}
+
 async function executeTool(
   tools: ReturnType<Awaited<ReturnType<typeof openRaftChannel>>["agentTools"]>,
   name: string,
@@ -1368,3 +1413,374 @@ async function executeTool(
   assert.ok(tool);
   return tool.execute(`call-${name}`, params, undefined, undefined, undefined as never);
 }
+
+test("backs off a transiently failing wake and recovers it without manual intervention", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-backoff-"));
+  let resolveCalls = 0;
+  const remote: RaftRemote = {
+    async resolveMessage(messageId) {
+      resolveCalls += 1;
+      if (resolveCalls <= 2) throw new RaftRetryableError("Raft CLI is briefly unavailable");
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        signal: "direct_message",
+        content: "Recover through bounded backoff.",
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  // A controllable clock: fixed activation boundary, advanced while waiting so
+  // persisted retry deadlines eventually elapse (a frozen clock never lets a
+  // retry_wait wake become due, and a real clock would make these messages
+  // predate the activation boundary).
+  const clock = { current: Date.parse("2026-08-03T04:59:00.000Z") };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 40,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-transient",
+    messageId: "message-transient",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventuallyWithClock(clock, () => channel.status().ingress.retrying === 1);
+  assert.equal(channel.status().ingress.lastFailureCategory, "remote_unavailable");
+  assert.equal(channel.status().ingress.failed, 0);
+
+  await eventuallyWithClock(clock, () => inputs.length === 1);
+  assert.equal(inputs[0]?.sourceId, "message-transient");
+  assert.equal(resolveCalls, 3);
+  assert.equal(channel.status().ingress.pending, 0);
+  assert.equal(channel.status().ingress.retrying, 0);
+  assert.equal(channel.status().ingress.failed, 0);
+});
+
+test("marks a permanently failing wake as failed and never retries it automatically", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-permanent-"));
+  let badCalls = 0;
+  const remote: RaftRemote = {
+    async resolveMessage(messageId) {
+      if (messageId === "bad-wake") {
+        badCalls += 1;
+        throw new Error("unsupported Raft message");
+      }
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        signal: "direct_message",
+        content: "A later DM must not be blocked by the failed wake.",
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    retryBaseDelayMs: 30,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+
+  await channel.acceptWake({
+    attemptId: "bad-attempt",
+    messageId: "bad-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 1);
+  assert.equal(channel.status().ingress.lastFailureCategory, "invalid_message");
+
+  await channel.acceptWake({
+    attemptId: "good-attempt",
+    messageId: "good-wake",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => inputs.length === 1);
+  assert.equal(inputs[0]?.sourceId, "good-wake");
+
+  await delay(150);
+  assert.equal(badCalls, 1);
+  assert.equal(channel.status().ingress.failed, 1);
+});
+
+test("retries failed wakes on demand without a restart and without duplicating Inputs", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-manual-retry-"));
+  let permanent = true;
+  const remote: RaftRemote = {
+    async resolveMessage(messageId) {
+      if (permanent) throw new Error("permanent failure");
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        signal: "direct_message",
+        content: `Retried content for ${messageId}.`,
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: activationTime,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-first",
+    messageId: "first-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-second",
+    messageId: "second-wake",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 2);
+  permanent = false;
+
+  const [firstItemId, secondItemId] = channel.status().ingress.failedItemIds!;
+  assert.deepEqual([firstItemId, secondItemId], ["wake-1", "wake-2"]);
+
+  assert.equal(await channel.retryFailedIngress(firstItemId), 1);
+  await eventually(() => inputs.some(input => input.sourceId === "first-wake"));
+  assert.equal(inputs.filter(input => input.sourceId === "first-wake").length, 1);
+  await assert.rejects(channel.retryFailedIngress(firstItemId), /is not failed/);
+
+  assert.equal(await channel.retryFailedIngress(), 1);
+  await eventually(() => inputs.some(input => input.sourceId === "second-wake"));
+  assert.equal(inputs.filter(input => input.sourceId === "second-wake").length, 1);
+  assert.equal(channel.status().ingress.failed, 0);
+  assert.equal(channel.status().ingress.pending, 0);
+
+  await assert.rejects(channel.retryFailedIngress("wake-99"), /is not known/);
+});
+
+test("persists retry and failure state across a channel restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-restart-state-"));
+  const stateFile = path.join(root, "raft.db");
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => {
+      if (messageId === "permanent-wake") throw new Error("permanent failure");
+      throw new RaftRetryableError("Raft CLI is still unavailable");
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const clock = { current: Date.parse("2026-08-03T04:59:00.000Z") };
+  const channel = await openRaftChannel({
+    stateFile,
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 50,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-permanent",
+    messageId: "permanent-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-retry",
+    messageId: "retry-wake",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventuallyWithClock(clock, () => channel.status().ingress.failed === 1 && channel.status().ingress.retrying === 1);
+  await channel.stop();
+  assert.equal(inputs.length, 0);
+
+  const recoveredRemote: RaftRemote = {
+    resolveMessage: async messageId => {
+      if (messageId === "permanent-wake") throw new Error("permanent failure");
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:01.000Z",
+        signal: "direct_message",
+        content: "Recovered after restart.",
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const recovered = await openRaftChannel({
+    stateFile,
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 50,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote: recoveredRemote,
+  });
+  t.after(() => recovered.stop());
+  await recovered.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+  assert.equal(recovered.status().ingress.failed, 1);
+  assert.equal(recovered.status().ingress.retrying, 1);
+
+  await eventuallyWithClock(clock, () => recovered.status().ingress.retrying === 0 && inputs.length === 1);
+  assert.equal(inputs[0]?.sourceId, "retry-wake");
+  assert.equal(recovered.status().ingress.failed, 1);
+  assert.equal(recovered.status().ingress.pending, 0);
+});
+
+test("treats Runtime admission failure as retryable and recovers", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-admission-retry-"));
+  let admissions = 0;
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => ({
+      messageId,
+      occurredAt: "2026-08-03T05:00:00.000Z",
+      signal: "direct_message",
+      content: "Admit this after a transient Runtime block.",
+      sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+      place: {
+        target: "dm:@yu",
+        kind: "direct",
+        visibility: "private",
+        audience: "Only this Individual and Yu can see this DM.",
+      },
+    }),
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const clock = { current: Date.parse("2026-08-03T04:59:00.000Z") };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 40,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  await channel.start(async () => {
+    admissions += 1;
+    if (admissions === 1) throw new Error("Runtime is busy");
+    return { disposition: "accepted", inputId: "input-admitted" };
+  });
+
+  await channel.acceptWake({
+    attemptId: "attempt-admission",
+    messageId: "message-admission",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventuallyWithClock(clock, () => channel.status().ingress.lastFailureCategory === "admission_failed");
+  assert.equal(channel.status().ingress.retrying, 1);
+
+  await eventuallyWithClock(clock, () => admissions === 2);
+  assert.equal(channel.status().ingress.retrying, 0);
+  assert.equal(channel.status().ingress.pending, 0);
+  assert.equal(channel.status().ingress.failed, 0);
+});
+
+test("picks the most recent failure category by local insertion order when attempts tie", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-category-tie-"));
+  const remote: RaftRemote = {
+    resolveMessage: async messageId => {
+      if (messageId === "tie-permanent") throw new Error("permanent failure");
+      throw new RaftRetryableError("Raft CLI is still unavailable");
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const clock = { current: Date.parse("2026-08-03T04:59:00.000Z") };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: () => new Date(clock.current),
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  await channel.start(async () => ({ disposition: "accepted", inputId: "input-tie" }));
+
+  await channel.acceptWake({
+    attemptId: "attempt-tie-a",
+    messageId: "tie-retry",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await channel.acceptWake({
+    attemptId: "attempt-tie-b",
+    messageId: "tie-permanent",
+    receivedAt: "2026-08-03T05:00:01.000Z",
+  });
+  await eventuallyWithClock(clock, () => channel.status().ingress.lastFailureCategory !== undefined);
+  // Both attempts share the same clock instant; the later-inserted item
+  // wins the tie, so its category is the one reported.
+  assert.equal(channel.status().ingress.lastFailureCategory, "invalid_message");
+});

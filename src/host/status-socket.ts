@@ -3,6 +3,7 @@ import { createConnection, createServer, type Server, type Socket } from "node:n
 import path from "node:path";
 
 import type { InteractionViewOptions, InteractionViewPage } from "../runtime/index.js";
+import type { InteractionChannelIngressStatus } from "../channels/channel.js";
 
 export type LoomAgentName =
   | "main-agent"
@@ -32,6 +33,7 @@ export interface LoomIntegrationStatus {
   name: string;
   state: string;
   lastFailure?: { category: string };
+  ingress?: InteractionChannelIngressStatus;
 }
 
 export type LoomModelStatus =
@@ -82,10 +84,12 @@ export type LoomStatusReport = LiveLoomStatusReport | UnavailableLoomStatusRepor
 type StatusRequest =
   | { type: "status"; since?: string }
   | { type: "requeue_input"; inputId: string }
+  | { type: "retry_ingress"; channelId: string; itemId?: string }
   | { type: "history"; after?: string; limit?: number };
 type StatusResponse =
   | { ok: true; type: "status"; report: LiveLoomStatusReport }
   | { ok: true; type: "requeue_input"; disposition: "requeued" | "not_blocked" }
+  | { ok: true; type: "retry_ingress"; retried: number }
   | { ok: true; type: "history"; page: InteractionViewPage }
   | { ok: false; error: string };
 const MAX_STATUS_REQUEST_BYTES = 8 * 1024;
@@ -99,6 +103,7 @@ export function createLoomStatusServer(options: {
   socketPath: string;
   read(since?: string): LiveLoomStatusReport;
   requeueInput(inputId: string): "requeued" | "not_blocked";
+  retryChannelIngress(channelId: string, itemId?: string): Promise<number>;
   interactionView(viewOptions?: InteractionViewOptions): InteractionViewPage;
 }): LoomStatusServer {
   const socketPath = path.resolve(options.socketPath);
@@ -130,8 +135,17 @@ export function createLoomStatusServer(options: {
             socket.end();
             return;
           }
+          void handleRequest(request, socket);
+        });
+        async function handleRequest(request: StatusRequest, socket: Socket): Promise<void> {
           try {
-            if (request.type === "requeue_input") {
+            if (request.type === "retry_ingress") {
+              writeResponse(socket, {
+                ok: true,
+                type: "retry_ingress",
+                retried: await options.retryChannelIngress(request.channelId, request.itemId),
+              });
+            } else if (request.type === "requeue_input") {
               writeResponse(socket, {
                 ok: true,
                 type: "requeue_input",
@@ -151,9 +165,10 @@ export function createLoomStatusServer(options: {
             }
           } catch {
             writeResponse(socket, { ok: false, error: "Loom status is unavailable" });
+          } finally {
+            socket.end();
           }
-          socket.end();
-        });
+        }
         socket.on("close", () => sockets.delete(socket));
         socket.on("error", () => sockets.delete(socket));
       });
@@ -253,6 +268,31 @@ export async function readLoomInteractionHistory(
   return response.page;
 }
 
+export async function retryLoomChannelIngress(
+  socketPath: string,
+  channelId: string,
+  itemId?: string,
+): Promise<number> {
+  if (!channelId.trim()) throw new Error("Loom retry-ingress requires a Channel id");
+  let response: Extract<StatusResponse, { ok: true }>;
+  try {
+    response = await sendStatusRequest(socketPath, {
+      type: "retry_ingress",
+      channelId: channelId.trim(),
+      ...(itemId?.trim() ? { itemId: itemId.trim() } : {}),
+    });
+  } catch (error) {
+    if (error instanceof Error && isUnavailable(error)) {
+      throw new Error("Loom Host is not running; start it with `loom run` before retrying ingress");
+    }
+    throw error;
+  }
+  if (response.type !== "retry_ingress") {
+    throw new Error("Loom status endpoint returned the wrong response type");
+  }
+  return response.retried;
+}
+
 export async function requeueLoomInput(
   socketPath: string,
   inputId: string,
@@ -287,6 +327,20 @@ function parseStatusRequest(source: string): StatusRequest {
       throw new Error("Loom requeue requires an Input id");
     }
     return { type: "requeue_input", inputId: request.inputId.trim() };
+  }
+  if (request.type === "retry_ingress") {
+    if (typeof request.channelId !== "string" || !request.channelId.trim()) {
+      throw new Error("Loom retry-ingress requires a Channel id");
+    }
+    if (request.itemId !== undefined
+      && (typeof request.itemId !== "string" || !request.itemId.trim())) {
+      throw new Error("Loom retry-ingress item id must be a string");
+    }
+    return {
+      type: "retry_ingress",
+      channelId: request.channelId.trim(),
+      ...(typeof request.itemId === "string" ? { itemId: request.itemId.trim() } : {}),
+    };
   }
   if (request.type === "history") {
     if (request.after !== undefined && typeof request.after !== "string") {

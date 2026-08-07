@@ -8,5 +8,6 @@ export {
   readLoomInteractionHistory,
   readLoomStatus,
   requeueLoomInput,
+  retryLoomChannelIngress,
   type LoomStatusReport,
 } from "./status-socket.js";

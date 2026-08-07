@@ -30,6 +30,8 @@ export interface LoomInteractionChannels {
   deliver(attempt: DeliveryAttemptRequest): Promise<DeliveryObservation>;
   /** Channel-neutral live status keyed by stable channel id. */
   status(): Readonly<Record<string, InteractionChannelStatus>>;
+  /** Move failed ingress items on one channel back to pending without a restart. */
+  retryFailedIngress(channelId: string, itemId?: string): Promise<number>;
   agentSurface(): InteractionChannelAgentSurface | undefined;
   /** Route refs owned by each Channel id, for display in interaction history. */
   routeChannelIds(): ReadonlyMap<string, string>;
@@ -96,6 +98,16 @@ export function openLoomInteractionChannels(
       const statuses: Record<string, InteractionChannelStatus> = {};
       for (const channel of channels) statuses[channel.id] = channel.status();
       return statuses;
+    },
+    async retryFailedIngress(channelId, itemId) {
+      const owner = channels.find(channel => channel.id === channelId);
+      if (!owner) {
+        throw new Error(`No enabled Interaction Channel has id ${channelId}`);
+      }
+      if (!owner.retryFailedIngress) {
+        throw new Error(`Interaction Channel ${channelId} does not support retrying failed ingress`);
+      }
+      return owner.retryFailedIngress(itemId);
     },
     agentSurface: () => surface,
     routeChannelIds: () => new Map(channels.map(channel => [channel.routeRef, channel.id])),

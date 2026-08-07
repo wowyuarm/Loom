@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { openLoomHost, readLoomInteractionHistory, readLoomStatus } from "../../src/host/index.js";
 import type { RaftRemote } from "../../src/channels/raft/index.js";
@@ -449,7 +452,7 @@ test("assembles one explicitly enabled Raft Channel and owns its lifecycle", asy
   assert.equal(host.status().state, "running");
   assert.deepEqual(host.status().channels?.raft, {
     state: "connected",
-    pendingWakes: 0,
+    ingress: { pending: 0, retrying: 0, failed: 0, spooled: 0 },
   });
 
   await host.stop();
@@ -485,16 +488,79 @@ test("assembles Weixin and Raft Channels together in one Host", async t => {
   await eventually(() => host.status().channels?.raft?.state === "connected");
   await eventually(() => host.status().channels?.weixin?.state === "degraded");
 
-  assert.deepEqual(host.status().channels?.raft, { state: "connected", pendingWakes: 0 });
+  assert.deepEqual(host.status().channels?.raft, {
+    state: "connected",
+    ingress: { pending: 0, retrying: 0, failed: 0, spooled: 0 },
+  });
   assert.equal(host.status().channels?.weixin?.state, "degraded");
   const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
   assert.ok("runId" in report);
   if ("runId" in report) {
     assert.deepEqual(report.channels, [
       { name: "weixin", state: "degraded", lastFailure: { category: "connection" } },
-      { name: "raft", state: "connected" },
+      {
+        name: "raft",
+        state: "connected",
+        ingress: { pending: 0, retrying: 0, failed: 0, spooled: 0 },
+      },
     ]);
   }
+});
+
+test("retries failed wakes on one Channel through the running Host", async t => {
+  const root = await preparedInstanceRoot();
+  await configureRaft(root);
+  let broken = true;
+  // Occurred after the Host opens, so the resolved message is not predated by
+  // the Channel activation boundary and is delivered as an Input.
+  const occurredAt = new Date(Date.now() + 60_000).toISOString();
+  const remote: RaftRemote = {
+    async drainInbox() {
+      return {
+        entries: [{
+          receiptId: "dm:@alex:aaaaaaaa",
+          messageId: "retry-message",
+          receivedAt: occurredAt,
+        }],
+        spooled: 0,
+        acknowledge: async () => {},
+      };
+    },
+    async resolveMessage(messageId) {
+      if (broken) throw new Error("unsupported Raft message");
+      return {
+        messageId,
+        occurredAt,
+        signal: "direct_message",
+        content: "Retried through the Host.",
+        sender: { memberId: "human-alex", kind: "human", handle: "alex" },
+        place: {
+          target: "dm:@alex",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Alex can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const host = await openLoomHost({ root, machineTimeZone: "UTC", raftRemote: remote });
+  t.after(() => host.stop());
+  await host.start();
+  await eventually(() => host.status().channels?.raft?.ingress?.failed === 1);
+  assert.equal(host.status().channels?.raft?.ingress?.lastFailureCategory, "invalid_message");
+
+  broken = false;
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const result = await runCli(cli, ["retry-ingress", "--root", root, "raft"], process.env);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "Retried 1 failed ingress item on raft");
+  await eventually(() => host.status().channels?.raft?.ingress?.failed === 0);
+  assert.equal(host.status().channels?.raft?.ingress?.pending, 0);
+  assert.ok(host.status().instance.runtime.inputs.some(
+    input => input.sourceId === "retry-message",
+  ));
 });
 
 test("delivers a persisted outbound Effect through the configured Weixin route", async t => {
@@ -595,6 +661,24 @@ const outboundEffectExecution: AgentExecution = {
     };
   },
 };
+
+async function runCli(
+  cli: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const child = spawn(process.execPath, [cli, ...args], {
+    stdio: ["pipe", "pipe", "pipe"],
+    ...(env ? { env } : {}),
+  });
+  child.stdin.end();
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", chunk => { stdout += String(chunk); });
+  child.stderr.on("data", chunk => { stderr += String(chunk); });
+  const [code] = await once(child, "exit");
+  return { code: code as number | null, stdout, stderr };
+}
 
 async function preparedInstanceRoot(): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), "loom-host-"));

@@ -109,6 +109,39 @@ Raft status 有四种状态：
 status。运行中 bridge 后来失联会反映为 `degraded`，当前不会另外推送一条状态变化
 事件。不要把进程仍在运行当成 Raft 一定 connected。
 
+### Ingress 状态
+
+Raft 条目的 `ingress` 字段汇总尚未完成的外部消息——待处理 wake、重试中的 wake、
+永久失败的 wake，以及 bridge spool 中待恢复的收件。它只含数量、时间、失败类别和
+不透明的本地 item id，不含消息内容、原始 target 或完整错误：
+
+- `pending`：等待处理的 wake 数；
+- `retrying`：暂时失败、正在退避等待自动重试的 wake 数；
+- `failed`：永久失败、需要操作介入的 wake 数；
+- `spooled`：bridge 收件 spool 中待恢复的消息数。某条收件暂时无法解析时隔离在
+  spool 中，其余收件照常形成 wake，不会整批卡住；
+- `oldestOutstandingAt`：未完成项（wake 队列与 spool 合计）中最早的收到时间；
+- `lastFailureCategory`：最近一次失败类别：`remote_unavailable`（远端或 CLI 不可用）、
+  `invalid_message`（消息无法解析，永久失败）、`admission_failed`（Runtime 暂不能
+  接收，可重试）；
+- `failedItemIds`：最多 20 个永久失败项的本地 id（`wake-<rowid>` 形式），供精确恢复。
+
+`loom status --json` 输出这些字段；普通 `loom status` 只在 Raft 有失败时显示失败类别。
+
+### 恢复失败 ingress
+
+`loom retry-ingress [--root <instance-root>] <channel-id> [item-id]` 把永久失败的
+ingress 项移回 pending 立即重试，无需重启 Host。省略 `item-id` 时重试该 channel 的
+全部失败项；指定时只重试 `failedItemIds` 中列出的那一个。命令只在 Host running 时
+可用，没有可重试项时报错退出。
+
+失败分类按 Raft CLI 的错误码与错误摘要判定：`MISSING_*`、`TOKEN_*`、
+`NOT_FOUND`、`SCOPE_DENIED` 等明确 code 视为永久；CLI 把非 5xx 响应统一折叠成
+`<OP>_FAILED`，其中既包含确定冲突（如 task 已认领）也包含 HTTP 429 rate limit，
+因此 `*_FAILED` 默认按永久处理，只有摘要明确为 429 / rate limit / too many
+requests 时按可重试处理；`SERVER_5XX` 按可重试处理。单个 CLI 命令默认 60 秒超时，
+超时进程被终止并按可重试失败处理，避免挂起的 CLI 卡住整个收件循环。
+
 bridge 的 content-free wake 只负责叫醒 Loom，不是权威消息清单。每次启动或收到 wake，
 Loom 都会通过 `raft message check` 拉取完整待处理收件箱；该命令是 0.0.17 对 External
 Agent 提供的正式收件与确认入口。整批结果按 Raft 返回顺序先写入 Loom 的持久队列，

@@ -5,16 +5,17 @@ import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import type {
-  RaftInboxBatch,
-  RaftRemote,
-  RaftRemoteActivity,
-  RaftRemoteMessage,
-  RaftRemoteOpenResult,
-  RaftRemotePage,
-  RaftRemotePlace,
-  RaftRemoteSearchResult,
-  RaftRemoteStatus,
+import {
+  RaftRetryableError,
+  type RaftInboxBatch,
+  type RaftRemote,
+  type RaftRemoteActivity,
+  type RaftRemoteMessage,
+  type RaftRemoteOpenResult,
+  type RaftRemotePage,
+  type RaftRemotePlace,
+  type RaftRemoteSearchResult,
+  type RaftRemoteStatus,
 } from "./raft-channel.js";
 import type { JsonValue } from "../../runtime/index.js";
 
@@ -28,6 +29,8 @@ export interface OpenRaftCliRemoteOptions {
   principalDmTarget: string;
   bridgeStateDirectory: string;
   cliEntrypoint?: string;
+  /** Bounded wait for one CLI command before the child is terminated and the call fails retryable. */
+  commandTimeoutMs?: number;
 }
 
 interface RaftProfile {
@@ -52,6 +55,8 @@ interface InboxSpoolEntry {
   shortId: string;
   receivedAt: string;
   messageId?: string;
+  /** Bounded summary of the last failed completion attempt; kept for recovery. */
+  lastError?: string;
 }
 
 class DefaultRaftCliRemote implements RaftRemote {
@@ -65,9 +70,12 @@ class DefaultRaftCliRemote implements RaftRemote {
   #bridgeState: "stopped" | "available" | "unavailable" = "stopped";
   #bridgeError: string | undefined;
 
+  readonly #commandTimeoutMs: number;
+
   constructor(private readonly options: OpenRaftCliRemoteOptions) {
     this.#profile = required(options.profile, "Raft profile");
     this.#entrypoint = options.cliEntrypoint ?? packagedRaftEntrypoint();
+    this.#commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
   }
 
   async validate(): Promise<void> {
@@ -175,35 +183,56 @@ class DefaultRaftCliRemote implements RaftRemote {
     const prior = await this.#readInboxSpool();
     const output = (await this.#run(["message", "check"])).stdout;
     const merged = new Map(prior.map(entry => [entry.receiptId, entry]));
-    for (const entry of parseInboxNotices(output)) merged.set(entry.receiptId, entry);
+    for (const entry of parseInboxNotices(output)) {
+      const existing = merged.get(entry.receiptId);
+      merged.set(entry.receiptId, { ...existing, ...entry });
+    }
     const spool = [...merged.values()];
     await this.#writeInboxSpool(spool);
 
+    const completed: InboxSpoolEntry[] = [];
     for (const entry of spool) {
-      if (entry.messageId) continue;
-      const resolved = parseResolvedMessageHeader(
-        (await this.#run(["message", "resolve", entry.shortId])).stdout.trimEnd(),
-      );
-      entry.target = resolved.target;
-      await this.#writeInboxSpool(spool);
-      const history = await this.#readHistory(entry.target, entry.shortId, 1);
-      const match = history.find(row => row.messageId.toLowerCase().startsWith(entry.shortId.toLowerCase()));
-      if (!match) throw new Error(`Raft inbox message ${entry.shortId} was not found in its history`);
-      entry.messageId = match.messageId;
-      await this.#writeInboxSpool(spool);
+      if (entry.messageId) {
+        completed.push(entry);
+        continue;
+      }
+      try {
+        const resolved = parseResolvedMessageHeader(
+          (await this.#run(["message", "resolve", entry.shortId])).stdout.trimEnd(),
+        );
+        entry.target = resolved.target;
+        await this.#writeInboxSpool(spool);
+        const history = await this.#readHistory(entry.target, entry.shortId, 1);
+        const match = history.find(row => row.messageId.toLowerCase().startsWith(entry.shortId.toLowerCase()));
+        if (!match) throw new Error(`Raft inbox message ${entry.shortId} was not found in its history`);
+        entry.messageId = match.messageId;
+        delete entry.lastError;
+        await this.#writeInboxSpool(spool);
+        completed.push(entry);
+      } catch (error) {
+        // Isolate one bad receipt: keep it in the spool for recovery, never
+        // drop it or guess its content, and let the rest of the batch proceed.
+        entry.lastError = errorMessage(error).slice(0, 200);
+        await this.#writeInboxSpool(spool);
+      }
     }
 
-    const receiptIds = new Set(spool.map(entry => entry.receiptId));
+    const receiptIds = new Set(completed.map(entry => entry.receiptId));
     const messages = new Map<string, InboxSpoolEntry>();
-    for (const entry of spool) {
+    for (const entry of completed) {
       if (!messages.has(entry.messageId!)) messages.set(entry.messageId!, entry);
     }
+    const spooled = spool.filter(entry => !entry.messageId);
     return {
       entries: [...messages.values()].map(entry => ({
         receiptId: entry.receiptId,
         messageId: entry.messageId!,
         receivedAt: entry.receivedAt,
       })),
+      spooled: spooled.length,
+      ...(spooled.length > 0
+        ? { spooledOldestAt: spooled.map(entry => entry.receivedAt).sort()[0]! }
+        : {}),
       acknowledge: async () => {
         const current = await this.#readInboxSpool();
         await this.#writeInboxSpool(current.filter(entry => !receiptIds.has(entry.receiptId)));
@@ -815,10 +844,27 @@ class DefaultRaftCliRemote implements RaftRemote {
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", chunk => { stdout += String(chunk); });
       child.stderr.on("data", chunk => { stderr += String(chunk); });
-      child.on("error", reject);
+      // A hung CLI child must not pin the serial drain forever; terminate it and
+      // fail retryable so the rest of the batch can proceed.
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new RaftRetryableError(
+          `Raft CLI command timed out after ${this.#commandTimeoutMs}ms`,
+        ));
+      }, this.#commandTimeoutMs);
+      child.on("error", error => {
+        clearTimeout(timer);
+        reject(new RaftRetryableError(error.message));
+      });
       child.on("close", code => {
+        clearTimeout(timer);
         if (code === 0) resolve({ stdout, stderr });
-        else reject(new RaftCliCommandError(stderr, stdout, code));
+        else {
+          const failure = new RaftCliCommandError(stderr, stdout, code);
+          // Permanent for known codes and the <OP>_FAILED family (deterministic
+          // conflicts); retryable only for SERVER_5XX and rate-limit summaries.
+          reject(failure.permanent ? failure : new RaftRetryableError(failure.message));
+        }
       });
       child.stdin.end(options.stdin ?? "");
     });
@@ -1185,23 +1231,65 @@ function cliFailure(stderr: string, stdout: string, code: number | null): string
   return `Raft CLI command failed: ${detail.slice(0, 2_000)}`;
 }
 
+/**
+ * Raft codes known to be permanent: retrying cannot succeed without human
+ * action (fixing credentials, data or arguments). The CLI collapses every
+ * non-5xx response into its own `<OP>_FAILED` family, so a `*_FAILED` code
+ * alone is not a signal: it covers deterministic conflicts ("Task is already
+ * assigned") as well as rate limits. `*_FAILED` is therefore permanent by
+ * default, and only HTTP 429 / rate-limit summaries opt out.
+ */
+const PERMANENT_RAFT_CODES = new Set([
+  "AMBIGUOUS_ID",
+  "INVALID_ACTION",
+  "INVALID_AGENT_ID",
+  "INVALID_ARG",
+  "INVALID_JSON",
+  "INVALID_JSON_RESPONSE",
+  "INVALID_REACTION",
+  "INVALID_TARGET",
+  "INTEGRATION_MANIFEST_INVALID",
+  "INTEGRATION_MANIFEST_MISSING",
+  "INTEGRATION_NOT_FOUND",
+  "NOT_FOUND",
+  "PROFILE_ENV_CONFLICT",
+  "PROFILE_FILE_INVALID",
+  "PROFILE_FILE_NOT_FOUND",
+  "SCOPE_DENIED",
+  "SEND_DRAFT_NOT_FOUND",
+]);
+
+/**
+ * The CLI reports HTTP 429 through a `*_FAILED` code with the server's error
+ * summary. A summary that clearly names the rate limit is the only `*_FAILED`
+ * case that can succeed on retry.
+ */
+function isRateLimitSummary(summary: string | undefined): boolean {
+  if (summary === undefined) return false;
+  const lowered = summary.toLowerCase();
+  return lowered.includes("http 429") || lowered.includes("rate limit")
+    || lowered.includes("too many requests");
+}
+
 class RaftCliCommandError extends Error {
   readonly raftCode: string | undefined;
   readonly summary: string | undefined;
+  readonly permanent: boolean;
 
   constructor(stderr: string, stdout: string, exitCode: number | null) {
     super(cliFailure(stderr, stdout, exitCode));
     const detail = stderr.trim() || stdout.trim();
     this.raftCode = /^Code:\s*(\S+)$/m.exec(detail)?.[1];
     this.summary = /^Error:\s*(.+)$/m.exec(detail)?.[1]?.trim();
+    this.permanent = this.raftCode !== undefined
+      && (this.raftCode.startsWith("MISSING_") || this.raftCode.startsWith("TOKEN_")
+        || PERMANENT_RAFT_CODES.has(this.raftCode)
+        || (this.raftCode.endsWith("_FAILED") && !isRateLimitSummary(this.summary)));
   }
 }
 
 function rejectedMutation(error: unknown): string | undefined {
-  if (!(error instanceof RaftCliCommandError) || !error.raftCode) return undefined;
-  if (!error.raftCode.endsWith("_FAILED")
-    && !error.raftCode.startsWith("MISSING_")
-    && !error.raftCode.startsWith("TOKEN_")) return undefined;
+  if (!(error instanceof RaftCliCommandError) || !error.permanent) return undefined;
   return error.summary ?? error.message;
 }
 

@@ -9,6 +9,7 @@ import {
   readLoomInteractionHistory,
   readLoomStatus,
   requeueLoomInput,
+  retryLoomChannelIngress,
   type LoomStatusReport,
 } from "./host/index.js";
 import { initializeLoomInstance } from "./instance/index.js";
@@ -23,7 +24,7 @@ import {
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
   if (command !== "init" && command !== "run" && command !== "history"
-    && command !== "status" && command !== "requeue") {
+    && command !== "status" && command !== "requeue" && command !== "retry-ingress") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -57,6 +58,23 @@ async function main(argv: string[]): Promise<void> {
     const disposition = await requeueLoomInput(resolveInstanceLayout(root).statusSocketPath, inputId);
     if (disposition !== "requeued") throw new Error(`Input ${inputId} is not blocked`);
     console.log(`Requeued Input ${inputId}`);
+    return;
+  }
+  if (command === "retry-ingress") {
+    const remaining = remainingArguments(args, "--root");
+    if (remaining.length < 1 || remaining.length > 2
+      || !remaining[0]!.trim() || (remaining[1] !== undefined && !remaining[1]!.trim())) {
+      throw new Error(usage("retry-ingress"));
+    }
+    const channelId = remaining[0]!.trim();
+    const itemId = remaining[1]?.trim();
+    const retried = await retryLoomChannelIngress(
+      resolveInstanceLayout(root).statusSocketPath,
+      channelId,
+      ...(itemId ? [itemId] : []),
+    );
+    if (retried === 0) throw new Error(`Channel ${channelId} has no failed ingress to retry`);
+    console.log(`Retried ${retried} failed ingress item${retried === 1 ? "" : "s"} on ${channelId}`);
     return;
   }
   const observe: OperationalEventObserver = event => writeOperationalEvent(event);
@@ -197,7 +215,7 @@ function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-type LoomCommand = "init" | "run" | "history" | "status" | "requeue";
+type LoomCommand = "init" | "run" | "history" | "status" | "requeue" | "retry-ingress";
 
 function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
@@ -221,7 +239,8 @@ function readRoot(args: string[], command: LoomCommand): string {
     throw new Error(usage(command));
   }
   const remaining = remainingArguments(args, name);
-  if (command !== "init" && command !== "status" && command !== "requeue" && remaining.length > 0) {
+  if (command !== "init" && command !== "status" && command !== "requeue"
+    && command !== "retry-ingress" && remaining.length > 0) {
     throw new Error(`Unknown argument: ${remaining[0]}`);
   }
   return value;
@@ -238,6 +257,9 @@ function usage(command?: LoomCommand): string {
     return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
   }
   if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
+  if (command === "retry-ingress") {
+    return "Usage: loom retry-ingress [--root <instance-root>] <channel-id> [item-id]";
+  }
   if (command === "init") {
     return "Usage: loom init [--root <instance-root>] --channel raft|weixin [--channel raft|weixin]";
   }
@@ -249,6 +271,7 @@ function usage(command?: LoomCommand): string {
     "  loom history [--root <instance-root>]",
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
     "  loom requeue [--root <instance-root>] <input-id>",
+    "  loom retry-ingress [--root <instance-root>] <channel-id> [item-id]",
     "",
     "The default Instance Root is ~/.loom.",
   ].join("\n");

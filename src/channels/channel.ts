@@ -7,6 +7,37 @@ import type {
 import type { InteractionChannelAgentSurface } from "./surface.js";
 
 /**
+ * Channel-neutral failure class of one ingress item. Named by what recovery
+ * needs, not by the underlying protocol.
+ */
+export type InteractionChannelFailureCategory =
+  | "remote_unavailable"
+  | "invalid_message"
+  | "admission_failed";
+
+/**
+ * Channel-neutral ingress health: how much queued inbound work is waiting or
+ * failing. Only counts, timing, failure classes and opaque local item ids
+ * cross the boundary — never message content, raw targets or full errors.
+ */
+export interface InteractionChannelIngressStatus {
+  /** Ingress items waiting to be processed. */
+  pending: number;
+  /** Ingress items that failed transiently and are waiting for a scheduled retry. */
+  retrying: number;
+  /** Ingress items that failed permanently and need operator attention. */
+  failed: number;
+  /** Items held in the adapter's recovery spool, still awaiting completion. */
+  spooled: number;
+  /** Earliest received time among items that are not complete. */
+  oldestOutstandingAt?: string;
+  /** Most recent failure class among retrying/failed/spooled items. */
+  lastFailureCategory?: InteractionChannelFailureCategory;
+  /** Bounded local ids of failed items, for targeted recovery without a restart. */
+  failedItemIds?: string[];
+}
+
+/**
  * Channel-neutral live status of one Interaction Channel, as surfaced to the
  * Host and operator. Adapters may keep richer internal status; what crosses
  * the channel boundary stays neutral so the Host never re-implements
@@ -15,6 +46,7 @@ import type { InteractionChannelAgentSurface } from "./surface.js";
 export interface InteractionChannelStatus {
   state: "stopped" | "connecting" | "connected" | "degraded";
   lastError?: string;
+  ingress?: InteractionChannelIngressStatus;
 }
 
 /**
@@ -34,5 +66,7 @@ export interface InteractionChannel {
   stop(): Promise<void>;
   deliver(attempt: DeliveryAttemptRequest): Promise<DeliveryObservation>;
   status(): InteractionChannelStatus;
+  /** Move one failed ingress item (by local id), or all of them, back to pending without a restart. */
+  retryFailedIngress?(itemId?: string): Promise<number>;
   agentSurface?(): InteractionChannelAgentSurface;
 }
