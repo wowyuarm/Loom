@@ -24,6 +24,7 @@ import {
   type TurnRequest,
 } from "../../src/runtime/index.js";
 import type { OperationalEvent } from "../../src/operational-events.js";
+import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 
 interface TestExecutionState {
   generation: number;
@@ -750,7 +751,9 @@ test("cancels a running cognitive organ after durably accepting human Input", as
     payload: { text: "please answer now" },
   });
   assert.equal(acceptedBeforeCancel, true);
-  assert.deepEqual(await organRun, { disposition: "activity_recording_failed" });
+  // The organ released within the grace window, so the ledger closes the work
+  // as cancelled and the domain row returns to pending (no failure recorded).
+  assert.deepEqual(await organRun, { disposition: "busy" });
   assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
   assert.equal(runtime.status().inputs.find(input => input.id === human.inputId)?.status, "consumed");
 });
@@ -820,8 +823,12 @@ test("returns after a short cancellation grace while the cognitive organ remains
         started.resolve();
         return recording.promise;
       },
+      // The recorder ignores the cancel and never releases the run.
       cancel: async () => new Promise<void>(() => {}),
     },
+    // Short grace window so the test observes the intervention_required outcome
+    // without waiting the production 10 seconds.
+    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 250 },
     now: () => new Date("2026-07-19T11:00:00.000Z"),
   });
   t.after(() => runtime.close());
@@ -852,7 +859,10 @@ test("returns after a short cancellation grace while the cognitive organ remains
     daily: { status: "no_change", path: "daily/2026-07-19.md" },
     episodes: [],
   });
-  assert.deepEqual(await organRun, { disposition: "activity_recorded" });
+  // The late completion lands after the work was persisted as
+  // intervention_required, so it is a no-op in the ledger and the organ stays
+  // held for a human; no parallel start or retry is admitted.
+  assert.deepEqual(await organRun, { disposition: "busy" });
 });
 
 test("exposes the age of the oldest pending cognitive organ work", async t => {

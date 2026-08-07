@@ -582,17 +582,19 @@ test("retries the same frozen Attention evidence window after failure", async ()
   await firstScheduler.runOnce(now);
   const firstActivity = failing.status().activities[0]!.id;
   now = new Date("2026-07-21T08:01:00.000Z");
+  // The retry pace comes from the shared Cognitive Organ policy (1 minute
+  // backoff for the first attempt), not from the scheduler's retryDelayMs.
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "attention_maintenance_failed",
-    nextRunAt: "2026-07-21T08:01:30.000Z",
+    nextRunAt: "2026-07-21T08:02:00.000Z",
   });
   assert.deepEqual(
     failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer") && {
       state: failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")!.state,
       nextRunAt: failing.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")!.nextRunAt,
     },
-    { state: "retrying", nextRunAt: "2026-07-21T08:01:30.000Z" },
+    { state: "retrying", nextRunAt: "2026-07-21T08:02:00.000Z" },
   );
 
   await failing.acceptInput({ source: "test", sourceId: "second", kind: "interaction", payload: {} });
@@ -602,7 +604,7 @@ test("retries the same frozen Attention evidence window after failure", async ()
   const secondActivity = failing.status().activities[1]!.id;
   failing.close();
 
-  now = new Date("2026-07-21T08:01:30.000Z");
+  now = new Date("2026-07-21T08:02:00.000Z");
   const recovered = openRuntime({
     root,
     attentionMaintenance: attentionMaintainer(requests),
@@ -789,21 +791,23 @@ test("keeps a failed Memory reflection day pending across restart", async () => 
   now = new Date("2026-07-21T12:00:00.001Z");
   await firstScheduler.runOnce(now);
   now = new Date("2026-07-22T03:00:00.000Z");
+  // The retry pace comes from the shared Cognitive Organ policy (1 minute
+  // backoff for the first attempt), not from the scheduler's retryDelayMs.
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "memory_reflection_failed",
-    nextRunAt: "2026-07-22T03:00:30.000Z",
+    nextRunAt: "2026-07-22T03:01:00.000Z",
   });
   assert.deepEqual(
     first.operationalStatus().agents.find(agent => agent.name === "memory-reflector") && {
       state: first.operationalStatus().agents.find(agent => agent.name === "memory-reflector")!.state,
       nextRunAt: first.operationalStatus().agents.find(agent => agent.name === "memory-reflector")!.nextRunAt,
     },
-    { state: "retrying", nextRunAt: "2026-07-22T03:00:30.000Z" },
+    { state: "retrying", nextRunAt: "2026-07-22T03:01:00.000Z" },
   );
   first.close();
 
-  now = new Date("2026-07-22T03:00:30.000Z");
+  now = new Date("2026-07-22T03:01:00.000Z");
   const recovered = openRuntime({
     root,
     timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
@@ -1055,6 +1059,9 @@ test("retries pending Activity recording through Scheduler after restart", async
   firstRuntime.close();
 
   const recorded: string[] = [];
+  // The shared policy gates the next attempt until its 1-minute backoff has
+  // elapsed; the recovered runtime retries once that time has passed.
+  now = new Date("2026-07-21T14:31:00.000Z");
   const recovered = openRuntime({
     root,
     ownerId: "recovered-recorder-runtime",
@@ -1255,6 +1262,9 @@ test("keeps failed Thread maintenance pending across restart", async () => {
   firstRuntime.close();
 
   const maintained: string[] = [];
+  // The shared policy gates the next attempt until its 1-minute backoff has
+  // elapsed; the recovered runtime retries once that time has passed.
+  now = new Date("2026-07-21T17:31:00.000Z");
   const recovered = openRuntime({
     root,
     ownerId: "recovered-thread-maintenance-runtime",

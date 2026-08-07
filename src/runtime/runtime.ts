@@ -6,6 +6,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js";
 import { initializeRuntimeSchema } from "./schema.js";
+import {
+  CognitiveOrganExecution,
+  COGNITIVE_ORGAN_POLICY,
+  type CognitiveAttemptRecord,
+  type CognitiveOrganName,
+  type CognitiveOrganPolicy,
+  type CognitiveWorkRecord,
+} from "./cognitive-organ-execution.js";
 import type {
   AcceptedInput,
   AdvanceOptions,
@@ -210,7 +218,6 @@ const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
 const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
 const INTERACTION_WAVE_QUIET_MS = 1_500;
 const INTERACTION_WAVE_MAX_MS = 6_000;
-const COGNITIVE_ORGAN_CANCEL_GRACE_MS = 1_000;
 
 const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
   "main-agent",
@@ -244,8 +251,31 @@ interface ActiveOrientation {
 }
 
 interface ActiveCognitiveOrgan {
-  cancel(reason: string): Promise<void>;
+  workId: string;
+  attempt: CognitiveAttemptRecord;
+  cancel: (reason: string) => Promise<void>;
+  run: Promise<unknown>;
 }
+
+interface CognitiveOrganClaim {
+  workId: string;
+  work: CognitiveWorkRecord;
+  attempt: CognitiveAttemptRecord;
+  agentRunId: string;
+}
+
+/** Outcome of one Cognitive Organ budget cycle as seen by the domain entry point. */
+export type CognitiveOrganRunOutcome<Result> =
+  | { disposition: "completed"; result: Result }
+  | {
+      disposition: "failed";
+      failureCategory: string | undefined;
+      error: string;
+      nextAttemptAt: string | undefined;
+      blocked: boolean;
+    }
+  | { disposition: "cancelled" }
+  | { disposition: "intervention_required" };
 
 class SqliteRuntime implements Runtime {
   readonly #database: DatabaseSync;
@@ -263,6 +293,14 @@ class SqliteRuntime implements Runtime {
   readonly #ownerId: string;
   readonly #leaseDurationMs: number;
   readonly #observe: OperationalEventObserver | undefined;
+  readonly #revisions: { current(): { id: string } } | undefined;
+  readonly #cognitiveOrganPolicy: CognitiveOrganPolicy;
+  readonly #cognitiveOrgan: CognitiveOrganExecution;
+  readonly #organCancelTimer: (
+    delayMs: number,
+    callback: () => void,
+  ) => { clear(): void };
+  readonly #organSoftDeadlineTimers = new Map<string, { clear(): void }>();
   #pendingOperationalEvents: OperationalEvent[] | undefined;
   #active: ActiveExecution | undefined;
   #activeDeliveryId: string | undefined;
@@ -274,6 +312,8 @@ class SqliteRuntime implements Runtime {
   #opportunityRunning = false;
   #activeOrientation: ActiveOrientation | undefined;
   #activeCognitiveOrgan: ActiveCognitiveOrgan | undefined;
+  /** In-flight cancel decision; the run path awaits it before deriving its outcome. */
+  #cancelSettling: Promise<void> | undefined;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RuntimeOptions) {
@@ -293,13 +333,23 @@ class SqliteRuntime implements Runtime {
     this.#ownerId = options.ownerId ?? randomUUID();
     this.#leaseDurationMs = options.leaseDurationMs ?? 30_000;
     this.#observe = options.observe;
+    this.#revisions = options.revisions;
+    this.#cognitiveOrganPolicy = options.cognitiveOrganPolicy ?? COGNITIVE_ORGAN_POLICY;
+    this.#organCancelTimer = options.organCancelTimer ?? defaultOrganCancelTimer;
     initializeRuntimeSchema(this.#database);
+    this.#cognitiveOrgan = new CognitiveOrganExecution({
+      database: this.#database,
+      policy: this.#cognitiveOrganPolicy,
+      now: this.#now,
+      nextId: this.#nextId,
+    });
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
     this.#reconcileExpiredThreadMaintenance();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileOrphanedAgentRuns();
+    this.#cognitiveOrgan.reconcile(this.#now());
   }
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -752,6 +802,10 @@ class SqliteRuntime implements Runtime {
     }
 
     if (this.#execution) {
+      // While Cognitive Organ work is held for human intervention no parallel
+      // Workspace writer may run: the foreground Input stays durable until a
+      // human resolves the held work.
+      if (this.#hasHeldCognitiveOrganWork()) return { disposition: "busy" };
       if (options.agentWork === "defer" && this.#hasPendingInput()) {
         return { disposition: "agent_work_deferred" };
       }
@@ -883,7 +937,13 @@ class SqliteRuntime implements Runtime {
 
     const windowEnd = schedule.window_end_sequence ?? this.#latestActivitySequence();
     const activities = this.#activitiesInSequenceRange(schedule.cursor_sequence, windowEnd);
-    const agentRunId = this.#nextId();
+    const begun = this.#beginCognitiveOrganAttempt("attention-maintainer", `window:${windowEnd}`);
+    if (!begun.claim) {
+      return begun.nextAttemptAt
+        ? { disposition: "waiting", nextRunAt: begun.nextAttemptAt }
+        : { disposition: "busy" };
+    }
+    const claim = begun.claim;
     this.#attentionMaintenanceRunning = true;
     this.#transaction(() => {
       this.#database.prepare(`
@@ -891,44 +951,79 @@ class SqliteRuntime implements Runtime {
         SET window_end_sequence = ?, attempt_count = attempt_count + 1
         WHERE singleton = 1
       `).run(windowEnd);
-      this.#startAgentRun(agentRunId, "attention-maintainer", this.#now());
+      this.#startAgentRun(claim.agentRunId, "attention-maintainer", this.#now());
     });
     try {
-      const result = await this.#runCognitiveOrgan(this.#attentionMaintenance, () =>
-        this.#attentionMaintenance!.maintain({
-        observedAt: options.observedAt.toISOString(),
-        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
-        recentActivities: activities,
-        }));
-      const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
-      this.#transaction(() => {
-        this.#database.prepare(`
-          UPDATE attention_maintenance
-          SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
-              window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
-          WHERE singleton = 1
-        `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(result));
-        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      const outcome = await this.#runCognitiveOrgan(claim, {
+        cancel: reason => this.#attentionMaintenance!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => this.#attentionMaintenance!.maintain({
+          observedAt: options.observedAt.toISOString(),
+          localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+          recentActivities: activities,
+        }),
+        transcriptRef: result => organTranscriptRef("attention-maintainer", result.runId),
+        resultRef: result => result.path,
       });
-      return { disposition: "completed", result, nextRunAt };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-      this.#transaction(() => {
-        this.#database.prepare(`
-          UPDATE attention_maintenance
-          SET next_run_after = ?, last_error = ?
-          WHERE singleton = 1
-        `).run(nextRunAt, message.slice(0, 2_000));
-        this.#finishAgentRun(
-          agentRunId,
-          "failed",
-          undefined,
-          this.#now(),
-          agentFailureCategory(error),
-        );
-      });
-      return { disposition: "failed", nextRunAt, error: message };
+      switch (outcome.disposition) {
+        case "completed": {
+          const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE attention_maintenance
+              SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
+                  window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
+              WHERE singleton = 1
+            `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(outcome.result));
+            this.#finishAgentRun(claim.agentRunId, "succeeded", outcome.result.outcome, this.#now());
+          });
+          return { disposition: "completed", result: outcome.result, nextRunAt };
+        }
+        case "cancelled": {
+          // Human preemption dropped this run; the same window is retried on the
+          // next cadence. The attempt budget is closed in the ledger.
+          const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE attention_maintenance
+              SET next_run_after = ?, last_error = NULL, window_end_sequence = NULL, attempt_count = 0
+              WHERE singleton = 1
+            `).run(nextRunAt);
+            this.#finishAgentRun(claim.agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+          });
+          return { disposition: "busy" };
+        }
+        case "intervention_required":
+          // Domain schedule is left untouched; a human must resolve the held
+          // work before any organ may start again.
+          this.#finishAgentRun(
+            claim.agentRunId,
+            "interrupted",
+            "intervention_required",
+            this.#now(),
+            "cancelled",
+          );
+          return { disposition: "busy" };
+        case "failed": {
+          const message = outcome.error;
+          const nextRunAt = outcome.nextAttemptAt
+            ?? new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE attention_maintenance
+              SET next_run_after = ?, last_error = ?
+              WHERE singleton = 1
+            `).run(nextRunAt, message.slice(0, 2_000));
+            this.#finishAgentRun(
+              claim.agentRunId,
+              "failed",
+              undefined,
+              this.#now(),
+              outcome.failureCategory ?? "unknown",
+            );
+          });
+          return { disposition: "failed", nextRunAt, error: message };
+        }
+      }
     } finally {
       this.#attentionMaintenanceRunning = false;
     }
@@ -958,45 +1053,81 @@ class SqliteRuntime implements Runtime {
     }
     if (!this.#memoryReflection) return { disposition: "busy" };
 
-    const agentRunId = this.#nextId();
+    const begun = this.#beginCognitiveOrganAttempt("memory-reflector", `day:${reflectionDay}`);
+    if (!begun.claim) {
+      return begun.nextAttemptAt
+        ? { disposition: "waiting", nextRunAt: begun.nextAttemptAt }
+        : { disposition: "busy" };
+    }
+    const claim = begun.claim;
     this.#memoryReflectionRunning = true;
     this.#transaction(() => {
       this.#database.prepare(`
         UPDATE memory_reflection SET attempt_count = attempt_count + 1 WHERE singleton = 1
       `).run();
-      this.#startAgentRun(agentRunId, "memory-reflector", this.#now());
+      this.#startAgentRun(claim.agentRunId, "memory-reflector", this.#now());
     });
     try {
-      const result = await this.#runCognitiveOrgan(this.#memoryReflection, () =>
-        this.#memoryReflection!.reflect({
-        reflectionDay,
-        observedAt: options.observedAt.toISOString(),
-        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
-        activities,
-        }));
-      const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
-      const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
-      this.#transaction(() => {
-        this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, result);
-        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      const outcome = await this.#runCognitiveOrgan(claim, {
+        cancel: reason => this.#memoryReflection!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => this.#memoryReflection!.reflect({
+          reflectionDay,
+          observedAt: options.observedAt.toISOString(),
+          localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+          activities,
+        }),
+        transcriptRef: result => organTranscriptRef("memory-reflector", result.runId),
+        resultRef: result => result.changedMaterials[0],
       });
-      return { disposition: "completed", reflectionDay, result, nextRunAt };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-      this.#transaction(() => {
-        this.#database.prepare(`
-          UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
-        `).run(nextRunAt, message.slice(0, 2_000));
-        this.#finishAgentRun(
-          agentRunId,
-          "failed",
-          undefined,
-          this.#now(),
-          agentFailureCategory(error),
-        );
-      });
-      return { disposition: "failed", reflectionDay, nextRunAt, error: message };
+      switch (outcome.disposition) {
+        case "completed": {
+          const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
+          const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
+          this.#transaction(() => {
+            this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, outcome.result);
+            this.#finishAgentRun(claim.agentRunId, "succeeded", outcome.result.outcome, this.#now());
+          });
+          return { disposition: "completed", reflectionDay, result: outcome.result, nextRunAt };
+        }
+        case "cancelled": {
+          const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE memory_reflection SET next_run_after = ?, last_error = NULL, attempt_count = 0
+              WHERE singleton = 1
+            `).run(nextRunAt);
+            this.#finishAgentRun(claim.agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+          });
+          return { disposition: "busy" };
+        }
+        case "intervention_required":
+          this.#finishAgentRun(
+            claim.agentRunId,
+            "interrupted",
+            "intervention_required",
+            this.#now(),
+            "cancelled",
+          );
+          return { disposition: "busy" };
+        case "failed": {
+          const message = outcome.error;
+          const nextRunAt = outcome.nextAttemptAt
+            ?? new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
+            `).run(nextRunAt, message.slice(0, 2_000));
+            this.#finishAgentRun(
+              claim.agentRunId,
+              "failed",
+              undefined,
+              this.#now(),
+              outcome.failureCategory ?? "unknown",
+            );
+          });
+          return { disposition: "failed", reflectionDay, nextRunAt, error: message };
+        }
+      }
     } finally {
       this.#memoryReflectionRunning = false;
     }
@@ -1460,36 +1591,216 @@ class SqliteRuntime implements Runtime {
     }
   }
 
+  /**
+   * Claim one Cognitive Organ budget cycle for a domain entry point.
+   * Returns the running attempt, or the retry_wait deadline when the previous
+   * attempt is still backing off, or nothing when the organ is held (grace
+   * window / intervention_required / blocked) — the entry point must not start.
+   */
+  #beginCognitiveOrganAttempt(
+    organ: CognitiveOrganName,
+    domainRef: string,
+  ): { claim?: CognitiveOrganClaim; nextAttemptAt?: string } {
+    const now = this.#now();
+    const revisionId = this.#revisions?.current().id ?? "unpinned";
+    const previous = this.#cognitiveOrgan.currentWork(organ);
+    if (previous) {
+      if (previous.status === "retry_wait") {
+        // Retries continue the same immutable domain input only: a newer
+        // domainRef must start a fresh budget cycle instead of consuming the
+        // old work's retry quota and total deadline with different input.
+        if (previous.domainRef === domainRef) {
+          if (previous.nextAttemptAt && Date.parse(previous.nextAttemptAt) > now.getTime()) {
+            return { nextAttemptAt: previous.nextAttemptAt };
+          }
+          const attempt = this.#cognitiveOrgan.beginNextAttempt(previous.id, revisionId);
+          if (!attempt) return {};
+          return { claim: { workId: previous.id, work: previous, attempt, agentRunId: attempt.id } };
+        }
+        // Different domain input: leave the old work in retry_wait and fall
+        // through to start a fresh work cycle for the new input.
+      } else if (previous.status === "running" || previous.status === "intervention_required"
+        || previous.status === "blocked") {
+        return {};
+      }
+    }
+    const begun = this.#cognitiveOrgan.begin(organ, domainRef, revisionId);
+    return {
+      claim: {
+        workId: begun.work.id,
+        work: begun.work,
+        attempt: begun.attempt,
+        agentRunId: begun.attempt.id,
+      },
+    };
+  }
+
+  /**
+   * Run one Cognitive Organ attempt inside a shared budget cycle. Fencing is
+   * the ledger's: a late completion/failure against a cancelled or terminal
+   * attempt is a no-op. The outcome is derived from the ledger work state, so
+   * the domain entry point reacts to what actually happened.
+   */
   async #runCognitiveOrgan<Result>(
-    organ: { cancel?(reason: string): Promise<void> },
-    run: () => Promise<Result>,
-  ): Promise<Result> {
+    claim: CognitiveOrganClaim,
+    options: {
+      cancel: (reason: string) => Promise<void>;
+      run: () => Promise<Result>;
+      transcriptRef?: (result: Result) => string | undefined;
+      resultRef?: (result: Result) => string | undefined;
+    },
+  ): Promise<CognitiveOrganRunOutcome<Result>> {
+    let result: Result | undefined;
+    const runPromise = (async () => {
+      try {
+        result = await options.run();
+        const transcriptRef = options.transcriptRef?.(result);
+        const resultRef = options.resultRef?.(result);
+        this.#cognitiveOrgan.completeAttempt(claim.workId, {
+          ...(transcriptRef ? { transcriptRef } : {}),
+          ...(resultRef ? { resultRef } : {}),
+        });
+      } catch (error) {
+        this.#cognitiveOrgan.failAttempt(claim.workId, {
+          failureCategory: agentFailureCategory(error),
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    })();
     const active: ActiveCognitiveOrgan = {
-      cancel: reason => organ.cancel?.(reason) ?? Promise.resolve(),
+      workId: claim.workId,
+      attempt: claim.attempt,
+      cancel: options.cancel,
+      run: runPromise,
     };
     this.#activeCognitiveOrgan = active;
+    const softDeadlineAt = Date.parse(claim.attempt.softDeadlineAt);
+    const remaining = softDeadlineAt - this.#now().getTime();
+    if (remaining > 0) {
+      const timer = this.#organCancelTimer(remaining, () => this.#softDeadlineExpired(claim.workId));
+      this.#organSoftDeadlineTimers.set(claim.workId, timer);
+    }
     try {
-      return await run();
+      await runPromise;
+    } catch {
+      // The attempt is already failed in the ledger; outcome reflects its state.
     } finally {
+      this.#organSoftDeadlineTimers.get(claim.workId)?.clear();
+      this.#organSoftDeadlineTimers.delete(claim.workId);
       if (this.#activeCognitiveOrgan === active) this.#activeCognitiveOrgan = undefined;
+    }
+    // A cancel may be settling in parallel (same event loop tick): its
+    // decision (cancelled vs intervention_required) must land before the
+    // outcome is derived, or a released organ would read the work as still
+    // running and report a spurious failure.
+    if (this.#cancelSettling) await this.#cancelSettling;
+    return this.#cognitiveOrganOutcome<Result>(claim.workId, result);
+  }
+
+  #cognitiveOrganOutcome<Result>(
+    workId: string,
+    result: Result | undefined,
+  ): CognitiveOrganRunOutcome<Result> {
+    const work = this.#cognitiveOrgan.work(workId);
+    if (!work) {
+      return {
+        disposition: "failed",
+        failureCategory: undefined,
+        error: "Cognitive work record disappeared",
+        nextAttemptAt: undefined,
+        blocked: true,
+      };
+    }
+    switch (work.status) {
+      case "completed":
+        return { disposition: "completed", result: result! };
+      case "cancelled":
+        return { disposition: "cancelled" };
+      case "intervention_required":
+        return { disposition: "intervention_required" };
+      case "retry_wait":
+        return {
+          disposition: "failed",
+          failureCategory: work.lastFailureCategory,
+          error: work.lastError ?? "Attempt failed",
+          nextAttemptAt: work.nextAttemptAt,
+          blocked: false,
+        };
+      case "blocked":
+        return {
+          disposition: "failed",
+          failureCategory: work.lastFailureCategory,
+          error: work.lastError ?? "Attempts exhausted",
+          nextAttemptAt: undefined,
+          blocked: true,
+        };
+      case "running":
+        return {
+          disposition: "failed",
+          failureCategory: undefined,
+          error: "Attempt did not settle",
+          nextAttemptAt: undefined,
+          blocked: true,
+        };
     }
   }
 
+  /**
+   * Cancel the active Cognitive Organ attempt and close the grace window:
+   * released within the grace period -> cancelled terminal state; otherwise
+   * persisted as intervention_required (blocks parallel starts until a human
+   * handles it). The incoming foreground Input stays durable in the inputs
+   * table either way.
+   */
   async #cancelActiveCognitiveOrgan(reason: string): Promise<void> {
     const active = this.#activeCognitiveOrgan;
     if (!active) return;
-    await new Promise<void>(resolve => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        resolve();
-      };
-      const timeout = setTimeout(finish, COGNITIVE_ORGAN_CANCEL_GRACE_MS);
-      timeout.unref();
-      void active.cancel(reason).then(finish, finish);
-    });
+    this.#cognitiveOrgan.cancel(active.workId, reason);
+    // Deliver the cancel to the organ so it can release its work; the grace
+    // race below still decides released vs intervention_required. A failing
+    // domain cancel must not crash the input path — the grace window is the
+    // backstop.
+    void active.cancel(reason).catch(() => {});
+    const settling = (async () => {
+      const released = await new Promise<boolean>(resolve => {
+        let settled = false;
+        const finish = (didRelease: boolean) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          resolve(didRelease);
+        };
+        const timeout = setTimeout(() => finish(false), this.#cognitiveOrganPolicy.cancelGraceMs);
+        timeout.unref();
+        void active.run.then(() => finish(true), () => finish(true));
+      });
+      if (released) {
+        this.#cognitiveOrgan.finishCancelled(active.workId);
+      } else {
+        this.#cognitiveOrgan.markInterventionRequired(active.workId, `${reason}: cancel grace expired`);
+      }
+    })();
+    this.#cancelSettling = settling;
+    try {
+      await settling;
+    } finally {
+      if (this.#cancelSettling === settling) this.#cancelSettling = undefined;
+    }
+  }
+
+  /** Soft deadline expired: signal cancel only; the grace window decides the rest. */
+  #softDeadlineExpired(workId: string): void {
+    const active = this.#activeCognitiveOrgan;
+    if (!active || active.workId !== workId) return;
+    const work = this.#cognitiveOrgan.work(workId);
+    if (!work || work.status !== "running") return;
+    if (Date.parse(active.attempt.softDeadlineAt) > this.#now().getTime()) return;
+    void this.#cancelActiveCognitiveOrgan("soft_deadline");
+  }
+
+  #hasHeldCognitiveOrganWork(): boolean {
+    return this.#cognitiveOrgan.hasInterventionRequired();
   }
 
   #agentRetryAt(name: RuntimeAgentName): string | undefined {
@@ -1742,7 +2053,8 @@ class SqliteRuntime implements Runtime {
       && !this.#hasPendingInput()
       && !this.#hasPendingDeliveryWork()
       && !this.#hasPendingActivityRecording()
-      && !this.#hasPendingThreadMaintenance();
+      && !this.#hasPendingThreadMaintenance()
+      && !this.#hasHeldCognitiveOrganWork();
   }
 
   #isCognitiveOrganIdle(): boolean {
@@ -1754,7 +2066,8 @@ class SqliteRuntime implements Runtime {
       && !this.#attentionMaintenanceRunning
       && !this.#memoryReflectionRunning
       && !this.#hasRunningTurn()
-      && !this.#hasPendingInput();
+      && !this.#hasPendingInput()
+      && !this.#hasHeldCognitiveOrganWork();
   }
 
   #readMemoryReflectionSchedule(): MemoryReflectionRow | undefined {
@@ -2531,29 +2844,61 @@ class SqliteRuntime implements Runtime {
 
   async #advanceThreadMaintenance(): Promise<AdvanceResult> {
     if (!this.#threadMaintenance) return { disposition: "idle" };
-    const claimed = this.#claimPendingThreadMaintenance();
-    if (!claimed) {
+    const pending = this.#queryPendingThreadMaintenance();
+    if (!pending) {
       const unfinished = this.#database.prepare(`
         SELECT 1 FROM thread_maintenance WHERE status <> 'completed' LIMIT 1
       `).get();
       return unfinished ? { disposition: "busy" } : { disposition: "idle" };
     }
+    const begun = this.#beginCognitiveOrganAttempt(
+      "thread-maintainer",
+      `activity:${pending.activity.segmentId}`,
+    );
+    if (!begun.claim) return { disposition: "busy" };
+    const claim = begun.claim;
+    const claimed = this.#claimPendingThreadMaintenance(claim.agentRunId);
+    if (!claimed) {
+      // Domain claim lost to a concurrent path (should not happen under the
+      // single-writer gate): close the budget cycle as interrupted.
+      this.#cognitiveOrgan.failAttempt(claim.workId, {
+        failureCategory: "interrupted",
+        error: "Thread maintenance domain claim lost",
+      });
+      return { disposition: "busy" };
+    }
     this.#activeThreadMaintenanceId = claimed.activity.segmentId;
     this.#startHeartbeat("thread_maintenance", claimed.activity.segmentId, claimed.fencingToken);
     try {
       const observedAt = this.#now();
-      const result = await this.#runCognitiveOrgan(this.#threadMaintenance, () =>
-        this.#threadMaintenance!.maintain({
-        observedAt: observedAt.toISOString(),
-        localTime: this.#timePolicy.formatLocalTime(observedAt),
-        activity: claimed.activity,
-        observations: claimed.observations,
-        }));
-      this.#finishThreadMaintenance(claimed, result);
-      return { disposition: "thread_maintenance_completed" };
-    } catch (error) {
-      this.#failThreadMaintenance(claimed, error);
-      return { disposition: "thread_maintenance_failed" };
+      const outcome = await this.#runCognitiveOrgan(claim, {
+        cancel: reason => this.#threadMaintenance!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => this.#threadMaintenance!.maintain({
+          observedAt: observedAt.toISOString(),
+          localTime: this.#timePolicy.formatLocalTime(observedAt),
+          activity: claimed.activity,
+          observations: claimed.observations,
+        }),
+        transcriptRef: result => organTranscriptRef("thread-maintainer", result.runId),
+        resultRef: result => result.changedPaths[0],
+      });
+      switch (outcome.disposition) {
+        case "completed":
+          this.#finishThreadMaintenance(claimed, outcome.result);
+          return { disposition: "thread_maintenance_completed" };
+        case "cancelled":
+          this.#releaseThreadMaintenance(claimed, "cancelled");
+          return { disposition: "busy" };
+        case "intervention_required":
+          // Domain lease is left running; a human must resolve the held work.
+          this.#finishAgentRun(claimed.agentRunId, "interrupted", "intervention_required", this.#now(), "cancelled");
+          return { disposition: "busy" };
+        case "failed":
+          this.#failThreadMaintenance(claimed, new Error(outcome.error));
+          return { disposition: "thread_maintenance_failed" };
+        default:
+          throw new Error("Unexpected Cognitive Organ outcome");
+      }
     } finally {
       this.#stopHeartbeat();
       if (this.#activeThreadMaintenanceId === claimed.activity.segmentId) {
@@ -2562,7 +2907,58 @@ class SqliteRuntime implements Runtime {
     }
   }
 
-  #claimPendingThreadMaintenance(): {
+  #queryPendingThreadMaintenance(): {
+    activity: FrozenActivity;
+  } | undefined {
+    const next = this.#database.prepare(`
+      SELECT thread_maintenance.activity_id, activities.frozen_activity_json
+      FROM thread_maintenance
+      JOIN activities ON activities.id = thread_maintenance.activity_id
+      WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
+      ORDER BY thread_maintenance.created_at, thread_maintenance.activity_id
+      LIMIT 1
+    `).get() as unknown as {
+      activity_id: string;
+      frozen_activity_json: string;
+    } | undefined;
+    if (!next) return undefined;
+    return { activity: JSON.parse(next.frozen_activity_json) as FrozenActivity };
+  }
+
+  /** Release a cancelled maintenance back to pending without recording a failure. */
+  #releaseThreadMaintenance(
+    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
+    reason: string,
+  ): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      const changed = this.#database.prepare(`
+        UPDATE thread_maintenance
+        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
+            lease_expires_at = NULL, last_error = NULL
+        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
+          AND fencing_token = ? AND lease_owner = ?
+      `).run(
+        claimed.activity.segmentId,
+        claimed.attemptNumber,
+        claimed.fencingToken,
+        this.#ownerId,
+      );
+      if (changed.changes !== 1) return;
+      this.#finishAgentRun(claimed.agentRunId, "interrupted", reason, now, "cancelled");
+      this.#recordTransition(
+        "thread_maintenance",
+        claimed.activity.segmentId,
+        "running",
+        "pending",
+        `maintenance_${reason}`,
+        now,
+        claimed.fencingToken,
+      );
+    });
+  }
+
+  #claimPendingThreadMaintenance(agentRunId: string): {
     activity: FrozenActivity;
     observations: ThreadActivityObservation[];
     agentRunId: string;
@@ -2591,7 +2987,6 @@ class SqliteRuntime implements Runtime {
         RETURNING value
       `).get() as unknown as { value: number };
       const now = this.#now();
-      const agentRunId = this.#nextId();
       const attemptNumber = next.attempt_count + 1;
       const changed = this.#database.prepare(`
         UPDATE thread_maintenance
@@ -2713,35 +3108,107 @@ class SqliteRuntime implements Runtime {
 
   async #advanceActivityRecording(): Promise<AdvanceResult> {
     if (!this.#activityRecorder) return { disposition: "idle" };
-    const claimed = this.#claimPendingActivity();
-    if (!claimed) {
+    const pending = this.#database.prepare(`
+      SELECT 1 FROM activities WHERE status = 'pending' LIMIT 1
+    `).get();
+    if (!pending) {
       const unfinished = this.#database.prepare(`
         SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1
       `).get();
       return unfinished ? { disposition: "busy" } : { disposition: "idle" };
     }
+    const begun = this.#beginCognitiveOrganAttempt("life-recorder", "recording");
+    if (!begun.claim) return { disposition: "busy" };
+    const claim = begun.claim;
+    const claimed = this.#claimPendingActivity(claim.agentRunId);
+    if (!claimed) {
+      // Domain claim lost to a concurrent path (should not happen under the
+      // single-writer gate): close the budget cycle as interrupted.
+      this.#cognitiveOrgan.failAttempt(claim.workId, {
+        failureCategory: "interrupted",
+        error: "Activity recording domain claim lost",
+      });
+      return { disposition: "busy" };
+    }
     this.#activeActivityAttemptId = claimed.attemptId;
     this.#startHeartbeat("activity_recording", claimed.activity.segmentId, claimed.fencingToken);
     try {
-      const receipt = await this.#runCognitiveOrgan(
-        this.#activityRecorder,
-        () => this.#activityRecorder!.record(claimed.activity),
-      );
-      if (receipt.segmentId !== claimed.activity.segmentId) {
-        throw new Error(`Recorder receipt belongs to ${receipt.segmentId}, not ${claimed.activity.segmentId}`);
+      const outcome = await this.#runCognitiveOrgan(claim, {
+        cancel: reason => this.#activityRecorder!.cancel?.(reason) ?? Promise.resolve(),
+        run: async () => {
+          const receipt = await this.#activityRecorder!.record(claimed.activity);
+          if (receipt.segmentId !== claimed.activity.segmentId) {
+            throw new Error(`Recorder receipt belongs to ${receipt.segmentId}, not ${claimed.activity.segmentId}`);
+          }
+          return receipt;
+        },
+        transcriptRef: receipt => organTranscriptRef("life-recorder", receipt.runId),
+        resultRef: receipt => receipt.daily.path,
+      });
+      switch (outcome.disposition) {
+        case "completed":
+          this.#finishActivityRecording(claimed, outcome.result);
+          return { disposition: "activity_recorded" };
+        case "cancelled":
+          this.#releaseActivityRecording(claimed, "cancelled");
+          return { disposition: "busy" };
+        case "intervention_required":
+          // Domain lease is left running; a human must resolve the held work.
+          this.#finishAgentRun(claimed.attemptId, "interrupted", "intervention_required", this.#now(), "cancelled");
+          return { disposition: "busy" };
+        case "failed":
+          this.#failActivityRecording(claimed, new Error(outcome.error));
+          return { disposition: "activity_recording_failed" };
+        default:
+          throw new Error("Unexpected Cognitive Organ outcome");
       }
-      this.#finishActivityRecording(claimed, receipt);
-      return { disposition: "activity_recorded" };
-    } catch (error) {
-      this.#failActivityRecording(claimed, error);
-      return { disposition: "activity_recording_failed" };
     } finally {
       this.#stopHeartbeat();
       if (this.#activeActivityAttemptId === claimed.attemptId) this.#activeActivityAttemptId = undefined;
     }
   }
 
-  #claimPendingActivity(): {
+  /** Release a cancelled recording back to pending without recording a failure. */
+  #releaseActivityRecording(
+    claimed: { activity: FrozenActivity; attemptId: string; attemptNumber: number; fencingToken: number },
+    reason: string,
+  ): void {
+    this.#transaction(() => {
+      const now = this.#now();
+      const changed = this.#database.prepare(`
+        UPDATE activities
+        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
+            lease_expires_at = NULL, last_error = NULL
+        WHERE id = ? AND status = 'recording' AND attempt_count = ?
+          AND fencing_token = ? AND lease_owner = ?
+      `).run(
+        claimed.activity.segmentId,
+        claimed.attemptNumber,
+        claimed.fencingToken,
+        this.#ownerId,
+      );
+      if (changed.changes !== 1) return;
+      // The domain attempt terminal state is 'interrupted'; the cancelled
+      // outcome itself lives in the shared Cognitive Organ ledger.
+      this.#database.prepare(`
+        UPDATE activity_attempts
+        SET status = 'interrupted', ended_at = ?
+        WHERE id = ? AND status = 'recording' AND fencing_token = ?
+      `).run(now.toISOString(), claimed.attemptId, claimed.fencingToken);
+      this.#finishAgentRun(claimed.attemptId, "interrupted", reason, now, "cancelled");
+      this.#recordTransition(
+        "activity",
+        claimed.activity.segmentId,
+        "recording",
+        "pending",
+        `recording_${reason}`,
+        now,
+        claimed.fencingToken,
+      );
+    });
+  }
+
+  #claimPendingActivity(agentRunId: string): {
     activity: FrozenActivity;
     attemptId: string;
     attemptNumber: number;
@@ -2762,7 +3229,7 @@ class SqliteRuntime implements Runtime {
         RETURNING value
       `).get() as unknown as { value: number };
       const attemptNumber = next.attempt_count + 1;
-      const attemptId = this.#nextId();
+      const attemptId = agentRunId;
       const now = this.#now();
       const changed = this.#database.prepare(`
         UPDATE activities
@@ -4107,6 +4574,19 @@ function agentFailureCategory(error: unknown): string {
   if (/workspace|mutation|file|directory/i.test(message)) return "workspace";
   if (/provider|model|network|connect|429|5\d\d/i.test(message)) return "provider";
   return "unknown";
+}
+
+function organTranscriptRef(organ: CognitiveOrganName, runId: string): string {
+  return `organs/${organ}/${runId}.jsonl`;
+}
+
+function defaultOrganCancelTimer(
+  delayMs: number,
+  callback: () => void,
+): { clear(): void } {
+  const timeout = setTimeout(callback, delayMs);
+  timeout.unref();
+  return { clear: () => clearTimeout(timeout) };
 }
 
 function isIsoTimestamp(value: string): boolean {

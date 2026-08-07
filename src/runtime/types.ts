@@ -585,6 +585,15 @@ export interface RuntimeOptions {
   ownerId?: string;
   leaseDurationMs?: number;
   observe?: import("../operational-events.js").OperationalEventObserver;
+  /** Model Runtime Revision provider; the revision id is fixed per Cognitive Organ attempt. */
+  revisions?: { current(): { id: string } };
+  /** Cognitive Organ execution policy; defaults to the module constant. */
+  cognitiveOrganPolicy?: import("./cognitive-organ-execution.js").CognitiveOrganPolicy;
+  /** Injectable soft-deadline timer factory (testing); defaults to setTimeout/clearTimeout. */
+  organCancelTimer?: (
+    delayMs: number,
+    callback: () => void,
+  ) => { clear(): void };
 }
 
 export interface AdvanceOptions {
