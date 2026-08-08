@@ -752,8 +752,8 @@ async function preparedInstanceRoot(): Promise<string> {
     writeFile(path.join(workspace, "identity.md"), "Rowan is a continuing AI Individual.\n", "utf8"),
     writeFile(path.join(workspace, "memory.md"), "No durable memories yet.\n", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "Nothing is currently foregrounded.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "interaction.md"), "Meet direct interaction as Rowan.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "background.md"), "Background time belongs to Rowan.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "interactivity.md"), "Meet direct interaction as Rowan.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "proactivity.md"), "Proactivity time belongs to Rowan.\n", "utf8"),
   ]);
   return root;
 }

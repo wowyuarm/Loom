@@ -261,7 +261,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     journalRoot: layout.workspaceMutationRoot,
   });
   await Promise.all([
-    agentWorkspace.loadTurnSnapshot("interaction"),
+    agentWorkspace.loadTurnSnapshot("interactivity"),
     agentWorkspace.loadStableFacts(),
   ]);
   const ownsAttachmentStore = !options.attachmentStore;

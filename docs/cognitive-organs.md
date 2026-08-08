@@ -79,13 +79,13 @@ Cognitive Organs 通过运行专门、有界的维护任务解决这些问题，
 
 **触发**：每逻辑日一次，消费当日全部 Frozen Activities。
 
-**读取**：全部五类核心材料（Identity、Long-term Memory、Interaction Behavior、Background Behavior、Stable Facts）、Current Attention、Daily Narratives、Frozen Activities、nmem Working Memory 和 recall（如启用）。
+**读取**：全部五类核心材料（Identity、Long-term Memory、Interactivity Behavior、Proactivity Behavior、Stable Facts）、Current Attention、Daily Narratives、Frozen Activities、nmem Working Memory 和 recall（如启用）。
 
 **写入**（带 before-image 备份和原子回滚）：
 - `identity.md`：持久自我理解（最高证据门槛）。
 - `memory.md`：长期记忆（持久理解，不是事件档案）。
-- `behavior/interaction.md`：互动中可辨识的生活方式。
-- `behavior/background.md`：私人时间可辨识的生活方式。
+- `behavior/interactivity.md`：互动中可辨识的生活方式。
+- `behavior/proactivity.md`：主动时间可辨识的生活方式。
 - `facts.json`：Stable Facts（归属、关系坐标等）。
 - 或 `NO_CHANGE`。
 

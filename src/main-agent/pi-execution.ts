@@ -882,7 +882,7 @@ function inputText(input: ExecutionInput, options: {
       if (!options.structureHumanInput && !options.humanArrivedDuringNonInteraction) return visibleText;
       const lines = options.humanArrivedDuringNonInteraction ? [
           "A human message arrived while the non-interaction Turn was still running.",
-          "Treat it as a real current interaction, not as part of the earlier background opportunity or continuation.",
+          "Treat it as a real current interaction, not as part of the earlier proactivity opportunity or continuation.",
           "",
         ] : [];
       lines.push(
@@ -919,7 +919,7 @@ function interactionInputText(
   const placeLabel = interaction.place.label ? ` (${interaction.place.label})` : "";
   const lines = options.humanArrivedDuringNonInteraction ? [
     "An Interaction arrived while the non-interaction Turn was still running.",
-    "Treat it as a real current Interaction, not as part of the earlier background opportunity or continuation.",
+    "Treat it as a real current Interaction, not as part of the earlier proactivity opportunity or continuation.",
     "",
   ] : [];
   if (input.lateSteered) {
@@ -1092,11 +1092,11 @@ function afterChatContinuationInputText(input: ExecutionInput): string {
 export function behaviorForInput(
   input: Pick<ExecutionInput, "kind" | "payload">,
 ): WorkspaceTurnKind {
-  if (input.kind === "interaction") return "interaction";
-  if (input.kind === "opportunity") return "opportunity";
+  if (input.kind === "interaction") return "interactivity";
+  if (input.kind === "opportunity") return "proactivity";
   if (input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)) {
-    if (input.payload.sourceBehavior === "interaction") return "interaction";
-    if (input.payload.sourceBehavior === "background") return "opportunity";
+    if (input.payload.sourceBehavior === "interactivity") return "interactivity";
+    if (input.payload.sourceBehavior === "proactivity") return "proactivity";
   }
   throw new Error("Continuation Input requires a source Behavior");
 }

@@ -181,16 +181,16 @@ test("recovers an incomplete Cognitive Organ Workspace mutation before opening",
 test("does not initialize missing Harness-owned Behavior materials while opening", async () => {
   const root = await createInstanceRoot();
   await writeIndividualMaterials(root);
-  const interaction = path.join(root, "workspace", "behavior", "interaction.md");
+  const interaction = path.join(root, "workspace", "behavior", "interactivity.md");
   await writeFile(interaction, "Existing individual interaction behavior.\n", "utf8");
-  await rm(path.join(root, "workspace", "behavior", "background.md"));
+  await rm(path.join(root, "workspace", "behavior", "proactivity.md"));
 
   await assert.rejects(
     openLoomInstance({ root }),
-    /Required Agent Workspace material behavior\/background\.md is missing/,
+    /Required Agent Workspace material behavior\/proactivity\.md is missing/,
   );
   await assert.rejects(
-    readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
+    readFile(path.join(root, "workspace", "behavior", "proactivity.md"), "utf8"),
     /ENOENT/,
   );
 });
@@ -542,8 +542,8 @@ test("reflects a completed logical day through the assembled Instance", async t 
     { tool: { name: "read", arguments: { path: "facts.json" } } },
     { tool: { name: "read", arguments: { path: "identity.md" } } },
     { tool: { name: "read", arguments: { path: "memory.md" } } },
-    { tool: { name: "read", arguments: { path: "behavior/interaction.md" } } },
-    { tool: { name: "read", arguments: { path: "behavior/background.md" } } },
+    { tool: { name: "read", arguments: { path: "behavior/interactivity.md" } } },
+    { tool: { name: "read", arguments: { path: "behavior/proactivity.md" } } },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { tool: { name: "read", arguments: { path: "daily/2026-07-22.md" } } },
     { text: "NO_CHANGE" },
@@ -1092,8 +1092,8 @@ async function writeIndividualMaterials(root: string): Promise<void> {
     writeFile(path.join(workspace, "identity.md"), "Rowan is a continuing AI Individual.\n", "utf8"),
     writeFile(path.join(workspace, "memory.md"), "Rowan and Alex are getting to know each other.\n", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "Rowan is curious about Alex's garden.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "interaction.md"), "Respond as Rowan in direct interaction.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "background.md"), "Use background time as Rowan's own.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "interactivity.md"), "Respond as Rowan in direct interaction.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "proactivity.md"), "Use proactivity time as Rowan's own.\n", "utf8"),
   ]);
 }
 

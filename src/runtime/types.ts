@@ -504,7 +504,7 @@ export interface RuntimeAfterChatContinuationStatus {
   sourceEffectId: string;
   sourceTurnId: string;
   sourceSegmentId: string;
-  sourceBehavior: "interaction" | "background";
+  sourceBehavior: "interactivity" | "proactivity";
   deliveredAt: string;
   dueAt: string;
   expiresAt: string;

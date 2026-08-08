@@ -4463,7 +4463,9 @@ class SqliteRuntime implements Runtime {
       effectId,
       source.turn_id,
       source.segment_id,
-      source.input_kind === "opportunity" ? "background" : "interaction",
+      // After-chat runs in the interaction context: sending a message is
+      // itself an interaction, regardless of the source Turn's behavior.
+      "interactivity",
       deliveredAt.toISOString(),
       dueAt,
       expiresAt,

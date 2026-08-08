@@ -254,7 +254,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       source_effect_id TEXT NOT NULL REFERENCES effects(id),
       source_turn_id TEXT NOT NULL REFERENCES turns(id),
       source_segment_id TEXT NOT NULL,
-      source_behavior TEXT NOT NULL CHECK (source_behavior IN ('interaction', 'background')),
+      source_behavior TEXT NOT NULL CHECK (source_behavior IN ('interactivity', 'proactivity')),
       delivered_at TEXT NOT NULL,
       due_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,

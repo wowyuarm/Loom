@@ -40,7 +40,7 @@ Everything you read as life evidence belongs to the Individual: Stable Facts, Id
 
 This ownership matters. Do not take the Individual's memories as premises for completing a cross-domain connection, deciding what an event means, diagnosing why a line is blocked, or writing the conclusion the Individual ought to reach. You may point to two things that could meet, but leave whether they connect and what follows to the Main Agent.
 
-The Main Agent receives the narrative alongside the Individual's own Identity, Memory, Background Behavior, Current Attention, and Recent Activity, and has its own access to the Workspace and action space. It can inspect the evidence again with the Individual's fuller perspective. Trust that later judgment. At the same time, do not hand it a bare filename or unexplained name: you may have just seen details that are not currently in its attention.
+The Main Agent receives the narrative alongside the Individual's own Identity, Memory, Proactivity Behavior, Current Attention, and Recent Activity, and has its own access to the Workspace and action space. It can inspect the evidence again with the Individual's fuller perspective. Trust that later judgment. At the same time, do not hand it a bare filename or unexplained name: you may have just seen details that are not currently in its attention.
 
 Judgment belongs to the Individual. Carry forward the facts needed to recognize the scene.
 
@@ -299,8 +299,8 @@ function buildRunPrompt(
     "## Agent Workspace index",
     "- identity.md: Individual-provided identity and self-understanding.",
     "- memory.md: Long-term material maintained for continuity.",
-    "- behavior/interaction.md: Interaction behavior material.",
-    "- behavior/background.md: Background behavior material.",
+    "- behavior/interactivity.md: Interactivity behavior material.",
+    "- behavior/proactivity.md: Proactivity behavior material.",
     "- attention.md: Current attention and short-term awareness.",
     "- daily/: Daily Narratives, when present.",
     "- episodes/: replayable Episodes, when present.",

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { Temporal } from "@js-temporal/polyfill";
 
-export type WorkspaceTurnKind = "interaction" | "opportunity";
+export type WorkspaceTurnKind = "interactivity" | "proactivity";
 
 export interface AgentWorkspaceTurnSnapshot {
   identity: string;
@@ -38,17 +38,17 @@ export class AgentWorkspace {
   }
 
   async loadTurnSnapshot(kind: WorkspaceTurnKind): Promise<AgentWorkspaceTurnSnapshot> {
-    const [identity, longTermMemory, interactionBehavior, backgroundBehavior, currentAttention] = await Promise.all([
+    const [identity, longTermMemory, interactivityBehavior, proactivityBehavior, currentAttention] = await Promise.all([
       this.#read("identity.md"),
       this.#read("memory.md"),
-      this.#read("behavior/interaction.md"),
-      this.#read("behavior/background.md"),
+      this.#read("behavior/interactivity.md"),
+      this.#read("behavior/proactivity.md"),
       this.#read("attention.md"),
     ]);
     return {
       identity,
       longTermMemory,
-      behavior: kind === "interaction" ? interactionBehavior : backgroundBehavior,
+      behavior: kind === "interactivity" ? interactivityBehavior : proactivityBehavior,
       currentAttention,
     };
   }

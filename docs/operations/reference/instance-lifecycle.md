@@ -11,7 +11,7 @@ migration follows [Backup, Restore And Migration](backup-and-restore.md); do not
 initialize over restored or existing material.
 
 `loom init` creates a repeatable Instance scaffold: minimal configuration, the
-Pi configuration directory, and Harness-owned Interaction and Background
+Pi configuration directory, and Harness-owned Interactivity and Proactivity
 Behavior. It reports, but does not create, the required Individual materials:
 
 ```text

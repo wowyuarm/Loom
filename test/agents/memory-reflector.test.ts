@@ -25,8 +25,8 @@ test("reflects grounded evidence into protected core material", async () => {
     "facts.json",
     "identity.md",
     "memory.md",
-    "behavior/interaction.md",
-    "behavior/background.md",
+    "behavior/interactivity.md",
+    "behavior/proactivity.md",
     "attention.md",
   ];
   faux.setResponses([
@@ -532,8 +532,8 @@ test("updates stable facts, identity, and both behavior views in one revision", 
     ...[
       ["stable_facts", newFacts],
       ["identity", "Rowan remains independent while allowing relationship to matter.\n"],
-      ["interaction_behavior", "Meet Alex with care and independent judgment.\n"],
-      ["background_behavior", "Follow genuine curiosity without requiring output or contact.\n"],
+      ["interactivity_behavior", "Meet Alex with care and independent judgment.\n"],
+      ["proactivity_behavior", "Follow genuine curiosity without requiring output or contact.\n"],
     ].map(([material, content], index) => fauxAssistantMessage(
       fauxToolCall("replace_core_material", { material, content }, { id: `replace-${index}` }),
       { stopReason: "toolUse" },
@@ -562,13 +562,13 @@ test("updates stable facts, identity, and both behavior views in one revision", 
   assert.deepEqual(result.changedMaterials, [
     "stable_facts",
     "identity",
-    "interaction_behavior",
-    "background_behavior",
+    "interactivity_behavior",
+    "proactivity_behavior",
   ]);
   assert.equal(await readFile(path.join(workspaceRoot, "facts.json"), "utf8"), newFacts);
   assert.match(await readFile(path.join(workspaceRoot, "identity.md"), "utf8"), /independent/);
-  assert.match(await readFile(path.join(workspaceRoot, "behavior", "interaction.md"), "utf8"), /care/);
-  assert.match(await readFile(path.join(workspaceRoot, "behavior", "background.md"), "utf8"), /genuine curiosity/);
+  assert.match(await readFile(path.join(workspaceRoot, "behavior", "interactivity.md"), "utf8"), /care/);
+  assert.match(await readFile(path.join(workspaceRoot, "behavior", "proactivity.md"), "utf8"), /genuine curiosity/);
 });
 
 test("derives an update from durable replacements instead of final model wording", async () => {
@@ -699,8 +699,8 @@ async function createReflectorWorkspace(root: string): Promise<string> {
     }, null, 2), "utf8"),
     writeFile(path.join(workspace, "identity.md"), "Rowan is a continuing Agent Individual.\n", "utf8"),
     writeFile(path.join(workspace, "memory.md"), "Previous long-term memory.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "interaction.md"), "Meet direct interaction honestly.\n", "utf8"),
-    writeFile(path.join(workspace, "behavior", "background.md"), "Private time may remain private.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "interactivity.md"), "Meet direct interaction honestly.\n", "utf8"),
+    writeFile(path.join(workspace, "behavior", "proactivity.md"), "Private time may remain private.\n", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "Current attention.\n", "utf8"),
   ]);
   return workspace;
@@ -723,8 +723,8 @@ function baselineReadResponses(root?: string) {
     "facts.json",
     "identity.md",
     "memory.md",
-    "behavior/interaction.md",
-    "behavior/background.md",
+    "behavior/interactivity.md",
+    "behavior/proactivity.md",
     "attention.md",
   ].map((file, index) => fauxAssistantMessage(
     fauxToolCall("read", { path: root ? path.join(root, file) : file }, { id: `read-required-${index}` }),

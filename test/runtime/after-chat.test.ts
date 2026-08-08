@@ -75,7 +75,7 @@ test("schedules a recoverable continuation only after outbound Delivery is confi
   const continuation = runtime.status().afterChatContinuation;
   assert.ok(continuation);
   assert.equal(continuation.status, "pending");
-  assert.equal(continuation.sourceBehavior, "interaction");
+  assert.equal(continuation.sourceBehavior, "interactivity");
   assert.equal(continuation.deliveredAt, "2026-07-22T10:00:00.000Z");
   assert.equal(continuation.dueAt, "2026-07-22T10:05:00.000Z");
   assert.equal(continuation.expiresAt, "2026-07-22T10:20:00.000Z");
@@ -142,7 +142,7 @@ test("upgrades a version 11 Runtime Store before admitting a continuation", asyn
   assert.equal(runtime.status().afterChatContinuation?.status, "completed");
 });
 
-test("reschedules from the latest confirmed outbound and preserves proactive Behavior", async t => {
+test("reschedules from the latest confirmed outbound with an interactivity continuation", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-after-chat-latest-delivery-"));
   let now = new Date("2026-07-22T10:00:00.000Z");
   const execution: AgentExecution = {
@@ -174,13 +174,13 @@ test("reschedules from the latest confirmed outbound and preserves proactive Beh
   await runtime.advance();
   await runtime.advance();
   const first = runtime.status().afterChatContinuation;
-  assert.equal(first?.sourceBehavior, "background");
+  assert.equal(first?.sourceBehavior, "interactivity");
   assert.equal(first?.dueAt, "2026-07-22T10:05:00.000Z");
 
   now = new Date("2026-07-22T10:02:00.000Z");
   await runtime.advance();
   const latest = runtime.status().afterChatContinuation;
-  assert.equal(latest?.sourceBehavior, "background");
+  assert.equal(latest?.sourceBehavior, "interactivity");
   assert.notEqual(latest?.id, first?.id);
   assert.equal(latest?.deliveredAt, "2026-07-22T10:02:00.000Z");
   assert.equal(latest?.dueAt, "2026-07-22T10:07:00.000Z");

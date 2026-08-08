@@ -485,13 +485,13 @@ test("binds interaction Workspace materials to their system and Context levels",
       assert.equal(context.systemPrompt, `${[
         "# Harness System Guidance\n\nharness guidance",
         "# Identity\n\nidentity material",
-        "# Behavior\n\ninteraction behavior",
+        "# Behavior\n\ninteractivity behavior",
         "# Long-term Memory\n\nlong-term memory",
       ].join("\n\n")}\nCurrent working directory: ${workspaceRoot}`);
       const text = context.messages.map(message => JSON.stringify(message)).join("\n");
       assert.match(text, /Current Attention/);
       assert.match(text, /current attention/);
-      assert.doesNotMatch(text, /background behavior/);
+      assert.doesNotMatch(text, /proactivity behavior/);
       assert.doesNotMatch(text, /identity material/);
       return fauxAssistantMessage("workspace received");
     },
@@ -930,8 +930,8 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   const providerStarted = deferred();
   const releaseProvider = deferred();
   const expectOriginalBackground = (systemPrompt: string | undefined) => {
-    assert.match(systemPrompt ?? "", /background behavior/);
-    assert.doesNotMatch(systemPrompt ?? "", /interaction behavior|changed behavior/);
+    assert.match(systemPrompt ?? "", /proactivity behavior/);
+    assert.doesNotMatch(systemPrompt ?? "", /interactivity behavior|changed behavior/);
   };
   faux.setResponses([
     async context => {
@@ -980,8 +980,8 @@ test("keeps opportunity behavior frozen for same-Turn interaction steering", asy
   }, noEffectControl());
   await providerStarted.promise;
   await Promise.all([
-    writeFile(path.join(workspaceRoot, "behavior", "background.md"), "changed behavior", "utf8"),
-    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "changed behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "proactivity.md"), "changed behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interactivity.md"), "changed behavior", "utf8"),
   ]);
   await running.steer(executionInput("input-2", "new interaction"));
   releaseProvider.resolve();
@@ -1140,7 +1140,7 @@ test("reminds only the first human input to enter a Turn", async t => {
   await running.result;
 });
 
-test("continues after chat in the current Context with the source background Behavior", async t => {
+test("continues after chat in the current Context with an interactivity continuation", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-after-chat-"));
   const workspaceRoot = await createAgentWorkspaceFixture(root);
   const { faux, model, modelRuntime } = await createTestPi(root);
@@ -1148,8 +1148,8 @@ test("continues after chat in the current Context with the source background Beh
     fauxAssistantMessage("committed background reply"),
     context => {
       const systemPrompt = context.systemPrompt ?? "";
-      assert.match(systemPrompt, /background behavior/);
-      assert.doesNotMatch(systemPrompt, /interaction behavior/);
+      assert.match(systemPrompt, /interactivity behavior/);
+      assert.doesNotMatch(systemPrompt, /proactivity behavior/);
       const messages = JSON.stringify(context.messages);
       const attention = messages.indexOf("current attention");
       const bridge = messages.indexOf("recent activity bridge");
@@ -1219,7 +1219,7 @@ test("continues after chat in the current Context with the source background Beh
         deliveredAt: "2026-07-19T00:00:00.000Z",
         sourceTurnId: "turn-background",
         sourceEffectId: "effect-background",
-        sourceBehavior: "background",
+        sourceBehavior: "interactivity",
       },
     }],
     executionState: first.executionState,
@@ -1379,7 +1379,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
       assert.match(systemPrompt, /identity revision/);
       assert.match(systemPrompt, /memory revision/);
       assert.match(systemPrompt, /behavior revision/);
-      assert.doesNotMatch(systemPrompt, /identity material|long-term memory|interaction behavior/);
+      assert.doesNotMatch(systemPrompt, /identity material|long-term memory|interactivity behavior/);
       assert.match(messages, /attention revision/);
       assert.doesNotMatch(messages, /current attention/);
       assert.match(messages, /first reply/);
@@ -1405,7 +1405,7 @@ test("refreshes Agent Workspace materials on the next Turn", async t => {
   await Promise.all([
     writeFile(path.join(workspaceRoot, "identity.md"), "identity revision", "utf8"),
     writeFile(path.join(workspaceRoot, "memory.md"), "memory revision", "utf8"),
-    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "behavior revision", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interactivity.md"), "behavior revision", "utf8"),
     writeFile(path.join(workspaceRoot, "attention.md"), "attention revision", "utf8"),
   ]);
 
@@ -3090,8 +3090,8 @@ async function createAgentWorkspaceFixture(root: string): Promise<string> {
   await Promise.all([
     writeFile(path.join(workspaceRoot, "identity.md"), "identity material", "utf8"),
     writeFile(path.join(workspaceRoot, "memory.md"), "long-term memory", "utf8"),
-    writeFile(path.join(workspaceRoot, "behavior", "interaction.md"), "interaction behavior", "utf8"),
-    writeFile(path.join(workspaceRoot, "behavior", "background.md"), "background behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "interactivity.md"), "interactivity behavior", "utf8"),
+    writeFile(path.join(workspaceRoot, "behavior", "proactivity.md"), "proactivity behavior", "utf8"),
     writeFile(path.join(workspaceRoot, "attention.md"), "current attention", "utf8"),
   ]);
   return workspaceRoot;

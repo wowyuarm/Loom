@@ -37,8 +37,8 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
     root,
     createdFiles: [
       "configuration/instance.yaml",
-      "workspace/behavior/background.md",
-      "workspace/behavior/interaction.md",
+      "workspace/behavior/interactivity.md",
+      "workspace/behavior/proactivity.md",
     ],
     requiredIndividualMaterials: [
       { path: "workspace/facts.json" },
@@ -48,8 +48,8 @@ test("initializes the default ~/.loom Instance through the foreground CLI", asyn
     ],
   });
   assert.match(
-    await readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
-    /Background time belongs to the Agent Individual/,
+    await readFile(path.join(root, "workspace", "behavior", "proactivity.md"), "utf8"),
+    /Proactivity time belongs to the Agent Individual/,
   );
 });
 

@@ -16,8 +16,8 @@ test("creates an Instance scaffold without inventing Individual material", async
     root,
     createdFiles: [
       "configuration/instance.yaml",
-      "workspace/behavior/background.md",
-      "workspace/behavior/interaction.md",
+      "workspace/behavior/interactivity.md",
+      "workspace/behavior/proactivity.md",
     ],
     requiredIndividualMaterials: [
       { path: "workspace/facts.json" },
@@ -27,12 +27,12 @@ test("creates an Instance scaffold without inventing Individual material", async
     ],
   });
   assert.match(
-    await readFile(path.join(root, "workspace", "behavior", "interaction.md"), "utf8"),
+    await readFile(path.join(root, "workspace", "behavior", "interactivity.md"), "utf8"),
     /ongoing relationship/,
   );
   assert.match(
-    await readFile(path.join(root, "workspace", "behavior", "background.md"), "utf8"),
-    /Background time belongs to the Agent Individual/,
+    await readFile(path.join(root, "workspace", "behavior", "proactivity.md"), "utf8"),
+    /Proactivity time belongs to the Agent Individual/,
   );
   assert.equal(await readFile(path.join(root, "configuration", "instance.yaml"), "utf8"), [
     "version: 1",
@@ -60,7 +60,7 @@ test("preserves every existing scaffold file when initialization is repeated", a
   const parent = await mkdtemp(path.join(tmpdir(), "loom-reinit-"));
   const root = path.join(parent, ".loom");
   await initializeLoomInstance({ root, channels: ["raft"] });
-  const interaction = path.join(root, "workspace", "behavior", "interaction.md");
+  const interaction = path.join(root, "workspace", "behavior", "interactivity.md");
   const configuration = path.join(root, "configuration", "instance.yaml");
   await Promise.all([
     writeFile(interaction, "Individual interaction behavior.\n", "utf8"),
@@ -94,8 +94,8 @@ test("requires at least one enabled Interaction Channel and deduplicates repeate
   );
   assert.deepEqual(result.createdFiles, [
     "configuration/instance.yaml",
-    "workspace/behavior/background.md",
-    "workspace/behavior/interaction.md",
+    "workspace/behavior/interactivity.md",
+    "workspace/behavior/proactivity.md",
   ]);
 });
 
@@ -110,5 +110,5 @@ test("does not follow a partial Instance scaffold outside its root", async () =>
     initializeLoomInstance({ root, channels: ["raft"] }),
     /Instance scaffold path must stay inside the Instance Root/,
   );
-  await assert.rejects(access(path.join(outside, "behavior", "interaction.md")));
+  await assert.rejects(access(path.join(outside, "behavior", "interactivity.md")));
 });

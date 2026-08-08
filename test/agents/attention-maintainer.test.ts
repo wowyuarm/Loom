@@ -273,8 +273,8 @@ async function createWorkspace(root: string): Promise<string> {
   await Promise.all([
     writeFile(path.join(workspace, "identity.md"), "Rowan is an Agent Individual.", "utf8"),
     writeFile(path.join(workspace, "memory.md"), "Long-term memory.", "utf8"),
-    writeFile(path.join(workspace, "behavior", "interaction.md"), "Interact naturally.", "utf8"),
-    writeFile(path.join(workspace, "behavior", "background.md"), "Explore with care.", "utf8"),
+    writeFile(path.join(workspace, "behavior", "interactivity.md"), "Interact naturally.", "utf8"),
+    writeFile(path.join(workspace, "behavior", "proactivity.md"), "Explore with care.", "utf8"),
     writeFile(path.join(workspace, "attention.md"), "old attention body\n", "utf8"),
     writeFile(path.join(workspace, "facts.json"), JSON.stringify({
       version: 1,

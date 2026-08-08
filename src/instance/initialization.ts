@@ -2,8 +2,8 @@ import { lstat, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
-  DEFAULT_BACKGROUND_BEHAVIOR,
-  DEFAULT_INTERACTION_BEHAVIOR,
+  DEFAULT_PROACTIVITY_BEHAVIOR,
+  DEFAULT_INTERACTIVITY_BEHAVIOR,
 } from "./default-materials.js";
 
 export interface InitializeLoomInstanceResult {
@@ -26,8 +26,8 @@ const REQUIRED_INDIVIDUAL_MATERIALS: InitializeLoomInstanceResult["requiredIndiv
 ];
 
 const SCAFFOLD_BEHAVIOR_FILES = new Map<string, string>([
-  ["workspace/behavior/background.md", DEFAULT_BACKGROUND_BEHAVIOR],
-  ["workspace/behavior/interaction.md", DEFAULT_INTERACTION_BEHAVIOR],
+  ["workspace/behavior/interactivity.md", DEFAULT_INTERACTIVITY_BEHAVIOR],
+  ["workspace/behavior/proactivity.md", DEFAULT_PROACTIVITY_BEHAVIOR],
 ]);
 
 function scaffoldInstanceYaml(channels: readonly InitializeChannelName[]): string {

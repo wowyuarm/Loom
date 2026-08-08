@@ -30,8 +30,8 @@ const MATERIAL_PATHS = {
   stable_facts: "facts.json",
   identity: "identity.md",
   long_term_memory: "memory.md",
-  interaction_behavior: "behavior/interaction.md",
-  background_behavior: "behavior/background.md",
+  interactivity_behavior: "behavior/interactivity.md",
+  proactivity_behavior: "behavior/proactivity.md",
 } as const;
 
 const BASELINE_PATHS = [
@@ -89,17 +89,17 @@ Long-term Memory holds what still changes how the Individual understands the hum
 
 It is not a Daily timeline, event archive, task list, behavior instruction, or database export. Preserve concrete texture when it remains meaningful, but compress old event detail into the understanding that still matters. A Workspace entrance can help the Individual return to private work; do not copy the work itself into Memory.
 
-### Interaction Behavior: behavior/interaction.md
+### Interactivity Behavior: behavior/interactivity.md
 
-Interaction Behavior describes how the Individual naturally meets direct interaction: how it listens, speaks, brings its own judgment, handles care, play, disagreement, correction, uncertainty, depth, and ordinary light contact in this particular relationship.
+Interactivity Behavior describes how the Individual naturally meets direct interaction: how it listens, speaks, brings its own judgment, handles care, play, disagreement, correction, uncertainty, depth, and ordinary light contact in this particular relationship.
 
 It is not a collection of stories, a generic customer-service policy, or a command to maximize engagement. Care can include warmth, honesty, room, challenge, or silence. Do not make the Individual service-like, agreeable by default, or dependent on extracting another reply from the human.
 
-### Background Behavior: behavior/background.md
+### Proactivity Behavior: behavior/proactivity.md
 
-Background Behavior describes how the Individual lives when there is no new human Input: how it follows genuine curiosity, private work, the surrounding world, relationship care, sharing, and silence.
+Proactivity Behavior describes how the Individual lives when there is no new human Input: how it follows genuine curiosity, private work, the surrounding world, relationship care, sharing, and silence.
 
-Background is not a task, scheduled productivity period, or requirement to contact the human. Private exploration may remain private; deciding not to write, act, or send can be complete. Relationship care is a real source of attention, but the human must not become the only possible direction.
+Proactivity is not a task, scheduled productivity period, or requirement to contact the human. Private exploration may remain private; deciding not to write, act, or send can be complete. Relationship care is a real source of attention, but the human must not become the only possible direction.
 
 ### Current Attention: attention.md
 
@@ -134,8 +134,8 @@ Route evidence according to the question. Start with the target day's Daily and 
 Apply different evidence thresholds rather than one universal repetition rule:
 
 - Long-term Memory may change after one defining event when it clearly changes future understanding; ordinary events and attractive summaries do not qualify merely because they are vivid.
-- Interaction Behavior needs an explicit consequential calibration, an independently repeated pattern, or a changed tendency that was actually lived in interaction. Generated but undelivered output is private evidence, not proof of how the relationship was met; the human's response can be important evidence of what actually happened between them.
-- Background Behavior may be supported by repeated private choices, exploration, restraint, and changes in how the Individual uses unclaimed time. Do not invent a motive for silence or turn one productive session into a standing demand.
+- Interactivity Behavior needs an explicit consequential calibration, an independently repeated pattern, or a changed tendency that was actually lived in interaction. Generated but undelivered output is private evidence, not proof of how the relationship was met; the human's response can be important evidence of what actually happened between them.
+- Proactivity Behavior may be supported by repeated private choices, exploration, restraint, and changes in how the Individual uses unclaimed time. Do not invent a motive for silence or turn one productive session into a standing demand.
 - Identity still has the highest threshold: look for durable change across time or contexts, not merely a strong event. Stable Facts keep their separate explicit-correction or clearly-stale threshold.
 
 When a conclusion depends on who said something, what exact wording was used, whether the Individual only thought something, what it actually did, or whether a message reached the human, read the relevant Frozen Activity. actorRef is authoritative. Thinking belongs to the Individual and may support self-understanding, but it is not a human statement, an external fact, a completed action, or a delivered message.
@@ -146,11 +146,11 @@ ${nmemBoundary}
 1. Read all six core materials completely and understand the existing whole before editing.
 2. Inspect relevant Daily candidates, Episodes, Threads, private material, indexed Frozen Activities${optionalNmemEvidence}. Do not scan everything mechanically; follow the evidence needed for this run.
 3. Separate one-day events from cross-time change. Ask what knowing this would genuinely change in the Individual's future understanding or way of living.
-4. Assign each warranted change to its one proper material. Stable coordinate, Identity, Memory, Interaction Behavior, and Background Behavior are different outcomes.
+4. Assign each warranted change to its one proper material. Stable coordinate, Identity, Memory, Interactivity Behavior, and Proactivity Behavior are different outcomes.
 5. Replace only materials that genuinely need change. Preserve everything still true; merge, compress, clarify, or remove what is duplicated, stale, contradicted, or no longer useful.
 6. Return NO_CHANGE when the evidence does not cross a threshold. Stability is not a failed run.
 
-Do not copy one narrative into several materials. Memory may retain the durable fact or meaning while one Behavior material retains the resulting tendency. If the same tendency appears in both interaction and background, ask whether it belongs more deeply in Identity or Memory; otherwise phrase it independently for each lived context rather than cross-referencing files.
+Do not copy one narrative into several materials. Memory may retain the durable fact or meaning while one Behavior material retains the resulting tendency. If the same tendency appears in both interactivity and proactivity, ask whether it belongs more deeply in Identity or Memory; otherwise phrase it independently for each lived context rather than cross-referencing files.
 
 ## Writing quality
 
@@ -303,8 +303,8 @@ class PiMemoryReflector implements MemoryReflector {
             Type.Literal("stable_facts"),
             Type.Literal("identity"),
             Type.Literal("long_term_memory"),
-            Type.Literal("interaction_behavior"),
-            Type.Literal("background_behavior"),
+            Type.Literal("interactivity_behavior"),
+            Type.Literal("proactivity_behavior"),
           ], { description: "The semantic material role to replace." }),
           content: Type.String({ minLength: 1, description: "The complete replacement content in the evidence-supported language and voice." }),
         }),
@@ -531,8 +531,8 @@ function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEna
     "- facts.json: current Stable Facts; writable only as stable_facts.",
     "- identity.md: durable Identity; highest change threshold.",
     "- memory.md: Long-term Memory, not behavior or Daily history.",
-    "- behavior/interaction.md: direct interaction tendencies.",
-    "- behavior/background.md: private life, exploration, sharing, and silence without new human Input.",
+    "- behavior/interactivity.md: direct interaction tendencies.",
+    "- behavior/proactivity.md: private life, exploration, sharing, and silence without new human Input.",
     "- attention.md: Current Attention; read-only.",
     "",
     "## Workspace evidence index",

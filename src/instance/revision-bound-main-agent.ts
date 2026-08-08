@@ -61,7 +61,7 @@ class RevisionBoundMainAgent implements AgentExecution {
   ): Promise<{ execution: PiAgentExecution; running: RunningExecution }> {
     const initialInput = request.inputs[0];
     if (!initialInput) throw new Error("Main Agent Turn requires an initial Input");
-    const role = behaviorForInput(initialInput) === "opportunity"
+    const role = behaviorForInput(initialInput) === "proactivity"
       ? "main-background"
       : "main-interaction";
     const main = firstCandidate(revision, role);
