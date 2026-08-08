@@ -18,6 +18,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (lateDeliveryMigrated.user_version === 17) migrateVersion17(database);
   const replyGateMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (replyGateMigrated.user_version === 18) migrateVersion18(database);
+  const overdueMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (overdueMigrated.user_version === 19) migrateVersion19(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -163,7 +165,10 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       close_owner TEXT,
       close_fencing_token INTEGER,
       close_lease_expires_at TEXT,
-      closed_at TEXT
+      closed_at TEXT,
+      overdue_since TEXT,
+      overdue_reason_json TEXT,
+      next_overdue_check_at TEXT
     ) STRICT;
 
     CREATE TABLE IF NOT EXISTS activities (
@@ -274,9 +279,37 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 19;
+    PRAGMA user_version = 20;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion19(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const segmentTable = database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'active_segment'",
+    ).get();
+    if (segmentTable) {
+      const columns = database.prepare("PRAGMA table_info(active_segment)").all() as unknown as Array<{
+        name: string;
+      }>;
+      if (!columns.some(column => column.name === "overdue_since")) {
+        database.exec("ALTER TABLE active_segment ADD COLUMN overdue_since TEXT");
+      }
+      if (!columns.some(column => column.name === "overdue_reason_json")) {
+        database.exec("ALTER TABLE active_segment ADD COLUMN overdue_reason_json TEXT");
+      }
+      if (!columns.some(column => column.name === "next_overdue_check_at")) {
+        database.exec("ALTER TABLE active_segment ADD COLUMN next_overdue_check_at TEXT");
+      }
+    }
+    database.exec("PRAGMA user_version = 20");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion18(database: DatabaseSync): void {

@@ -165,6 +165,21 @@ function formatStatus(report: LoomStatusReport, since?: string): string {
   if (report.runtime.oldestPendingOrganAgeMs !== undefined) {
     lines.splice(3, 0, `Oldest pending organ work: ${Math.floor(report.runtime.oldestPendingOrganAgeMs / 1_000)}s`);
   }
+  if (report.runtime.activityOverdueSince !== undefined) {
+    const reason = report.runtime.activityOverdueReason?.kind ?? "unknown";
+    const detail = report.runtime.activityOverdueReason?.kind === "main_agent_turn"
+      ? ` (turn ${report.runtime.activityOverdueReason.turnId})`
+      : report.runtime.activityOverdueReason?.kind === "delivery"
+        ? ` (attempt ${report.runtime.activityOverdueReason.attemptId})`
+        : report.runtime.activityOverdueReason?.kind === "activity_closing"
+          ? ` (segment ${report.runtime.activityOverdueReason.segmentId})`
+          : report.runtime.activityOverdueReason?.kind === "activity_recording"
+            ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
+            : report.runtime.activityOverdueReason?.kind === "thread_maintenance"
+              ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
+              : "";
+    lines.splice(3, 0, `Active Segment overdue since ${report.runtime.activityOverdueSince}: ${reason}${detail} (needs attention)`);
+  }
   for (const warning of report.runtime.integrityWarnings) {
     lines.splice(3, 0, `Runtime integrity warning: ${warning.kind} (${warning.count})`);
   }

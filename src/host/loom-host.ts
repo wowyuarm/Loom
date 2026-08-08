@@ -163,6 +163,12 @@ class DefaultLoomHost implements LoomHost {
         ...(runtime.oldestPendingOrganAgeMs !== undefined
           ? { oldestPendingOrganAgeMs: runtime.oldestPendingOrganAgeMs }
           : {}),
+        ...(runtime.activeSegment?.overdueSince !== undefined
+          ? {
+              activityOverdueSince: runtime.activeSegment.overdueSince,
+              activityOverdueReason: runtime.activeSegment.overdueReason,
+            }
+          : {}),
         integrityWarnings: runtime.integrityWarnings.length > 0 ? [{
           kind: "unexplained_terminal_turn_segment",
           count: runtime.integrityWarnings.length,

@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import { createTimePolicy } from "../../src/configuration/index.js";
 import {
+  createScheduler,
   openRuntime,
   type ActivityFreezeRequest,
   type ActivityLifecycle,
@@ -3298,4 +3299,191 @@ test("fixes the interaction scope when the first Interaction joins a proactive T
   await delay(30);
   assert.equal(runtime.status().turns[0]?.inputIds.includes(afterGate.inputId), false);
   assert.equal(runtime.status().inputs.find(input => input.id === afterGate.inputId)?.status, "pending");
+});
+
+test("closeActivity reports a structured busy reason per blocker (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-close-busy-reason-"));
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({ root, execution, now: () => now });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  await execution.started.promise;
+
+  // A running Main Agent execution blocks the close as active_execution.
+  const blocked = await runtime.closeActivity({ openedBefore: "2026-08-08T09:00:00.000Z" });
+  assert.equal(blocked.disposition, "busy");
+  assert.equal(blocked.disposition === "busy" ? blocked.reason.kind : "", "active_execution");
+
+  execution.complete(await execution.started.promise);
+  await advancing;
+});
+
+test("closeActivity reports a running Turn blocker after restart (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-close-busy-turn-"));
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({ root, execution, now: () => now });
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  // Reopen the same root without an active execution: the running Turn row
+  // persists, so the close reports main_agent_turn with the durable turn id.
+  // The first runtime's advance stays pending on the held execution; closing
+  // the database underneath is safe because the pending promise never touches
+  // it again.
+  runtime.close();
+  const recovered = openRuntime({ root, execution: new HeldExecution(), now: () => now });
+  t.after(() => recovered.close());
+  const blocked = await recovered.closeActivity({ openedBefore: "2026-08-08T09:00:00.000Z" });
+  assert.equal(blocked.disposition, "busy");
+  assert.equal(blocked.disposition === "busy" ? blocked.reason.kind : "", "main_agent_turn");
+  assert.equal(
+    blocked.disposition === "busy" && blocked.reason.kind === "main_agent_turn"
+      ? blocked.reason.turnId
+      : "",
+    turn.turnId,
+  );
+
+  void advancing;
+});
+
+test("closeActivity reports a delivery blocker with its attempt id (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-close-busy-delivery-"));
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const delivery = new HeldOutboundDelivery();
+  const runtime = openRuntime({
+    root,
+    execution: effectThenCompleteExecution,
+    outboundDelivery: delivery,
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  assert.equal((await runtime.advance()).disposition, "turn_completed");
+  const advancing = runtime.advance();
+  const attemptId = await delivery.started.promise;
+
+  // An in-flight delivery blocks the close with its attempt id.
+  const blocked = await runtime.closeActivity();
+  assert.equal(blocked.disposition, "busy");
+  assert.equal(blocked.disposition === "busy" ? blocked.reason.kind : "", "delivery");
+  assert.equal(
+    blocked.disposition === "busy" && blocked.reason.kind === "delivery"
+      ? blocked.reason.attemptId
+      : "",
+    attemptId,
+  );
+
+  delivery.finished.resolve({ status: "delivered", remoteId: "remote-1" });
+  await advancing;
+});
+
+test("persists an overdue active segment with its blocker across restart (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-overdue-persist-"));
+  let now = new Date("2026-08-08T08:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({ root, execution, now: () => now });
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  assert.equal(runtime.status().activeSegment?.openedAt, "2026-08-08T08:00:00.000Z");
+
+  // Reopen without an active execution: the running Turn row persists, so the
+  // close reports main_agent_turn and the overdue record is persisted with
+  // the concrete blocker. The first runtime's advance stays pending on the
+  // held execution; closing its database is safe (the promise never touches
+  // it again).
+  runtime.close();
+  const recovered = openRuntime({ root, execution: new HeldExecution(), now: () => now });
+  const blocked = await recovered.closeActivity({ openedBefore: "2026-08-08T09:00:00.000Z" });
+  assert.equal(blocked.disposition, "busy");
+  assert.equal(recovered.status().activeSegment?.overdueSince, "2026-08-08T08:00:00.000Z");
+  assert.deepEqual(recovered.status().activeSegment?.overdueReason, {
+    kind: "main_agent_turn",
+    turnId: turn.turnId,
+  });
+
+  // A later restart keeps the overdue record observable (closed first so the
+  // file handle is released between connections).
+  recovered.close();
+  now = new Date("2026-08-08T10:10:00.000Z");
+  const recoveredAgain = openRuntime({ root, execution: new HeldExecution(), now: () => now });
+  t.after(() => recoveredAgain.close());
+  assert.equal(recoveredAgain.status().activeSegment?.overdueSince, "2026-08-08T08:00:00.000Z");
+  assert.deepEqual(recoveredAgain.status().activeSegment?.overdueReason, {
+    kind: "main_agent_turn",
+    turnId: turn.turnId,
+  });
+
+  void advancing;
+});
+
+test("scheduler surfaces a blocked close without silently swallowing maintenance (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-close-blocked-"));
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({
+    root,
+    execution,
+    activityLifecycle: activityLifecycle(),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 30 * 60 * 1_000,
+    activityMaxMs: 2 * 60 * 60 * 1_000,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  // Segment is past activityMaxMs and still blocked by the running execution:
+  // the scheduler must return an observable upgrade state, not a silent busy.
+  now = new Date("2026-08-08T13:00:00.000Z");
+  const result = await scheduler.runOnce(now);
+  assert.equal(result.disposition, "deferred");
+  assert.equal(result.disposition === "deferred" ? result.reason : "", "activity_close_blocked");
+  assert.equal(
+    result.disposition === "deferred" && result.reason === "activity_close_blocked"
+      ? result.busy.kind
+      : "",
+    "active_execution",
+  );
+
+  execution.complete(turn);
+  await advancing;
 });

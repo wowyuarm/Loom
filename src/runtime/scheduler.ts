@@ -1,4 +1,4 @@
-import type { AdvanceResult, Runtime, RuntimeStatus } from "./types.js";
+import type { AdvanceResult, CloseActivityBusyReason, Runtime, RuntimeStatus } from "./types.js";
 
 export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
 export const DEFAULT_ACTIVITY_MAX_MS = 2 * 60 * 60 * 1_000;
@@ -49,6 +49,11 @@ export type SchedulerRunResult =
         | "delivery_not_sent"
         | "delivery_requires_reconciliation";
       nextRunAt?: string;
+    }
+  | {
+      disposition: "deferred";
+      reason: "activity_close_blocked";
+      busy: CloseActivityBusyReason;
     }
   | {
       disposition: "deferred";
@@ -139,7 +144,29 @@ class RuntimeScheduler implements Scheduler {
           return terminal;
         }
       }
-      if (advanced.disposition === "busy") return { disposition: "busy" };
+      if (advanced.disposition === "busy") {
+        // The Runtime is busy, but if the Segment has reached its maximum age
+        // the close is already due: try it now so the concrete blocker is
+        // surfaced instead of being swallowed by the generic busy result.
+        const status = this.#runtime.status();
+        const active = status.activeSegment;
+        if (active) {
+          const maxAt = new Date(active.openedAt).getTime() + this.#activityMaxMs;
+          if (observedAt.getTime() >= maxAt) {
+            const closed = await this.#runtime.closeActivity({
+              openedBefore: new Date(observedAt.getTime() - this.#activityMaxMs).toISOString(),
+            });
+            if (closed.disposition === "busy") {
+              return {
+                disposition: "deferred",
+                reason: "activity_close_blocked",
+                busy: closed.reason,
+              };
+            }
+          }
+        }
+        return { disposition: "busy" };
+      }
       if (advanced.disposition !== "idle" && !deferredLane) continue;
 
       const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
@@ -216,7 +243,18 @@ class RuntimeScheduler implements Scheduler {
       const inactiveBefore = new Date(observedAt.getTime() - this.#activityIdleMs).toISOString();
       const openedBefore = new Date(observedAt.getTime() - this.#activityMaxMs).toISOString();
       const closed = await this.#runtime.closeActivity({ inactiveBefore, openedBefore });
-      if (closed.disposition === "busy") return deferredLane ?? { disposition: "busy" };
+      if (closed.disposition === "busy") {
+        // The Segment is past its soft-split cutoff but still blocked. Surface
+        // the concrete blocker instead of silently looping: the operator must
+        // be able to tell "normally working" from "stuck", and maintenance
+        // stays deferred only while the single-writer Segment is genuinely
+        // active (it runs once the Segment closes).
+        return {
+          disposition: "deferred",
+          reason: "activity_close_blocked",
+          busy: closed.reason,
+        };
+      }
       if (closed.disposition === "not_due") {
         if (deferredLane) return deferredLane;
         return earliestWaiting(

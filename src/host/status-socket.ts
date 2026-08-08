@@ -2,7 +2,7 @@ import { chmod, mkdir, rm } from "node:fs/promises";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import path from "node:path";
 
-import type { InteractionViewOptions, InteractionViewPage } from "../runtime/index.js";
+import type { CloseActivityBusyReason, InteractionViewOptions, InteractionViewPage } from "../runtime/index.js";
 import type { InteractionChannelIngressStatus } from "../channels/channel.js";
 
 export type LoomAgentName =
@@ -80,6 +80,8 @@ export interface LiveLoomStatusReport {
     pendingEffects: number;
     deliveriesNeedingAttention: number;
     oldestPendingOrganAgeMs?: number;
+    activityOverdueSince?: string;
+    activityOverdueReason?: CloseActivityBusyReason;
     integrityWarnings: Array<{ kind: string; count: number }>;
   };
   agents: LoomAgentStatus[];

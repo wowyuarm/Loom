@@ -36,6 +36,7 @@ import type {
   MemoryReflectionResult,
   AgentExecution,
   OrientationResult,
+  CloseActivityBusyReason,
   CloseActivityOptions,
   CloseActivityResult,
   DeliveryAttemptRequest,
@@ -122,6 +123,9 @@ interface ActiveSegmentRow {
   status: "active" | "closing";
   close_fencing_token: number | null;
   closed_at: string | null;
+  overdue_since: string | null;
+  overdue_reason_json: string | null;
+  next_overdue_check_at: string | null;
 }
 
 interface ActivityRow {
@@ -228,6 +232,7 @@ const DELIVERY_RETRY_BASE_MS = 60 * 1_000;
 const DELIVERY_RETRY_MAX_MS = 60 * 60 * 1_000;
 const INTERACTION_WAVE_QUIET_MS = 1_500;
 const INTERACTION_WAVE_MAX_MS = 6_000;
+const OVERDUE_RECHECK_INTERVAL_MS = 15 * 60 * 1_000;
 
 const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
   "main-agent",
@@ -1144,15 +1149,82 @@ class SqliteRuntime implements Runtime {
   }
 
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
-    if (this.#active || this.#activeDeliveryId || this.#closingActivityId
-      || this.#activeActivityAttemptId || this.#activeThreadMaintenanceId) {
-      return { disposition: "busy" };
+    // Report the specific blocker instead of folding every condition into one
+    // boolean: an operator (or the scheduler) must be able to tell "normally
+    // working" from "stuck" when the Segment cannot freeze.
+    const busy = this.#busyActivityReason();
+    if (busy) {
+      this.#recordOverdueActivityClose(options, busy);
+      return { disposition: "busy", reason: busy };
     }
     this.#reconcileExpiredActivityClose();
-    if (this.#hasRunningTurn() || this.#hasPendingInput()) return { disposition: "busy" };
+    const runningTurn = this.#readRunningTurn();
+    if (runningTurn) {
+      const reason: CloseActivityBusyReason = { kind: "main_agent_turn", turnId: runningTurn.id };
+      this.#recordOverdueActivityClose(options, reason);
+      return { disposition: "busy", reason };
+    }
+    if (this.#hasPendingInput()) {
+      const reason: CloseActivityBusyReason = { kind: "pending_input" };
+      this.#recordOverdueActivityClose(options, reason);
+      return { disposition: "busy", reason };
+    }
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
     return this.#freezeActivity(segment, options);
+  }
+
+  #busyActivityReason(): CloseActivityBusyReason | undefined {
+    if (this.#active) return { kind: "active_execution" };
+    if (this.#activeDeliveryId) {
+      return { kind: "delivery", attemptId: this.#activeDeliveryId };
+    }
+    if (this.#closingActivityId) {
+      return { kind: "activity_closing", segmentId: this.#closingActivityId };
+    }
+    if (this.#activeActivityAttemptId) {
+      return { kind: "activity_recording", activityId: this.#activeActivityAttemptId };
+    }
+    if (this.#activeThreadMaintenanceId) {
+      return { kind: "thread_maintenance", activityId: this.#activeThreadMaintenanceId };
+    }
+    return undefined;
+  }
+
+  /**
+   * Persist "Segment reached activityMaxMs but still cannot close" once per
+   * check interval, so the operator can see the blocker and its first notice
+   * time across restarts without the scheduler spinning on writes. Cleared
+   * when the Segment closes successfully or is no longer overdue.
+   */
+  #recordOverdueActivityClose(options: CloseActivityOptions, reason: CloseActivityBusyReason): void {
+    const segment = this.#readActiveSegment();
+    if (!segment || segment.status !== "active") return;
+    const now = this.#now();
+    const overdue = options.openedBefore !== undefined
+      && Date.parse(segment.opened_at) < Date.parse(options.openedBefore);
+    if (!overdue) return;
+    const checkAt = segment.next_overdue_check_at;
+    if (checkAt !== null && Date.parse(checkAt) > now.getTime()) return;
+    this.#database.prepare(`
+      UPDATE active_segment
+      SET overdue_since = COALESCE(overdue_since, ?),
+          overdue_reason_json = ?,
+          next_overdue_check_at = ?
+      WHERE singleton = 1 AND status = 'active'
+    `).run(
+      now.toISOString(),
+      JSON.stringify(reason),
+      new Date(now.getTime() + OVERDUE_RECHECK_INTERVAL_MS).toISOString(),
+    );
+  }
+
+  #clearOverdueActivityClose(): void {
+    this.#database.prepare(`
+      UPDATE active_segment
+      SET overdue_since = NULL, overdue_reason_json = NULL, next_overdue_check_at = NULL
+      WHERE singleton = 1
+    `).run();
   }
 
   async #freezeActivity(
@@ -1160,7 +1232,9 @@ class SqliteRuntime implements Runtime {
     closePolicy: CloseActivityOptions,
   ): Promise<CloseActivityResult> {
     const claimed = this.#claimActivityClose(segment.id, closePolicy);
-    if (!claimed) return { disposition: "busy" };
+    if (!claimed) {
+      return { disposition: "busy", reason: { kind: "activity_closing", segmentId: segment.id } };
+    }
     if (claimed.disposition === "not_due") return claimed;
     if (!this.#activityLifecycle) {
       this.#failActivityClose(segment.id, claimed.fencingToken, new Error("Activity closure requires a Main Agent lifecycle adapter"));
@@ -1176,7 +1250,9 @@ class SqliteRuntime implements Runtime {
         frozen.activity,
         frozen.successorExecutionState,
       );
-      if (!committed) return { disposition: "busy" };
+      if (!committed) {
+        return { disposition: "busy", reason: { kind: "activity_closing", segmentId: segment.id } };
+      }
       return { disposition: "activity_frozen", activityId: segment.id };
     } catch (error) {
       this.#failActivityClose(segment.id, claimed.fencingToken, error);
@@ -1441,6 +1517,10 @@ class SqliteRuntime implements Runtime {
           id: activeSegment.id,
           openedAt: activeSegment.opened_at,
           lastActivityAt: activeSegment.last_activity_at,
+          ...(activeSegment.overdue_since !== null && activeSegment.overdue_reason_json !== null ? {
+            overdueSince: activeSegment.overdue_since,
+            overdueReason: JSON.parse(activeSegment.overdue_reason_json) as CloseActivityBusyReason,
+          } : {}),
         },
       } : {}),
       activities: activityRows.map(row => ({
@@ -2002,7 +2082,8 @@ class SqliteRuntime implements Runtime {
 
   #readActiveSegment(): ActiveSegmentRow | undefined {
     return this.#database.prepare(`
-      SELECT id, opened_at, last_activity_at, starting_state_json, status, close_fencing_token, closed_at
+      SELECT id, opened_at, last_activity_at, starting_state_json, status, close_fencing_token, closed_at,
+             overdue_since, overdue_reason_json, next_overdue_check_at
       FROM active_segment WHERE singleton = 1
     `).get() as unknown as ActiveSegmentRow | undefined;
   }
@@ -2797,6 +2878,12 @@ class SqliteRuntime implements Runtime {
 
   #hasRunningTurn(): boolean {
     return Boolean(this.#database.prepare("SELECT 1 FROM turns WHERE status = 'running' LIMIT 1").get());
+  }
+
+  #readRunningTurn(): { id: string } | undefined {
+    return this.#database.prepare(`
+      SELECT id FROM turns WHERE status = 'running' LIMIT 1
+    `).get() as unknown as { id: string } | undefined;
   }
 
   #reconcileExpiredTurns(): void {

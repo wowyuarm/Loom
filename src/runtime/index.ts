@@ -26,6 +26,7 @@ export type {
   MemoryReflectionRequest,
   MemoryReflectionResult,
   AgentExecution,
+  CloseActivityBusyReason,
   CloseActivityResult,
   CloseActivityOptions,
   DeliveryAttemptRequest,

@@ -41,6 +41,13 @@ payload, credential, raw provider error or unbounded path; only bounded relative
 references are exposed, such as the Cognitive Organ transcript and result refs.
 A stopped or unreachable Host is explicitly `unavailable`; use systemd and the service journal to determine why.
 
+When the active Segment has stayed open past its maximum age and still cannot
+freeze (e.g. a running Main Agent Turn, an in-flight Delivery, or pending
+Input), `loom status` reports the Segment as overdue: the first overdue time
+and the concrete blocker (with its safe identifier, never private content).
+This lets an operator distinguish "normally working" from "stuck" instead of
+seeing a bare busy result, and the same record survives a Host restart.
+
 The snapshot also lists each Cognitive Organ's current budget cycle under
 `Cognitive Organ Work`, addressed by a stable local work id (`organ-<rowid>`)
 so an operator never handles a raw work UUID or domain content. Each entry

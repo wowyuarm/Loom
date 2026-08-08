@@ -522,6 +522,8 @@ export interface RuntimeStatus {
     id: string;
     openedAt: string;
     lastActivityAt: string;
+    overdueSince?: string;
+    overdueReason?: CloseActivityBusyReason;
   };
   activities: RuntimeActivityStatus[];
   threadMaintenance: RuntimeThreadMaintenanceStatus[];
@@ -642,10 +644,20 @@ export type AdvanceResult =
   | { disposition: "agent_work_deferred" }
   | { disposition: "busy" };
 
+export type CloseActivityBusyReason =
+  | { kind: "main_agent_turn"; turnId: string }
+  | { kind: "pending_input" }
+  | { kind: "delivery"; attemptId: string }
+  | { kind: "activity_closing"; segmentId: string }
+  | { kind: "activity_recording"; activityId: string }
+  | { kind: "thread_maintenance"; activityId: string }
+  | { kind: "organ_work" }
+  | { kind: "active_execution" };
+
 export type CloseActivityResult =
   | { disposition: "no_activity" }
   | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
-  | { disposition: "busy" }
+  | { disposition: "busy"; reason: CloseActivityBusyReason }
   | { disposition: "activity_frozen"; activityId: string };
 
 export interface CloseActivityOptions {
