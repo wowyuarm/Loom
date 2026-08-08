@@ -385,6 +385,38 @@ test("times out a hung Raft CLI command and reports it as retryable", async () =
   assert.match(error.message, /timed out after 150ms/);
 });
 
+test("thread task, mention and other-task resolves do not query channel members", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-signal-"));
+  const cli = path.join(root, "fake-raft.mjs");
+  await writeFile(cli, fakeRaftCli(), "utf8");
+  const countFile = path.join(root, "members-count.txt");
+  process.env.LOOM_TEST_COUNT_FILE = countFile;
+  try {
+    const remote = await openRaftCliRemote({
+      profile: "loom-pilot",
+      expectedServerId: "server-1",
+      expectedSelfMemberId: "agent-loom",
+      expectedPrincipalMemberId: "human-yu",
+      principalDmTarget: "dm:@yu",
+      bridgeStateDirectory: path.join(root, "bridge"),
+      cliEntrypoint: cli,
+    });
+
+    // Reply-thread messages that classify without membership: self task,
+    // self mention and a non-self task must not run `channel members`.
+    assert.equal((await remote.resolveMessage("eeeeeeee-1111-2222-3333-444444444444")).signal, "task");
+    assert.equal((await remote.resolveMessage("99999999-1111-2222-3333-444444444444")).signal, "mention");
+    assert.equal((await remote.resolveMessage("88888888-1111-2222-3333-444444444444")).signal, "channel_activity");
+    assert.equal(await readFile(countFile, "utf8").catch(() => ""), "");
+
+    // A plain reply thread is the only case that queries membership.
+    assert.equal((await remote.resolveMessage("77777777-1111-2222-3333-444444444444")).signal, "channel_activity");
+    assert.equal((await readFile(countFile, "utf8")).trim().split("\n").length, 1);
+  } finally {
+    delete process.env.LOOM_TEST_COUNT_FILE;
+  }
+});
+
 function hangCli(): string {
   return `#!/usr/bin/env node
 const args = process.argv.slice(2);
@@ -409,6 +441,7 @@ if (command[0] === "--version") {
 
 function fakeRaftCli(): string {
   return `#!/usr/bin/env node
+import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const command = args[0] === "--profile" ? args.slice(2) : args;
 if (command[0] === "--version") {
@@ -429,6 +462,10 @@ if (command[0] === "--version") {
   else if (id.startsWith("bbbbbbbb")) process.stdout.write("[target=#commons msg=bbbbbbbb time=2026-08-03 05:02:00 type=agent] @alex — Another agent: Update [task #13 status=todo assignee=@loom]\\n");
   else if (id.startsWith("cccccccc")) process.stdout.write("[target=#commons:cccccccc msg=cccccccc time=2026-08-03 05:03:00 type=agent] @alex — Another agent: An unfollowed reply\\n");
   else if (id.startsWith("dddddddd")) process.stdout.write("[target=#commons:dddddddd msg=dddddddd time=2026-08-03 05:04:00 type=agent] @alex — Another agent: A followed reply\\n");
+  else if (id.startsWith("eeeeeeee")) process.stdout.write("[target=#commons:eeeeeeee msg=eeeeeeee time=2026-08-03 05:05:00 type=agent] @alex — Another agent: Update [task #14 status=in_progress assignee=@loom]\\n");
+  else if (id.startsWith("99999999")) process.stdout.write("[target=#commons:99999999 msg=99999999 time=2026-08-03 05:06:00 type=agent] @alex — Another agent: Hi @loom\\n");
+  else if (id.startsWith("88888888")) process.stdout.write("[target=#commons:88888888 msg=88888888 time=2026-08-03 05:07:00 type=agent] @alex — Another agent: Update [task #15 status=todo assignee=agent:agent-other]\\n");
+  else if (id.startsWith("77777777")) process.stdout.write("[target=#commons:77777777 msg=77777777 time=2026-08-03 05:08:00 type=agent] @alex — Another agent: A plain reply\\n");
   else process.stdout.write("[target=dm:@yu msg=12345678 time=2026-08-03 05:00:00 type=human] @yu — Long-term counterpart: operator: Can we inspect this: carefully?\\n");
 } else if (command[0] === "message" && command[1] === "check") {
   process.stdout.write("[target=dm:@loom msg=87654321 time=2026-08-03 04:59:59 type=human] @yu: A missed message.\\n[target=dm:@yu msg=87654321 time=2026-08-03 04:59:59 type=human] @yu: The same message through its canonical DM alias.\\n\\nNo more new messages.\\n");
@@ -443,6 +480,7 @@ if (command[0] === "--version") {
 } else if (command[0] === "channel" && command[1] === "info") {
   process.stdout.write("## Channel\\n\\nChannel: #commons\\nID: channel-commons\\nVisibility: public\\nJoined: yes\\nMuted: no\\nDescription: A shared place.\\n");
 } else if (command[0] === "channel" && command[1] === "members") {
+  appendFileSync(process.env.LOOM_TEST_COUNT_FILE ?? "/dev/null", "members\\n");
   const followed = command[2].endsWith(":dddddddd");
   process.stdout.write("## Channel Members\\n\\n### Agents\\n" + (followed ? "  - @loom (active)\\n" : "  - @alex (active)\\n") + "\\n### Humans\\n  (none)\\n");
 } else if (command[0] === "message" && command[1] === "search") {
