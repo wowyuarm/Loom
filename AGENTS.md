@@ -38,7 +38,7 @@ src/
   integrations/     Web、nmem 和附件 Adapter
   configuration/    Instance 配置、时间和模型 revision
 test/               与 src/ 对应的 Node test 覆盖
-docs/               ADR、工程约定和接入说明
+docs/               ADR、架构概览、Cognitive Organs、工程约定和接入说明
 .scratch/           当前工程协作的 map、spec 与 ticket
 ```
 
@@ -110,9 +110,11 @@ Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也�
 ## Further Reading
 
 - [README.md](README.md) — 使用、部署和 Instance Root 布局
-- [CONTEXT.md](CONTEXT.md) — 术语与边界
-- [Harness layers map](.scratch/harness-layers/map.md) — 当前阶段、已闭合工作和下一步
-- [ADR](docs/adr/) — 长期取舍
+- [CONTEXT.md](CONTEXT.md) - 术语与边界
+- [Architecture](docs/architecture.md) - 模块关系与数据流
+- [Cognitive Organs](docs/cognitive-organs.md) - 认知器官职责与调度
+- [Harness layers map](.scratch/harness-layers/map.md) - 当前阶段、已闭合工作和下一步
+- [ADR](docs/adr/) - 长期取舍
 - [Channel docs](docs/channels/) - Weixin、Raft
 - [Integration docs](docs/integrations/) - Web、nmem 与附件
-- [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) — 实例初始化、VPS 部署与多 Individual 运维
+- [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) - 实例初始化、VPS 部署与多 Individual 运维
