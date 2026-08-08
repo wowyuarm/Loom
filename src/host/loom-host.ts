@@ -167,6 +167,9 @@ class DefaultLoomHost implements LoomHost {
           ? {
               activityOverdueSince: runtime.activeSegment.overdueSince,
               activityOverdueReason: runtime.activeSegment.overdueReason,
+              ...(runtime.activeSegment.nextOverdueCheckAt !== undefined
+                ? { activityOverdueNextCheckAt: runtime.activeSegment.nextOverdueCheckAt }
+                : {}),
             }
           : {}),
         integrityWarnings: runtime.integrityWarnings.length > 0 ? [{

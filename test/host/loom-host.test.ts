@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -77,6 +78,44 @@ test("serves content-free live status with Channel state only", async t => {
   assert.deepEqual(report.integrations, []);
   assert.equal("root" in report.host, false);
   assert.doesNotMatch(JSON.stringify(report), new RegExp(root.replaceAll("\\", "\\\\")));
+});
+
+test("exposes an overdue active Segment through the operator status socket (issue #4)", async t => {
+  const root = await preparedInstanceRoot();
+  // Initialize the Runtime schema, then plant an overdue Segment that cannot
+  // close: it is blocked by a running Turn row, so the Host driver cannot
+  // freeze it and the overdue record stays observable on the status socket.
+  const seeded = openRuntime({ root: path.join(root, "runtime"), now: () => new Date("2026-08-08T09:00:00.000Z") });
+  seeded.close();
+  const database = new DatabaseSync(path.join(root, "runtime", "runtime.db"));
+  database.exec(`
+    INSERT INTO active_segment (singleton, id, opened_at, last_activity_at, status,
+                                overdue_since, overdue_reason_json, next_overdue_check_at)
+    VALUES (1, 'segment-overdue', '2026-08-08T08:00:00.000Z', '2026-08-08T08:00:00.000Z', 'active',
+            '2026-08-08T09:00:00.000Z', '{"kind":"main_agent_turn","turnId":"turn-1"}',
+            '2026-08-08T09:15:00.000Z');
+    INSERT INTO turns (id, segment_id, status, lease_owner, fencing_token, lease_expires_at,
+                       started_at, recording_day)
+    VALUES ('turn-1', 'segment-overdue', 'running', 'owner-1', 1, '2099-01-01T00:00:00.000Z',
+            '2026-08-08T08:05:00.000Z', '2026-08-08');
+  `);
+  database.close();
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+  await eventually(() => host.status().state === "running");
+
+  // Read through the real operator socket: the overdue record with its
+  // blocker and re-check time must be present in the public report.
+  const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
+  assert.ok("runId" in report);
+  assert.equal(report.runtime.activityOverdueSince, "2026-08-08T09:00:00.000Z");
+  assert.deepEqual(report.runtime.activityOverdueReason, {
+    kind: "main_agent_turn",
+    turnId: "turn-1",
+  });
+  assert.equal(report.runtime.activityOverdueNextCheckAt, "2026-08-08T09:15:00.000Z");
 });
 
 test("accepts channel Input only through a running Host", async t => {

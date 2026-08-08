@@ -1154,20 +1154,22 @@ class SqliteRuntime implements Runtime {
     // working" from "stuck" when the Segment cannot freeze.
     const busy = this.#busyActivityReason();
     if (busy) {
-      this.#recordOverdueActivityClose(options, busy);
-      return { disposition: "busy", reason: busy };
+      const nextOverdueCheckAt = this.#recordOverdueActivityClose(options, busy);
+      return { disposition: "busy", reason: busy, ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}) };
     }
     this.#reconcileExpiredActivityClose();
     const runningTurn = this.#readRunningTurn();
     if (runningTurn) {
       const reason: CloseActivityBusyReason = { kind: "main_agent_turn", turnId: runningTurn.id };
-      this.#recordOverdueActivityClose(options, reason);
-      return { disposition: "busy", reason };
+      const nextOverdueCheckAt = this.#recordOverdueActivityClose(options, reason);
+      return { disposition: "busy", reason, ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}) };
     }
     if (this.#hasPendingInput()) {
-      const reason: CloseActivityBusyReason = { kind: "pending_input" };
-      this.#recordOverdueActivityClose(options, reason);
-      return { disposition: "busy", reason };
+      const inputId = this.#readPendingInputId();
+      if (!inputId) throw new Error("Pending Input exists but its id could not be read");
+      const reason: CloseActivityBusyReason = { kind: "pending_input", inputId };
+      const nextOverdueCheckAt = this.#recordOverdueActivityClose(options, reason);
+      return { disposition: "busy", reason, ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}) };
     }
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
@@ -1175,7 +1177,9 @@ class SqliteRuntime implements Runtime {
   }
 
   #busyActivityReason(): CloseActivityBusyReason | undefined {
-    if (this.#active) return { kind: "active_execution" };
+    if (this.#active) {
+      return { kind: "active_execution", turnId: this.#active.turnId };
+    }
     if (this.#activeDeliveryId) {
       return { kind: "delivery", attemptId: this.#activeDeliveryId };
     }
@@ -1194,18 +1198,32 @@ class SqliteRuntime implements Runtime {
   /**
    * Persist "Segment reached activityMaxMs but still cannot close" once per
    * check interval, so the operator can see the blocker and its first notice
-   * time across restarts without the scheduler spinning on writes. Cleared
-   * when the Segment closes successfully or is no longer overdue.
+   * time across restarts without the scheduler spinning on writes. Returns
+   * the next re-check time so the scheduler can wake the driver at that
+   * point instead of waiting for an external Input.
    */
-  #recordOverdueActivityClose(options: CloseActivityOptions, reason: CloseActivityBusyReason): void {
+  #recordOverdueActivityClose(options: CloseActivityOptions, reason: CloseActivityBusyReason): string | undefined {
     const segment = this.#readActiveSegment();
-    if (!segment || segment.status !== "active") return;
+    if (!segment || segment.status !== "active") return undefined;
     const now = this.#now();
+    // Same boundary as the scheduler's due check: the Segment is overdue once
+    // openedAt has reached openedBefore (i.e. openedAt + activityMaxMs).
     const overdue = options.openedBefore !== undefined
-      && Date.parse(segment.opened_at) < Date.parse(options.openedBefore);
-    if (!overdue) return;
+      && Date.parse(segment.opened_at) <= Date.parse(options.openedBefore);
+    if (!overdue) return undefined;
     const checkAt = segment.next_overdue_check_at;
-    if (checkAt !== null && Date.parse(checkAt) > now.getTime()) return;
+    if (checkAt !== null && Date.parse(checkAt) > now.getTime()) {
+      const reasonJson = JSON.stringify(reason);
+      if (segment.overdue_reason_json !== reasonJson) {
+        this.#database.prepare(`
+          UPDATE active_segment
+          SET overdue_reason_json = ?
+          WHERE singleton = 1 AND status = 'active'
+        `).run(reasonJson);
+      }
+      return checkAt;
+    }
+    const nextCheckAt = new Date(now.getTime() + OVERDUE_RECHECK_INTERVAL_MS).toISOString();
     this.#database.prepare(`
       UPDATE active_segment
       SET overdue_since = COALESCE(overdue_since, ?),
@@ -1215,16 +1233,9 @@ class SqliteRuntime implements Runtime {
     `).run(
       now.toISOString(),
       JSON.stringify(reason),
-      new Date(now.getTime() + OVERDUE_RECHECK_INTERVAL_MS).toISOString(),
+      nextCheckAt,
     );
-  }
-
-  #clearOverdueActivityClose(): void {
-    this.#database.prepare(`
-      UPDATE active_segment
-      SET overdue_since = NULL, overdue_reason_json = NULL, next_overdue_check_at = NULL
-      WHERE singleton = 1
-    `).run();
+    return nextCheckAt;
   }
 
   async #freezeActivity(
@@ -1233,7 +1244,22 @@ class SqliteRuntime implements Runtime {
   ): Promise<CloseActivityResult> {
     const claimed = this.#claimActivityClose(segment.id, closePolicy);
     if (!claimed) {
-      return { disposition: "busy", reason: { kind: "activity_closing", segmentId: segment.id } };
+      // Distinguish the real blocker: a running Turn, a pending Input, a
+      const reason: CloseActivityBusyReason = this.#readRunningTurn()
+        ? { kind: "main_agent_turn", turnId: this.#readRunningTurn()!.id }
+        : this.#hasPendingInput()
+          ? (() => {
+              const inputId = this.#readPendingInputId();
+              if (!inputId) throw new Error("Pending Input exists but its id could not be read");
+              return { kind: "pending_input", inputId } as const;
+            })()
+          : { kind: "activity_closing", segmentId: segment.id };
+      const nextOverdueCheckAt = this.#recordOverdueActivityClose(closePolicy, reason);
+      return {
+        disposition: "busy",
+        reason,
+        ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}),
+      };
     }
     if (claimed.disposition === "not_due") return claimed;
     if (!this.#activityLifecycle) {
@@ -1251,7 +1277,21 @@ class SqliteRuntime implements Runtime {
         frozen.successorExecutionState,
       );
       if (!committed) {
-        return { disposition: "busy", reason: { kind: "activity_closing", segmentId: segment.id } };
+        // The close yielded to a new Input: report that concrete blocker with
+        // the persisted re-check time instead of a generic closing race.
+        const reason: CloseActivityBusyReason = this.#hasPendingInput()
+          ? (() => {
+              const inputId = this.#readPendingInputId();
+              if (!inputId) throw new Error("Pending Input exists but its id could not be read");
+              return { kind: "pending_input", inputId } as const;
+            })()
+          : { kind: "activity_closing", segmentId: segment.id };
+        const nextOverdueCheckAt = this.#recordOverdueActivityClose(closePolicy, reason);
+        return {
+          disposition: "busy",
+          reason,
+          ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}),
+        };
       }
       return { disposition: "activity_frozen", activityId: segment.id };
     } catch (error) {
@@ -1520,6 +1560,9 @@ class SqliteRuntime implements Runtime {
           ...(activeSegment.overdue_since !== null && activeSegment.overdue_reason_json !== null ? {
             overdueSince: activeSegment.overdue_since,
             overdueReason: JSON.parse(activeSegment.overdue_reason_json) as CloseActivityBusyReason,
+            ...(activeSegment.next_overdue_check_at !== null
+              ? { nextOverdueCheckAt: activeSegment.next_overdue_check_at }
+              : {}),
           } : {}),
         },
       } : {}),
@@ -2884,6 +2927,13 @@ class SqliteRuntime implements Runtime {
     return this.#database.prepare(`
       SELECT id FROM turns WHERE status = 'running' LIMIT 1
     `).get() as unknown as { id: string } | undefined;
+  }
+
+  #readPendingInputId(): string | undefined {
+    const row = this.#database.prepare(`
+      SELECT id FROM inputs WHERE status = 'pending' ORDER BY accepted_at, id LIMIT 1
+    `).get() as unknown as { id: string } | undefined;
+    return row?.id;
   }
 
   #reconcileExpiredTurns(): void {

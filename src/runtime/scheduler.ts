@@ -54,6 +54,7 @@ export type SchedulerRunResult =
       disposition: "deferred";
       reason: "activity_close_blocked";
       busy: CloseActivityBusyReason;
+      nextRunAt: string;
     }
   | {
       disposition: "deferred";
@@ -161,6 +162,8 @@ class RuntimeScheduler implements Scheduler {
                 disposition: "deferred",
                 reason: "activity_close_blocked",
                 busy: closed.reason,
+                nextRunAt: closed.nextOverdueCheckAt
+                  ?? new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
               };
             }
           }
@@ -253,6 +256,8 @@ class RuntimeScheduler implements Scheduler {
           disposition: "deferred",
           reason: "activity_close_blocked",
           busy: closed.reason,
+          nextRunAt: closed.nextOverdueCheckAt
+            ?? new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
         };
       }
       if (closed.disposition === "not_due") {

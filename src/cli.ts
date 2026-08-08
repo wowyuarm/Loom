@@ -2,6 +2,7 @@
 
 import { homedir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
 
 import {
@@ -149,7 +150,7 @@ function readStatusArguments(args: string[]): { json: boolean; since?: string } 
   return { json, ...(since ? { since } : {}) };
 }
 
-function formatStatus(report: LoomStatusReport, since?: string): string {
+export function formatStatus(report: LoomStatusReport, since?: string): string {
   if (!("runId" in report)) return "Loom Host unavailable";
   const modelDetail = report.model.state === "active"
     ? report.model.revisionId
@@ -169,16 +170,20 @@ function formatStatus(report: LoomStatusReport, since?: string): string {
     const reason = report.runtime.activityOverdueReason?.kind ?? "unknown";
     const detail = report.runtime.activityOverdueReason?.kind === "main_agent_turn"
       ? ` (turn ${report.runtime.activityOverdueReason.turnId})`
-      : report.runtime.activityOverdueReason?.kind === "delivery"
-        ? ` (attempt ${report.runtime.activityOverdueReason.attemptId})`
-        : report.runtime.activityOverdueReason?.kind === "activity_closing"
-          ? ` (segment ${report.runtime.activityOverdueReason.segmentId})`
-          : report.runtime.activityOverdueReason?.kind === "activity_recording"
-            ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
-            : report.runtime.activityOverdueReason?.kind === "thread_maintenance"
-              ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
-              : "";
-    lines.splice(3, 0, `Active Segment overdue since ${report.runtime.activityOverdueSince}: ${reason}${detail} (needs attention)`);
+      : report.runtime.activityOverdueReason?.kind === "pending_input"
+        ? ` (input ${report.runtime.activityOverdueReason.inputId})`
+        : report.runtime.activityOverdueReason?.kind === "active_execution"
+          ? ` (turn ${report.runtime.activityOverdueReason.turnId})`
+          : report.runtime.activityOverdueReason?.kind === "delivery"
+            ? ` (attempt ${report.runtime.activityOverdueReason.attemptId})`
+            : report.runtime.activityOverdueReason?.kind === "activity_closing"
+              ? ` (segment ${report.runtime.activityOverdueReason.segmentId})`
+              : report.runtime.activityOverdueReason?.kind === "activity_recording"
+                ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
+                : report.runtime.activityOverdueReason?.kind === "thread_maintenance"
+                  ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
+                  : "";
+    lines.splice(3, 0, `Active Segment overdue since ${report.runtime.activityOverdueSince}: ${reason}${detail} (needs attention${report.runtime.activityOverdueNextCheckAt ? `, next check ${report.runtime.activityOverdueNextCheckAt}` : ""})`);
   }
   for (const warning of report.runtime.integrityWarnings) {
     lines.splice(3, 0, `Runtime integrity warning: ${warning.kind} (${warning.count})`);
@@ -358,7 +363,9 @@ function waitForTerminationSignal(): {
   };
 }
 
-main(process.argv.slice(2)).catch(error => {
-  console.error(`[loom] ${error instanceof Error ? error.message : String(error)}`);
-  process.exitCode = 1;
-});
+if (fileURLToPath(import.meta.url) === process.argv[1]) {
+  main(process.argv.slice(2)).catch(error => {
+    console.error(`[loom] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}

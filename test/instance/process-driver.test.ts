@@ -254,3 +254,30 @@ async function eventually(predicate: () => boolean): Promise<void> {
   }
   assert.fail("condition was not reached");
 }
+
+test("waits until a deferred activity_close_blocked nextRunAt without polling (issue #4)", async t => {
+  const waits: Array<Date | undefined> = [];
+  const driver = createProcessDriver({
+    instance: fakeInstance({
+      runOnce: async () => ({
+        disposition: "deferred",
+        reason: "activity_close_blocked",
+        busy: { kind: "active_execution", turnId: "turn-1" },
+        nextRunAt: "2026-07-22T11:15:00.000Z",
+      }),
+    }),
+    now: () => new Date("2026-07-22T11:00:00.000Z"),
+    wait: async (until, signal) => {
+      waits.push(until);
+      await aborted(signal);
+    },
+  });
+  t.after(() => driver.stop());
+
+  driver.start();
+  await eventually(() => waits.length === 1);
+
+  // The driver must wake at the persisted re-check time (15 minutes later),
+  // not spin every second like a plain busy result.
+  assert.equal(waits[0]?.toISOString(), "2026-07-22T11:15:00.000Z");
+});

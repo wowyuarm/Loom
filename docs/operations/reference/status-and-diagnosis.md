@@ -43,10 +43,13 @@ A stopped or unreachable Host is explicitly `unavailable`; use systemd and the s
 
 When the active Segment has stayed open past its maximum age and still cannot
 freeze (e.g. a running Main Agent Turn, an in-flight Delivery, or pending
-Input), `loom status` reports the Segment as overdue: the first overdue time
-and the concrete blocker (with its safe identifier, never private content).
-This lets an operator distinguish "normally working" from "stuck" instead of
-seeing a bare busy result, and the same record survives a Host restart.
+Input), `loom status` reports the Segment as overdue: the first overdue time,
+the concrete blocker (with its safe identifier, never private content), and
+the next re-check time. The Host wakes itself at that re-check time instead of
+waiting for an external message, so an overdue Segment is re-examined even
+without new Input. This lets an operator distinguish "normally working" from
+"stuck" instead of seeing a bare busy result, and the same record survives a
+Host restart.
 
 The snapshot also lists each Cognitive Organ's current budget cycle under
 `Cognitive Organ Work`, addressed by a stable local work id (`organ-<rowid>`)

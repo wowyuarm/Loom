@@ -82,6 +82,7 @@ export interface LiveLoomStatusReport {
     oldestPendingOrganAgeMs?: number;
     activityOverdueSince?: string;
     activityOverdueReason?: CloseActivityBusyReason;
+    activityOverdueNextCheckAt?: string;
     integrityWarnings: Array<{ kind: string; count: number }>;
   };
   agents: LoomAgentStatus[];

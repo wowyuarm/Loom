@@ -3483,7 +3483,186 @@ test("scheduler surfaces a blocked close without silently swallowing maintenance
       : "",
     "active_execution",
   );
+  // The driver must wake again at the persisted re-check time instead of
+  // waiting forever for an external Input: the deferred result carries it.
+  assert.equal(
+    result.disposition === "deferred" && result.reason === "activity_close_blocked"
+      ? result.nextRunAt
+      : "",
+    "2026-08-08T13:15:00.000Z",
+  );
 
   execution.complete(turn);
   await advancing;
+});
+
+test("records overdue when the Segment reaches the max-age boundary exactly (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-overdue-boundary-"));
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({ root, execution, now: () => now });
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  runtime.close();
+
+  // The segment opened exactly at openedBefore: it is due, so the overdue
+  // record must be persisted on the first busy close (not deferred to a later
+  // check because of a strict `<` comparison).
+  const recovered = openRuntime({ root, execution: new HeldExecution(), now: () => now });
+  t.after(() => recovered.close());
+  const blocked = await recovered.closeActivity({ openedBefore: "2026-08-08T10:00:00.000Z" });
+  assert.equal(blocked.disposition, "busy");
+  assert.equal(recovered.status().activeSegment?.overdueSince, "2026-08-08T10:00:00.000Z");
+  assert.deepEqual(recovered.status().activeSegment?.overdueReason, {
+    kind: "main_agent_turn",
+    turnId: turn.turnId,
+  });
+
+  void advancing;
+});
+
+test("runs maintenance after a blocked close is resolved and the Segment closes (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-close-then-maintain-"));
+  const recorded: string[] = [];
+  let now = new Date("2026-08-08T08:00:00.000Z");
+  const execution = new HeldExecution();
+  const runtime = openRuntime({
+    root,
+    execution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: recorder(recorded),
+    now: () => now,
+  });
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 30 * 60 * 1_000,
+    activityMaxMs: 2 * 60 * 60 * 1_000,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  // Segment is past activityMaxMs and blocked by the running Turn: the
+  // scheduler must report the blocker with a re-check time.
+  now = new Date("2026-08-08T13:00:00.000Z");
+  const blocked = await scheduler.runOnce(now);
+  assert.equal(blocked.disposition, "deferred");
+  assert.equal(blocked.disposition === "deferred" ? blocked.reason : "", "activity_close_blocked");
+
+  // The Turn completes: the next scheduler run closes the Segment and the
+  // same run must hand the maintenance queue its turn (recorder runs).
+  execution.complete(turn);
+  await advancing;
+  now = new Date("2026-08-08T13:00:00.001Z");
+  const result = await scheduler.runOnce(now);
+  assert.ok(result.disposition === "idle" || result.disposition === "waiting");
+  const activityId = runtime.status().activities[0]?.id;
+  assert.ok(activityId);
+  assert.deepEqual(recorded, [activityId]);
+});
+
+test("reports pending_input when an arriving Input yields the close (issue #4)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-close-yield-input-"));
+  const freezeStarted = deferred<void>();
+  const releaseFreeze = deferred<void>();
+  let now = new Date("2026-08-08T10:00:00.000Z");
+  const execution = new HeldExecution();
+  const lifecycle: ActivityLifecycle = {
+    freeze: async request => {
+      freezeStarted.resolve();
+      await releaseFreeze.promise;
+      return {
+        activity: {
+          version: 1,
+          segmentId: request.segment.id,
+          recordingDay: request.segment.recordingDay,
+          openedAt: request.segment.openedAt,
+          closedAt: request.segment.closedAt,
+          events: request.inputs.map(input => ({
+            eventId: `input:${input.id}`,
+            turnId: request.turns.find(turn => turn.inputIds.includes(input.id))!.id,
+            at: input.occurredAt,
+            actorRef: "human",
+            kind: "input" as const,
+            content: input.payload,
+          })),
+          turns: request.turns.map(turn => ({
+            turnId: turn.id,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            status: turn.status,
+          })),
+        },
+        successorExecutionState: { version: 1, successorOf: request.segment.id },
+      };
+    },
+  };
+  const runtime = openRuntime({ root, execution, activityLifecycle: lifecycle, now: () => now });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  // Record an earlier blocker with a future re-check. The close-yield path
+  // below must replace this stale reason without moving the scheduled check.
+  now = new Date("2026-08-08T13:00:00.000Z");
+  const earlier = await runtime.closeActivity({ openedBefore: "2026-08-08T12:00:00.000Z" });
+  assert.equal(earlier.disposition, "busy");
+  assert.equal(earlier.disposition === "busy" ? earlier.reason.kind : "", "active_execution");
+  assert.equal(earlier.disposition === "busy" ? earlier.nextOverdueCheckAt : "", "2026-08-08T13:15:00.000Z");
+
+  execution.complete(turn);
+  await advancing;
+
+  // The close is claimed and the freeze hangs; a new Input arrives while the
+  // Segment is already closing. The Segment is also past the max-age cutoff
+  // (opened 10:00, cutoff 09:00 via openedBefore), so the yield must persist
+  // an overdue record with a re-check time.
+  const closing = runtime.closeActivity({ openedBefore: "2026-08-08T12:00:00.000Z" });
+  await freezeStarted.promise;
+  const incoming = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    payload: { text: "second" },
+  });
+  assert.equal(incoming.disposition, "accepted");
+
+  // Releasing the freeze makes finishActivityClose yield to the pending Input:
+  // the result must name that blocker with its id and a re-check time, and the
+  // overdue record must persist the same reason.
+  releaseFreeze.resolve();
+  const result = await closing;
+  assert.equal(result.disposition, "busy");
+  if (result.disposition !== "busy") return;
+  assert.equal(result.reason.kind, "pending_input");
+  if (result.reason.kind !== "pending_input") return;
+  assert.equal(result.reason.inputId, incoming.inputId);
+  assert.equal(result.nextOverdueCheckAt, "2026-08-08T13:15:00.000Z");
+  const activeSegment = runtime.status().activeSegment;
+  const overdueReason = activeSegment?.overdueReason;
+  assert.equal(overdueReason?.kind, "pending_input");
+  if (overdueReason?.kind !== "pending_input") return;
+  assert.equal(overdueReason.inputId, incoming.inputId);
+  assert.equal(activeSegment?.nextOverdueCheckAt, "2026-08-08T13:15:00.000Z");
 });
