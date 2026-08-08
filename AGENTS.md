@@ -52,6 +52,9 @@ docs/               ADR、架构概览、Cognitive Organs、工程约定和接�
 npm run typecheck
 npm test
 npm run build
+npm run test:fast
+npm run test:runtime
+npm run test:host
 
 node dist/src/cli.js init [--root <instance-root>] --channel raft|weixin [--channel raft|weixin]
 node dist/src/cli.js run [--root <instance-root>]
@@ -72,7 +75,8 @@ CLI 默认 Instance Root 是 `~/.loom`。开发期 `npm run build && npm link` �
 
 ## Testing
 
-- 修改代码后先跑与风险相称的测试；完成一个工作单元时跑 `npm run typecheck` 和 `npm test`。
+- 修改代码后先跑与风险相称的测试：Main Agent、配置、Workspace 改动用 `npm run test:fast`；Runtime 改动用 `npm run test:runtime`；Channel、Host、Instance 或 Integration 改动用 `npm run test:host`。跨层改动可组合运行。
+- 完成一个工作单元时仍跑 `npm run typecheck` 和完整 `npm test`；分层入口用于更快定位和反馈，不替代全量验证。
 - 测试通过公开接口观察行为，不检查私有 SQLite 状态或 prompt 字符串。
 - 模型能力、语言和写作品味用真实实例观察，不用 faux provider 测试伪造质量结论。
 - 不把生产或个人 Instance Root 当测试目录；使用测试创建的临时 root。
