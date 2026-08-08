@@ -45,6 +45,13 @@ export type OperationalEvent =
       errorType: string;
     }
   | {
+      event: "agent.tool.error-circuit-opened";
+      at: string;
+      toolCallId: string;
+      toolName: string;
+      consecutiveErrors: number;
+    }
+  | {
       event: "agent.tool.started";
       at: string;
       toolCallId: string;

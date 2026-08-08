@@ -1887,6 +1887,59 @@ test("requeues a blocked Input explicitly after a failed Turn", async t => {
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
 
+test("blocks an uncovered Input after a tool-error circuit failure and recovers on requeue (issue #10)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-tool-error-circuit-"));
+  let now = Date.parse("2026-08-07T22:00:00.000Z");
+  const failing = openRuntime({
+    root,
+    now: () => new Date(now),
+    execution: {
+      start(request, control) {
+        control.prepareExecutionState(request.executionState ?? { version: 1 });
+        control.includeInput(request.inputs[0]!.id);
+        return {
+          result: Promise.reject(new Error(
+            "Main Agent failed after 5 consecutive tool errors on message (toolCall message-retry-4)",
+          )),
+          steer: async () => {},
+          abort: async () => {},
+        };
+      },
+    },
+  });
+  const accepted = await failing.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    payload: { text: "retry after circuit" },
+  });
+  await assert.rejects(failing.advance(), /consecutive tool errors/);
+  assert.deepEqual(failing.inputOutcome(accepted.inputId), {
+    state: "blocked",
+    reason: "input_blocked",
+  });
+  const failedRun = failing.operationalStatus().agents.find(agent => agent.name === "main-agent")?.latest;
+  assert.equal(failedRun?.result, "failed");
+  assert.equal(failedRun?.failureCategory, "tool_error");
+  failing.close();
+
+  now += 2_000;
+  const execution = new InteractionDecisionExecution();
+  const recovered = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => recovered.close());
+  assert.deepEqual(recovered.requeueInput(accepted.inputId), { disposition: "requeued" });
+  const advancing = recovered.advance();
+  const turn = await execution.started.promise;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "recovered" }, routeRef: "default" },
+  });
+  assert.equal(decision.outcome, "send");
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
 test("reports a terminal Turn whose Segment has no active, frozen, or discarded outcome", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-integrity-warning-"));
   const runtime = openRuntime({
@@ -2079,6 +2132,159 @@ test("starts a new wave after 1.5 seconds of quiet and steers it into the open r
   const steered = execution.steered.find(input => input.id === nextWave.inputId);
   assert.equal(steered?.lateSteered, true);
 
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("claims every pending Input of the scope even when they split across waves (issue #9)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-issue9-scope-waves-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-07T10:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  // Both Inputs are accepted BEFORE any Turn starts (e.g. a bridge backfill
+  // after restart) and the quiet window split them into different waves of
+  // the same scope. The reply gate covers the whole scope: every pending
+  // Input of the same routeRef + placeRef must join the Turn before the first
+  // send/no_reply commit, so a new Turn claims them all regardless of wave.
+  const first = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  now += 2_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  const waves = new Set(runtime.status().inputs.map(input => input.interactionWaveId));
+  assert.equal(waves.size, 2);
+
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(second.inputId) === true);
+  assert.deepEqual(runtime.status().turns[0]?.inputIds, [first.inputId, second.inputId]);
+
+  now += 1_500;
+  const control = await execution.control.promise;
+  const decision = await control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "test-route" },
+  });
+  assert.equal(decision.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("waits for every open wave of the Turn before committing a reply (issue #9)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-issue9-all-waves-commit-await-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-08T00:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  const first = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+
+  // First wave seals when the quiet window passes and a new Input starts a
+  // second wave of the same scope; the reply gate is still open, so the
+  // second wave is steered into the running Turn.
+  now += 2_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(second.inputId) === true);
+  const waves = new Set(runtime.status().inputs.map(input => input.interactionWaveId));
+  assert.equal(waves.size, 2);
+
+  // The first wave is already sealed, but the second is still open: the
+  // commit must wait for it instead of replying immediately.
+  const control = await execution.control.promise;
+  const decision = control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply to both" }, routeRef: "test-route" },
+  });
+  assert.equal(await Promise.race([
+    decision.then(() => "committed" as const),
+    delay(50).then(() => "waiting" as const),
+  ]), "waiting");
+
+  now += 1_500;
+  const committed = await decision;
+  assert.equal(committed.outcome, "send");
+  assert.equal(runtime.status().effects[0]?.coveredInputPosition, 2);
+
+  execution.complete(turn);
+  assert.deepEqual(await advancing, { disposition: "turn_completed" });
+});
+
+test("re-checks open waves while waiting: an extended quiet window delays the commit (issue #9)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-issue9-wave-recheck-"));
+  const execution = new InteractionDecisionExecution();
+  let now = Date.parse("2026-08-08T00:00:00.000Z");
+  const runtime = openRuntime({ root, execution, now: () => new Date(now) });
+  t.after(() => runtime.close());
+
+  const first = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-1",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "first" },
+  });
+  const advancing = runtime.advance();
+  const turn = await execution.started.promise;
+  const control = await execution.control.promise;
+  const decision = control.commitInteractionDecision!({
+    outcome: "send",
+    effect: { kind: "message", payload: { text: "reply" }, routeRef: "test-route" },
+  });
+
+  // The commit is waiting on the open wave's quiet window; a same-wave Input
+  // that arrives before the deadline extends it, so the commit must re-check
+  // the wave instead of committing at the original deadline.
+  assert.equal(await Promise.race([
+    decision.then(() => "committed" as const),
+    delay(50).then(() => "waiting" as const),
+  ]), "waiting");
+  now += 1_000;
+  const second = await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "message-2",
+    kind: "interaction",
+    interaction: interactionContext("place-1"),
+    payload: { text: "second" },
+  });
+  await waitUntil(() => runtime.status().turns[0]?.inputIds.includes(second.inputId) === true);
+  const firstWave = runtime.status().inputs.find(input => input.id === first.inputId)?.interactionWaveId;
+  assert.equal(firstWave, runtime.status().inputs.find(input => input.id === second.inputId)?.interactionWaveId);
+  assert.ok(firstWave);
+  assert.equal(await Promise.race([
+    decision.then(() => "committed" as const),
+    delay(50).then(() => "waiting" as const),
+  ]), "waiting");
+
+  now += 1_000;
+  assert.equal((await decision).outcome, "send");
   execution.complete(turn);
   assert.deepEqual(await advancing, { disposition: "turn_completed" });
 });
@@ -2570,7 +2776,7 @@ test("rejects a reply-gate commit while a scope Input is not included", async t 
       outcome: "send",
       effect: { kind: "message", payload: { text: "stale reply" }, routeRef: "test-route" },
     }),
-    /Interaction scope has newer Inputs/,
+    /newer Inputs; review them before replying/,
   );
 
   // The agent reviews, includes the late Input, and retries.

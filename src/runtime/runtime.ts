@@ -864,9 +864,9 @@ class SqliteRuntime implements Runtime {
             interactionScopeKey: claimed.interactionScopeKey,
           };
           this.#active = active;
-          if (claimed.interactionWaveId) {
-            for (const inputId of this.#pendingInteractionWaveInputs(
-              claimed.interactionWaveId,
+          if (claimed.interactionScopeKey) {
+            for (const inputId of this.#pendingScopeInteractionInputs(
+              claimed.interactionScopeKey,
               claimed.input.id,
             )) {
               const steering = active.steeringTail.then(async () => {
@@ -3867,28 +3867,39 @@ class SqliteRuntime implements Runtime {
     while (true) {
       observedAt = Math.max(observedAt, this.#now().getTime());
       const waitUntil = this.#transaction(() => {
-        const wave = this.#database.prepare(`
-          SELECT interaction_waves.id, interaction_waves.quiet_seal_at,
-                 interaction_waves.max_seal_at, interaction_waves.status
+        // Wait for every Interaction wave already folded into this Turn to
+        // seal, not just the first one: a later same-scope wave steered in
+        // while the reply gate is open must still get its short batching
+        // window before the first send/no_reply commit.
+        const openWaves = this.#database.prepare(`
+          SELECT DISTINCT interaction_waves.id, interaction_waves.quiet_seal_at,
+                 interaction_waves.max_seal_at
           FROM turn_inputs
           JOIN inputs ON inputs.id = turn_inputs.input_id
           JOIN interaction_waves ON interaction_waves.id = inputs.interaction_wave_id
-          WHERE turn_inputs.turn_id = ?
-          ORDER BY turn_inputs.position
-          LIMIT 1
-        `).get(turnId) as unknown as {
+          WHERE turn_inputs.turn_id = ? AND interaction_waves.status = 'open'
+        `).all(turnId) as unknown as Array<{
           id: string;
           quiet_seal_at: string;
           max_seal_at: string;
-          status: "open" | "sealed";
-        } | undefined;
-        if (!wave || wave.status === "sealed") return undefined;
-        const dueAt = Math.min(Date.parse(wave.quiet_seal_at), Date.parse(wave.max_seal_at));
-        if (observedAt >= dueAt) {
-          this.#sealInteractionWave(wave.id, new Date(observedAt));
-          return undefined;
+        }>;
+        if (openWaves.length === 0) return undefined;
+        const dueAt = Math.min(...openWaves.map(wave =>
+          Math.min(Date.parse(wave.quiet_seal_at), Date.parse(wave.max_seal_at))));
+        if (observedAt < dueAt) return dueAt;
+        // Seal every wave whose own deadline has arrived, then keep looping
+        // until no open wave of this Turn remains: a later wave with a later
+        // deadline must still be waited for before the commit proceeds.
+        let nextDueAt: number | undefined;
+        for (const wave of openWaves) {
+          const waveDueAt = Math.min(Date.parse(wave.quiet_seal_at), Date.parse(wave.max_seal_at));
+          if (observedAt >= waveDueAt) {
+            this.#sealInteractionWave(wave.id, new Date(observedAt));
+          } else {
+            nextDueAt = nextDueAt === undefined ? waveDueAt : Math.min(nextDueAt, waveDueAt);
+          }
         }
-        return dueAt;
+        return nextDueAt;
       });
       if (waitUntil === undefined) break;
       await delay(Math.max(0, waitUntil - observedAt));
@@ -3910,16 +3921,17 @@ class SqliteRuntime implements Runtime {
       if (!turn) {
         throw new Error(`Turn ${turnId} no longer accepts an interaction decision from lease ${fencingToken}`);
       }
-      const wave = this.#database.prepare(`
-        SELECT interaction_waves.id, interaction_waves.status
+      // Every wave folded into this Turn must be sealed and fully included
+      // before the first reply may be committed; a later same-scope wave is
+      // not exempt just because an earlier wave already sealed.
+      const waves = this.#database.prepare(`
+        SELECT DISTINCT interaction_waves.id, interaction_waves.status
         FROM turn_inputs
         JOIN inputs ON inputs.id = turn_inputs.input_id
         JOIN interaction_waves ON interaction_waves.id = inputs.interaction_wave_id
         WHERE turn_inputs.turn_id = ?
-        ORDER BY turn_inputs.position
-        LIMIT 1
-      `).get(turnId) as unknown as { id: string; status: "open" | "sealed" } | undefined;
-      if (wave) {
+      `).all(turnId) as unknown as Array<{ id: string; status: "open" | "sealed" }>;
+      for (const wave of waves) {
         if (wave.status !== "sealed") throw new Error("Interaction wave is not sealed");
         const coverage = this.#database.prepare(`
           SELECT
@@ -4424,13 +4436,14 @@ class SqliteRuntime implements Runtime {
     }
   }
 
-  #pendingInteractionWaveInputs(waveId: string, firstInputId: string): string[] {
+  #pendingScopeInteractionInputs(scopeKey: string, firstInputId: string): string[] {
     return (this.#database.prepare(`
-      SELECT id
+      SELECT inputs.id
       FROM inputs
-      WHERE interaction_wave_id = ? AND status = 'pending' AND id <> ?
-      ORDER BY accepted_at, id
-    `).all(waveId, firstInputId) as unknown as Array<{ id: string }>).map(input => input.id);
+      JOIN interaction_waves ON interaction_waves.id = inputs.interaction_wave_id
+      WHERE interaction_waves.scope_key = ? AND inputs.status = 'pending' AND inputs.id <> ?
+      ORDER BY inputs.accepted_at, inputs.id
+    `).all(scopeKey, firstInputId) as unknown as Array<{ id: string }>).map(input => input.id);
   }
 
   #rejectPreparedSteer(turnId: string, inputId: string): void {
@@ -4722,6 +4735,7 @@ function agentState(summary: RuntimeAgentRunSummary): "running" | "succeeded" | 
 
 function agentFailureCategory(error: unknown): string {
   const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/consecutive tool errors/i.test(message)) return "tool_error";
   if (/timeout|timed out/i.test(message)) return "timeout";
   if (/abort|interrupt/i.test(message)) return "interrupted";
   if (/auth|credential|token|401|403/i.test(message)) return "authentication";

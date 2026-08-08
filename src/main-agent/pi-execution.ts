@@ -80,6 +80,22 @@ const MAIN_AGENT_BUILTIN_TOOLS = [
   "ls",
 ] as const;
 
+/**
+ * Consecutive tool failures within one Turn that trip the error circuit
+ * breaker. Beyond this the Main Agent may be stuck retrying a tool that
+ * always fails (e.g. a reply-gate rejection), so the Turn fails instead of
+ * burning model calls forever.
+ */
+const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
+
+interface ToolErrorCircuit {
+  consecutiveErrors: number;
+  opened: boolean;
+  lastFailedTool?: string;
+  lastFailedToolCallId?: string;
+  openedAtConsecutiveErrors?: number;
+}
+
 interface PreparedPiSession {
   session: PiSession;
   acceptedSkillCount: number;
@@ -276,12 +292,18 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly supportsNativeImages: boolean,
     private readonly ordinaryToolNames: Set<string>,
     private readonly observe: OperationalEventObserver | undefined,
+    private readonly toolErrorCircuit: ToolErrorCircuit = { consecutiveErrors: 0, opened: false },
   ) {}
 
   start(request: TurnRequest, control: TurnControl): PiRunningExecution {
     if (this.#closed) throw new Error("Agent Execution is closed");
     if (this.#runningTurnId) throw new Error(`Agent Execution is already running Turn ${this.#runningTurnId}`);
     if (request.inputs.length !== 1) throw new Error("A new Pi Turn requires exactly one initial Input");
+    this.toolErrorCircuit.consecutiveErrors = 0;
+    this.toolErrorCircuit.opened = false;
+    delete this.toolErrorCircuit.lastFailedTool;
+    delete this.toolErrorCircuit.lastFailedToolCallId;
+    delete this.toolErrorCircuit.openedAtConsecutiveErrors;
     const sessionManager = openPrimaryTranscriptSession(
       this.transcriptDirectory,
       request.recordingDay,
@@ -416,6 +438,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
           lifecycle.control(request.turnId),
           new Set([...this.ordinaryToolNames, ...channelTools.map(tool => tool.name)]),
           this.observe,
+          this.toolErrorCircuit,
         ),
         lifecycle,
         sessionManager,
@@ -472,6 +495,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       await prompt;
       this.#acceptsSteering = false;
       this.#throwIfAborted(request.turnId);
+      this.#throwIfToolErrorCircuitOpened();
       if (this.interactionEnabled
         && (requiresMessageDecision(request.inputs[0]!) || lifecycle.hasIncludedInteraction(request.turnId))
         && !hasMessageDecision(messageDecision)) {
@@ -507,6 +531,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       };
     } catch (error) {
       this.#sessionReady?.reject(error);
+      this.#throwIfToolErrorCircuitOpened();
       throw error;
     } finally {
       session?.dispose();
@@ -530,6 +555,19 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
   #throwIfAborted(turnId: string): void {
     if (this.#runningTurnId === turnId && this.#abortReason !== undefined) {
       throw new Error(`Turn ${turnId} aborted: ${this.#abortReason}`);
+    }
+  }
+
+  #throwIfToolErrorCircuitOpened(): void {
+    // The Pi loop treats an aborted stream as a normal end, so the Turn would
+    // otherwise fall through to the message-decision correction prompt and
+    // keep calling the model. The circuit already decided this Turn failed:
+    // surface it here instead of letting a fresh run retry the same failure.
+    if (this.toolErrorCircuit.opened) {
+      const circuit = this.toolErrorCircuit;
+      throw new Error(
+        `Main Agent failed after ${circuit.openedAtConsecutiveErrors ?? circuit.consecutiveErrors} consecutive tool errors on ${circuit.lastFailedTool ?? "unknown tool"} (toolCall ${circuit.lastFailedToolCallId ?? "unknown"})`,
+      );
     }
   }
 
@@ -738,12 +776,13 @@ function toolActivityExtension(
   control: TurnControl,
   ordinaryToolNames: Set<string>,
   observe: OperationalEventObserver | undefined,
+  circuit: ToolErrorCircuit = { consecutiveErrors: 0, opened: false },
 ): InlineExtension {
   const calls = new Map<string, { toolName: string; args?: JsonValue; startedAt: number }>();
   return {
     name: "loom-tool-activity",
     factory: pi => {
-      pi.on("tool_execution_start", event => {
+      pi.on("tool_execution_start", (event, ctx) => {
         calls.set(event.toolCallId, {
           toolName: event.toolName,
           startedAt: performance.now(),
@@ -757,19 +796,50 @@ function toolActivityExtension(
         });
         if (!ordinaryToolNames.has(event.toolName)) return;
       });
-      pi.on("tool_execution_end", event => {
+      pi.on("tool_execution_end", (event, ctx) => {
         const call = calls.get(event.toolCallId);
         calls.delete(event.toolCallId);
         if (!call) return;
+        const failed = event.isError || event.toolName !== call.toolName;
+        if (failed) {
+          // Once the circuit has opened it stays open for the whole Turn:
+          // late callbacks from parallel tools must neither reset the count
+          // nor re-trip the breaker, so the circuit fires exactly once.
+          if (!circuit.opened) {
+            circuit.consecutiveErrors += 1;
+            circuit.lastFailedTool = event.toolName;
+            circuit.lastFailedToolCallId = event.toolCallId;
+            if (circuit.consecutiveErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
+              circuit.opened = true;
+              circuit.openedAtConsecutiveErrors = circuit.consecutiveErrors;
+              emitOperationalEvent(observe, {
+                event: "agent.tool.error-circuit-opened",
+                at: operationalTimestamp(),
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                consecutiveErrors: circuit.consecutiveErrors,
+              });
+              // Fail the Turn instead of letting the model retry the same
+              // failing tool forever. The abort rejects the active prompt, the
+              // Turn fails, and the input is left for a later attempt.
+              ctx.abort();
+              return;
+            }
+          }
+        } else if (!circuit.opened) {
+          circuit.consecutiveErrors = 0;
+          delete circuit.lastFailedTool;
+          delete circuit.lastFailedToolCallId;
+        }
         emitOperationalEvent(observe, {
           event: "agent.tool.completed",
           at: operationalTimestamp(),
           toolCallId: event.toolCallId,
           toolName: event.toolName,
           durationMs: Math.round(Math.max(0, performance.now() - call.startedAt)),
-          status: event.isError || event.toolName !== call.toolName ? "error" : "ok",
+          status: failed ? "error" : "ok",
         });
-        if (event.isError || event.toolName !== call.toolName || call.args === undefined) return;
+        if (failed || call.args === undefined) return;
         control.recordToolActivity({
           toolCallId: event.toolCallId,
           toolName: event.toolName,

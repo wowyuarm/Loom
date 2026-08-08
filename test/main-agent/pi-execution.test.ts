@@ -2902,6 +2902,153 @@ function executionInput(id: string, text: string) {
   };
 }
 
+test("does not trip the tool error circuit after a few failures followed by success", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-error-circuit-recover-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  // A tool that fails twice, then succeeds: the model adapts and the Turn
+  // must complete normally (the circuit only opens on consecutive failures).
+  let failures = 0;
+  const flaky = defineTool({
+    name: "flaky",
+    label: "Flaky",
+    description: "Fails twice then returns a value.",
+    parameters: Type.Object({}),
+    execute: async () => {
+      failures += 1;
+      if (failures <= 2) throw new Error("temporary failure");
+      return { content: [{ type: "text" as const, text: "recovered" }], details: {} };
+    },
+  });
+  faux.setResponses([
+    ...Array.from({ length: 8 }, (_, index) => () =>
+      fauxAssistantMessage(fauxToolCall("flaky", {}, { id: `flaky-${index}` }), { stopReason: "toolUse" }),
+    ),
+    () => fauxAssistantMessage("recovered and done"),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    additionalTools: [flaky],
+  });
+  t.after(() => execution.close());
+
+  const result = await execution.start({
+    turnId: "turn-tool-error-circuit-recover",
+    leaseToken: 1,
+    recordingDay: "2026-07-19",
+    inputs: [executionInput("input-tool-error-circuit-recover", "try the flaky tool")],
+  }, noEffectControl()).result;
+  assert.equal(result.outcome, "completed");
+});
+
+test("fires the tool error circuit exactly once across parallel late failure callbacks (issue #10)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-error-circuit-once-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  // One assistant message carries many parallel tool calls; every one fails.
+  // The circuit must open exactly once and ignore the late failure callbacks
+  // that keep arriving from the already-running parallel tools.
+  let failures = 0;
+  const alwaysFails = defineTool({
+    name: "always-fails",
+    label: "Always Fails",
+    description: "Always fails.",
+    parameters: Type.Object({}),
+    execute: async () => {
+      failures += 1;
+      throw new Error("permanent tool failure");
+    },
+  });
+  faux.setResponses([
+    () => fauxAssistantMessage(
+      Array.from({ length: 12 }, (_, index) => fauxToolCall("always-fails", {}, { id: `fail-${index}` })),
+      { stopReason: "toolUse" },
+    ),
+  ]);
+  const events: OperationalEvent[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    additionalTools: [alwaysFails],
+    observe: event => events.push(event),
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(
+    execution.start({
+      turnId: "turn-tool-error-circuit-once",
+      leaseToken: 1,
+      recordingDay: "2026-07-19",
+      inputs: [executionInput("input-tool-error-circuit-once", "fail everything")],
+    }, noEffectControl()).result,
+    /consecutive tool errors/,
+  );
+  const opened = events.filter(event => event.event === "agent.tool.error-circuit-opened");
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0]?.consecutiveErrors, 5);
+});
+
+test("fails a Turn after repeated tool errors instead of retrying the same failure forever (issue #10)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-tool-error-circuit-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  // The model keeps calling the same failing tool (a reply-gate rejection).
+  // Without the circuit breaker this would burn model calls indefinitely.
+  faux.setResponses(Array.from({ length: 20 }, (_, index) => () =>
+    fauxAssistantMessage(fauxToolCall("message", {
+      action: "no_reply",
+    }, { id: `message-retry-${index}` }), { stopReason: "toolUse" }),
+  ));
+  const events: OperationalEvent[] = [];
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+    observe: event => events.push(event),
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(
+    execution.start({
+      turnId: "turn-tool-error-circuit",
+      leaseToken: 1,
+      recordingDay: "2026-07-19",
+      inputs: [{
+        ...executionInput("input-tool-error-circuit", "hello"),
+        interaction: raftInteractionContext(),
+      }],
+    }, {
+      includeInput: () => {},
+      prepareExecutionState: () => {},
+      replaceExecutionState: () => {},
+      recordToolActivity: () => {},
+      prepareEffect: () => { throw new Error("This test has no Effects"); },
+      commitInteractionDecision: () => {
+        throw new Error("Interaction scope has newer Inputs; review them before replying");
+      },
+    }).result,
+    /consecutive tool errors/,
+  );
+  assert.ok(
+    faux.state.callCount < 20,
+    `expected the circuit breaker to stop retries, got ${faux.state.callCount} model calls`,
+  );
+  assert.equal(
+    events.some(event => event.event === "agent.tool.error-circuit-opened"),
+    true,
+  );
+});
+
 function raftInteractionContext() {
   return {
     routeRef: "raft:server-1",
