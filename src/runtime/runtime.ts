@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js";
 import { initializeRuntimeSchema } from "./schema.js";
+import { RuntimeStatusReader, reflectionSlice } from "./status-reader.js";
 import {
   CognitiveOrganExecution,
   COGNITIVE_ORGAN_POLICY,
@@ -311,6 +312,7 @@ class SqliteRuntime implements Runtime {
   readonly #revisions: { current(): { id: string } } | undefined;
   readonly #cognitiveOrganPolicy: CognitiveOrganPolicy;
   readonly #cognitiveOrgan: CognitiveOrganExecution;
+  readonly #statusReader: RuntimeStatusReader;
   readonly #organCancelTimer: (
     delayMs: number,
     callback: () => void,
@@ -357,6 +359,14 @@ class SqliteRuntime implements Runtime {
       policy: this.#cognitiveOrganPolicy,
       now: this.#now,
       nextId: this.#nextId,
+    });
+    this.#statusReader = new RuntimeStatusReader({
+      database: this.#database,
+      now: this.#now,
+      organs: RUNTIME_COGNITIVE_ORGANS,
+      cognitiveOrganWork: organ => this.#cognitiveOrgan.currentWork(organ),
+      cognitiveOrganLocalId: workId => this.#cognitiveOrgan.localIdOf(workId),
+      cognitiveOrganAttempts: workId => this.#cognitiveOrgan.attempts(workId),
     });
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredActivityRecording();
@@ -1429,236 +1439,7 @@ class SqliteRuntime implements Runtime {
   }
 
   status(): RuntimeStatus {
-    const rows = this.#database.prepare(`
-      SELECT id, source, source_id, kind, payload_json, interaction_json, interaction_wave_id, status
-      FROM inputs
-      ORDER BY accepted_at, id
-    `).all() as unknown as InputRow[];
-    const turnRows = this.#database.prepare(`
-      SELECT id, segment_id, status, fencing_token, transcript_anchor_json, execution_record_json
-      FROM turns
-      ORDER BY started_at, id
-    `).all() as unknown as TurnRow[];
-    const inputIdsByTurn = this.#database.prepare(`
-      SELECT input_id
-      FROM turn_inputs
-      WHERE turn_id = ? AND inclusion_status = 'included'
-      ORDER BY position
-    `);
-    const effectRows = this.#database.prepare(`
-      SELECT id, turn_id, kind, payload_json, route_ref, destination_ref, input_position, status,
-             next_delivery_after
-      FROM effects
-      ORDER BY created_at, id
-    `).all() as unknown as EffectRow[];
-    const deliveryRows = this.#database.prepare(`
-      SELECT id, effect_id, attempt_number, status, idempotency_key, remote_id, error
-      FROM delivery_attempts
-      ORDER BY started_at, id
-    `).all() as unknown as DeliveryRow[];
-    const activeSegment = this.#readActiveSegment();
-    const activityRows = this.#database.prepare(`
-      SELECT id, opened_at, closed_at, frozen_activity_json, status, attempt_count,
-             fencing_token, receipt_json, last_error
-      FROM activities
-      ORDER BY sequence
-    `).all() as unknown as ActivityRow[];
-    const pulse = this.#readPulseSchedule();
-    const threadMaintenanceRows = this.#database.prepare(`
-      SELECT activity_id, observations_json, status, attempt_count, fencing_token,
-             result_json, last_error
-      FROM thread_maintenance
-      ORDER BY created_at, activity_id
-    `).all() as unknown as ThreadMaintenanceRow[];
-    const attentionMaintenance = this.#readAttentionSchedule();
-    const memoryReflection = this.#readMemoryReflectionSchedule();
-    const afterChatContinuation = this.#readAfterChatContinuation();
-    const statusObservedAt = this.#now();
-    const oldestPendingOrgan = this.#database.prepare(`
-      SELECT MIN(pending_at) AS pending_at
-      FROM (
-        SELECT created_at AS pending_at FROM activities WHERE status <> 'recorded'
-        UNION ALL
-        SELECT created_at AS pending_at FROM thread_maintenance WHERE status <> 'completed'
-        UNION ALL
-        SELECT next_run_after AS pending_at FROM attention_maintenance WHERE next_run_after <= ?
-        UNION ALL
-        SELECT next_run_after AS pending_at FROM memory_reflection WHERE next_run_after <= ?
-      )
-    `).get(statusObservedAt.toISOString(), statusObservedAt.toISOString()) as unknown as {
-      pending_at: string | null;
-    };
-    const integrityWarnings = this.#database.prepare(`
-      SELECT turns.segment_id, GROUP_CONCAT(turns.id) AS turn_ids
-      FROM turns
-      LEFT JOIN activities ON activities.id = turns.segment_id
-      LEFT JOIN active_segment ON active_segment.id = turns.segment_id
-      WHERE turns.status <> 'running'
-        AND activities.id IS NULL
-        AND active_segment.id IS NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM transitions
-          WHERE transitions.entity_type = 'segment'
-            AND transitions.entity_id = turns.segment_id
-            AND transitions.to_state = 'discarded'
-        )
-      GROUP BY turns.segment_id
-      ORDER BY MIN(turns.started_at), turns.segment_id
-    `).all() as unknown as Array<{ segment_id: string; turn_ids: string }>;
-    return {
-      inputs: rows.map(row => ({
-        id: row.id,
-        source: row.source,
-        sourceId: row.source_id,
-        kind: row.kind,
-        payload: JSON.parse(row.payload_json) as JsonValue,
-        ...(row.interaction_json
-          ? { interaction: JSON.parse(row.interaction_json) as NonNullable<RuntimeInputStatus["interaction"]> }
-          : {}),
-        ...(row.interaction_wave_id ? { interactionWaveId: row.interaction_wave_id } : {}),
-        status: row.status,
-      })),
-      turns: turnRows.map(row => {
-        const inputRows = inputIdsByTurn.all(row.id) as unknown as Array<{ input_id: string }>;
-        return {
-          id: row.id,
-          status: row.status,
-          inputIds: inputRows.map(input => input.input_id),
-          ...(row.transcript_anchor_json
-            ? { transcriptAnchor: JSON.parse(row.transcript_anchor_json) as TranscriptAnchor }
-            : {}),
-          ...(row.execution_record_json
-            ? { executionRecord: JSON.parse(row.execution_record_json) as JsonValue }
-            : {}),
-        };
-      }),
-      effects: effectRows.map(row => ({
-        id: row.id,
-        turnId: row.turn_id,
-        kind: row.kind,
-        payload: JSON.parse(row.payload_json) as JsonValue,
-        ...(row.route_ref ? { routeRef: row.route_ref } : {}),
-        ...(row.destination_ref ? { destinationRef: row.destination_ref } : {}),
-        coveredInputPosition: row.input_position,
-        status: row.status,
-        ...(row.next_delivery_after ? { nextDeliveryAt: row.next_delivery_after } : {}),
-      })),
-      deliveries: deliveryRows.map(row => ({
-        id: row.id,
-        effectId: row.effect_id,
-        attempt: row.attempt_number,
-        status: row.status,
-        idempotencyKey: row.idempotency_key,
-        ...(row.remote_id ? { remoteId: row.remote_id } : {}),
-        ...(row.error ? { error: row.error } : {}),
-      })),
-      ...(activeSegment ? {
-        activeSegment: {
-          id: activeSegment.id,
-          openedAt: activeSegment.opened_at,
-          lastActivityAt: activeSegment.last_activity_at,
-          ...(activeSegment.overdue_since !== null && activeSegment.overdue_reason_json !== null ? {
-            overdueSince: activeSegment.overdue_since,
-            overdueReason: JSON.parse(activeSegment.overdue_reason_json) as CloseActivityBusyReason,
-            ...(activeSegment.next_overdue_check_at !== null
-              ? { nextOverdueCheckAt: activeSegment.next_overdue_check_at }
-              : {}),
-          } : {}),
-        },
-      } : {}),
-      activities: activityRows.map(row => ({
-        id: row.id,
-        openedAt: row.opened_at,
-        closedAt: row.closed_at,
-        status: row.status,
-        attempts: row.attempt_count,
-        ...(row.receipt_json ? { receipt: JSON.parse(row.receipt_json) as LifeRecorderReceipt } : {}),
-        ...(row.last_error ? { lastError: row.last_error } : {}),
-      })),
-      threadMaintenance: threadMaintenanceRows.map(row => ({
-        activityId: row.activity_id,
-        status: row.status,
-        attempts: row.attempt_count,
-        ...(row.result_json
-          ? { result: JSON.parse(row.result_json) as ThreadMaintenanceResult }
-          : {}),
-        ...(row.last_error ? { lastError: row.last_error } : {}),
-      })),
-      cognitiveOrganWork: RUNTIME_COGNITIVE_ORGANS
-        .map(organ => this.#cognitiveOrgan.currentWork(organ))
-        .filter((work): work is NonNullable<typeof work> => work !== undefined)
-        .map(work => this.#cognitiveOrganWorkStatus(work)),
-      ...(attentionMaintenance ? {
-        attentionMaintenance: {
-          ...(attentionMaintenance.last_completed_at
-            ? { lastCompletedAt: attentionMaintenance.last_completed_at }
-            : {}),
-          nextRunAfter: attentionMaintenance.next_run_after,
-          attempts: attentionMaintenance.attempt_count,
-          pendingActivityIds: this.#activitiesInSequenceRange(
-            attentionMaintenance.cursor_sequence,
-            attentionMaintenance.window_end_sequence ?? this.#latestActivitySequence(),
-          ).map(activity => activity.segmentId),
-          ...(attentionMaintenance.last_result_json
-            ? { lastResult: JSON.parse(attentionMaintenance.last_result_json) as AttentionMaintenanceResult }
-            : {}),
-          ...(attentionMaintenance.last_error ? { lastError: attentionMaintenance.last_error } : {}),
-        },
-      } : {}),
-      ...(memoryReflection ? {
-        memoryReflection: {
-          nextDay: memoryReflection.next_day,
-          nextRunAfter: memoryReflection.next_run_after,
-          attempts: memoryReflection.attempt_count,
-          pendingActivityIds: this.#reflectionActivities(memoryReflection.next_day)
-            .map(activity => activity.segmentId),
-          ...(memoryReflection.last_completed_day
-            ? { lastCompletedDay: memoryReflection.last_completed_day }
-            : {}),
-          ...(memoryReflection.last_result_json
-            ? { lastResult: JSON.parse(memoryReflection.last_result_json) as MemoryReflectionResult }
-            : {}),
-          ...(memoryReflection.last_error ? { lastError: memoryReflection.last_error } : {}),
-        },
-      } : {}),
-      ...(pulse ? {
-        proactivePulse: {
-          ...(pulse.last_pulse_at ? { lastPulseAt: pulse.last_pulse_at } : {}),
-          nextPulseAfter: pulse.next_pulse_after,
-          consecutiveFailures: pulse.consecutive_failures,
-          ...(pulse.last_error ? { lastError: pulse.last_error } : {}),
-        },
-      } : {}),
-      ...(afterChatContinuation ? {
-        afterChatContinuation: {
-          id: afterChatContinuation.id,
-          status: afterChatContinuation.status,
-          sourceDeliveryId: afterChatContinuation.source_delivery_id,
-          sourceEffectId: afterChatContinuation.source_effect_id,
-          sourceTurnId: afterChatContinuation.source_turn_id,
-          sourceSegmentId: afterChatContinuation.source_segment_id,
-          sourceBehavior: afterChatContinuation.source_behavior,
-          deliveredAt: afterChatContinuation.delivered_at,
-          dueAt: afterChatContinuation.due_at,
-          expiresAt: afterChatContinuation.expires_at,
-          ...(afterChatContinuation.input_id ? { inputId: afterChatContinuation.input_id } : {}),
-          ...(afterChatContinuation.ended_at ? { endedAt: afterChatContinuation.ended_at } : {}),
-          ...(afterChatContinuation.reason ? { reason: afterChatContinuation.reason } : {}),
-        },
-      } : {}),
-      ...(oldestPendingOrgan.pending_at ? {
-        oldestPendingOrganAt: oldestPendingOrgan.pending_at,
-        oldestPendingOrganAgeMs: Math.max(
-          0,
-          statusObservedAt.getTime() - Date.parse(oldestPendingOrgan.pending_at),
-        ),
-      } : {}),
-      integrityWarnings: integrityWarnings.map(warning => ({
-        kind: "unexplained_terminal_turn_segment",
-        segmentId: warning.segment_id,
-        turnIds: warning.turn_ids.split(","),
-      })),
-    };
+    return this.#statusReader.readStatus();
   }
 
   operationalStatus(options: { since?: string } = {}): RuntimeOperationalStatus {
@@ -1951,46 +1732,6 @@ class SqliteRuntime implements Runtime {
 
   #hasHeldCognitiveOrganWork(): boolean {
     return this.#cognitiveOrgan.hasInterventionRequired();
-  }
-
-  /**
-   * Operator-facing work summary. Deliberately omits the raw error text and
-   * exposes only bounded identifiers (local work id, domain ref, failure
-   * category) so status output cannot leak model/Workspace/credential content.
-   */
-  #cognitiveOrganWorkStatus(work: CognitiveWorkRecord): RuntimeCognitiveOrganWorkStatus {
-    // Local ids are the only exposed work identifiers; an unresolvable one is
-    // corrupt state and fails closed instead of leaking a raw work UUID.
-    const workId = this.#cognitiveOrgan.localIdOf(work.id);
-    if (!workId) {
-      throw new Error(`Cognitive organ work ${work.id} is not addressable by a local work id`);
-    }
-    const requeuedFrom = work.requeuedFrom
-      ? this.#cognitiveOrgan.localIdOf(work.requeuedFrom)
-      : undefined;
-    if (work.requeuedFrom && !requeuedFrom) {
-      throw new Error(`Cognitive organ work ${work.id} references an unresolvable predecessor`);
-    }
-    // The current attempt is the most recently started one (highest attempt
-    // number): for a retried or completed work its transcript and result
-    // references live on that record, not the first attempt.
-    const attempt = this.#cognitiveOrgan.attempts(work.id).at(-1);
-    return {
-      workId,
-      organ: work.organ,
-      domainRef: work.domainRef,
-      status: work.status,
-      attemptCount: work.attemptCount,
-      createdAt: work.createdAt,
-      totalDeadlineAt: work.totalDeadlineAt,
-      ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
-      ...(requeuedFrom ? { requeuedFrom } : {}),
-      ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
-      ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
-      ...(attempt ? { softDeadlineAt: attempt.softDeadlineAt } : {}),
-      ...(attempt?.transcriptRef ? { transcriptRef: attempt.transcriptRef } : {}),
-      ...(attempt?.resultRef ? { resultRef: attempt.resultRef } : {}),
-    };
   }
 
   /**
@@ -4933,19 +4674,6 @@ function assertReflectionOptions(options: RunMemoryReflectionOptions): void {
   if (!Number.isFinite(options.retryDelayMs) || options.retryDelayMs <= 0) {
     throw new Error("Memory reflection retryDelayMs must be a positive finite number");
   }
-}
-
-function reflectionSlice(
-  activity: FrozenActivity,
-  reflectionDay: string,
-  turnIds: ReadonlySet<string>,
-): FrozenActivity {
-  return {
-    ...activity,
-    recordingDay: reflectionDay,
-    events: activity.events.filter(event => turnIds.has(event.turnId)),
-    turns: activity.turns.filter(turn => turnIds.has(turn.turnId)),
-  };
 }
 
 function formatInteractionCursor(sequence: number): string {
