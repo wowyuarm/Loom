@@ -1,18 +1,11 @@
-import { access, mkdir } from "node:fs/promises";
-import path from "node:path";
-
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
-  DefaultResourceLoader,
   estimateTokens,
   type InlineExtension,
   type ModelRuntime,
-  type ResourceDiagnostic,
-  type Skill,
   SessionManager,
-  SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
@@ -66,19 +59,15 @@ import {
   operationalTimestamp,
   type OperationalEventObserver,
 } from "../operational-events.js";
+import { createPiSessionFactory, type PreparedPiSession } from "./pi/session.js";
+import { createToolActivityExtension, type ToolErrorCircuit } from "./pi/tool-activity.js";
+import { presentInputWithAttachments, type InputPresentation } from "./pi/attachments.js";
+
+const MAIN_AGENT_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
+const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 export type PiContextMessage = AgentMessage;
-
-const MAIN_AGENT_BUILTIN_TOOLS = [
-  "read",
-  "bash",
-  "edit",
-  "write",
-  "grep",
-  "find",
-  "ls",
-] as const;
 
 /**
  * Consecutive tool failures within one Turn that trip the error circuit
@@ -86,22 +75,6 @@ const MAIN_AGENT_BUILTIN_TOOLS = [
  * always fails (e.g. a reply-gate rejection), so the Turn fails instead of
  * burning model calls forever.
  */
-const MAX_CONSECUTIVE_TOOL_ERRORS = 5;
-
-interface ToolErrorCircuit {
-  consecutiveErrors: number;
-  opened: boolean;
-  lastFailedTool?: string;
-  lastFailedToolCallId?: string;
-  openedAtConsecutiveErrors?: number;
-}
-
-interface PreparedPiSession {
-  session: PiSession;
-  acceptedSkillCount: number;
-  skillDiagnostics: ResourceDiagnostic[];
-}
-
 export interface PiAgentExecutionOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
@@ -434,7 +407,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       const preparedSession = await this.createSession(
         systemPrompt,
         turnTools,
-        toolActivityExtension(
+        createToolActivityExtension(
           lifecycle.control(request.turnId),
           new Set([...this.ordinaryToolNames, ...channelTools.map(tool => tool.name)]),
           this.observe,
@@ -629,78 +602,29 @@ export async function createPiAgentExecution(options: PiAgentExecutionOptions): 
     && options.channelAgentSurface.defaultDestination.routeRef !== options.defaultInteractionRoute) {
     throw new Error("Interaction Channel default Destination must use the default Interaction Route");
   }
-  await Promise.all([
-    mkdir(options.agentDir, { recursive: true }),
-    mkdir(options.transcriptDirectory, { recursive: true }),
-  ]);
-  // Agent Workspace files are Individual material, not a Pi project configuration source.
-  const settingsManager = SettingsManager.create(
-    options.agentWorkspace.root,
-    options.agentDir,
-    { projectTrusted: false },
-  );
-  const createSession = async (
+  const sessionFactory = await createPiSessionFactory({
+    agentWorkspace: options.agentWorkspace,
+    agentDir: options.agentDir,
+    transcriptDirectory: options.transcriptDirectory,
+    modelRuntime: options.modelRuntime,
+    model: options.model,
+    ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
+    ...(options.skillSources ? { skillSources: options.skillSources } : {}),
+    additionalTools,
+  });
+  const createSession = (
     systemPrompt: string,
     turnTools: ToolDefinition[],
     activityExtension: InlineExtension,
     annotationLifecycle: InputAnnotationLifecycle,
     sessionManager: SessionManager,
-  ) => {
-    const annotationExtension: InlineExtension = {
-      name: "loom-input-annotation",
-      factory: pi => {
-        pi.on("message_start", event => annotationLifecycle.onMessageStart(event.message));
-      },
-    };
-    const workspaceSkills = path.join(options.agentWorkspace.root, "skills");
-    const hasWorkspaceSkills = await exists(workspaceSkills);
-    const additionalSkillPaths = [
-      ...(options.skillSources?.core ?? []),
-      ...(hasWorkspaceSkills ? [workspaceSkills] : []),
-      ...(options.skillSources?.integrations ?? []),
-    ];
-    let resourceLoader: DefaultResourceLoader;
-    resourceLoader = new DefaultResourceLoader({
-      cwd: options.agentWorkspace.root,
-      agentDir: options.agentDir,
-      settingsManager,
-      extensionFactories: [annotationExtension, activityExtension],
-      noExtensions: true,
-      noSkills: true,
-      noPromptTemplates: true,
-      noThemes: true,
-      noContextFiles: true,
-      additionalSkillPaths,
-      skillsOverride: result => resolveSkills(result.skills, result.diagnostics),
-      systemPromptOverride: () => appendSkillDiagnostics(
-        systemPrompt,
-        resourceLoader.getSkills().diagnostics,
-      ),
-      appendSystemPromptOverride: () => [],
-    });
-    await resourceLoader.reload();
-    const customTools = [...additionalTools, ...turnTools];
-    const { session } = await createAgentSession({
-      cwd: options.agentWorkspace.root,
-      agentDir: options.agentDir,
-      modelRuntime: options.modelRuntime,
-      model: options.model,
-      ...(options.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
-      tools: [...MAIN_AGENT_BUILTIN_TOOLS, ...customTools.map(tool => tool.name)],
-      customTools,
-      resourceLoader,
-      sessionManager,
-      settingsManager,
-    });
-    session.agent.steeringMode = "all";
-    await session.bindExtensions({});
-    const finalSkills = resourceLoader.getSkills();
-    return {
-      session,
-      acceptedSkillCount: finalSkills.skills.length,
-      skillDiagnostics: finalSkills.diagnostics,
-    };
-  };
+  ) => sessionFactory({
+    systemPrompt,
+    turnTools,
+    activityExtension,
+    onMessageStart: message => annotationLifecycle.onMessageStart(message),
+    sessionManager,
+  });
   return new PerTurnPiAgentExecution(
     options.transcriptDirectory,
     options.agentWorkspace,
@@ -730,139 +654,6 @@ function assertChannelTools(names: readonly string[], tools: ToolDefinition[]): 
   }
   if (actual.length !== names.length || actual.some((name, index) => name !== names[index])) {
     throw new Error("Interaction Channel tool names do not match the declared action surface");
-  }
-}
-
-function compareSkills(left: Skill, right: Skill): number {
-  return compareText(left.name, right.name) || compareText(left.filePath, right.filePath);
-}
-
-function resolveSkills(
-  skills: Skill[],
-  diagnostics: ResourceDiagnostic[],
-): { skills: Skill[]; diagnostics: ResourceDiagnostic[] } {
-  const rejectedPaths = new Set(diagnostics.flatMap(diagnostic =>
-    diagnostic.type !== "collision" && diagnostic.path ? [diagnostic.path] : []));
-  const collisionNames = new Set(diagnostics.flatMap(diagnostic =>
-    diagnostic.type === "collision" && diagnostic.collision?.resourceType === "skill"
-      ? [diagnostic.collision.name]
-      : []));
-  const manualDiagnostics: ResourceDiagnostic[] = skills.flatMap(skill => skill.disableModelInvocation ? [{
-    type: "warning" as const,
-    message: `skill "${skill.name}" disables model invocation`,
-    path: skill.filePath,
-  }] : []);
-  return {
-    skills: skills
-      .filter(skill => !skill.disableModelInvocation
-        && !rejectedPaths.has(skill.filePath)
-        && !collisionNames.has(skill.name))
-      .sort(compareSkills),
-    diagnostics: [...diagnostics, ...manualDiagnostics].sort(compareDiagnostics),
-  };
-}
-
-function compareDiagnostics(left: ResourceDiagnostic, right: ResourceDiagnostic): number {
-  return compareText(left.path ?? "", right.path ?? "")
-    || compareText(left.type, right.type)
-    || compareText(left.message, right.message);
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function toolActivityExtension(
-  control: TurnControl,
-  ordinaryToolNames: Set<string>,
-  observe: OperationalEventObserver | undefined,
-  circuit: ToolErrorCircuit = { consecutiveErrors: 0, opened: false },
-): InlineExtension {
-  const calls = new Map<string, { toolName: string; args?: JsonValue; startedAt: number }>();
-  return {
-    name: "loom-tool-activity",
-    factory: pi => {
-      pi.on("tool_execution_start", (event, ctx) => {
-        calls.set(event.toolCallId, {
-          toolName: event.toolName,
-          startedAt: performance.now(),
-          ...(ordinaryToolNames.has(event.toolName) ? { args: serializeValue(event.args) } : {}),
-        });
-        emitOperationalEvent(observe, {
-          event: "agent.tool.started",
-          at: operationalTimestamp(),
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-        });
-        if (!ordinaryToolNames.has(event.toolName)) return;
-      });
-      pi.on("tool_execution_end", (event, ctx) => {
-        const call = calls.get(event.toolCallId);
-        calls.delete(event.toolCallId);
-        if (!call) return;
-        const failed = event.isError || event.toolName !== call.toolName;
-        if (failed) {
-          // Once the circuit has opened it stays open for the whole Turn:
-          // late callbacks from parallel tools must neither reset the count
-          // nor re-trip the breaker, so the circuit fires exactly once.
-          if (!circuit.opened) {
-            circuit.consecutiveErrors += 1;
-            circuit.lastFailedTool = event.toolName;
-            circuit.lastFailedToolCallId = event.toolCallId;
-            if (circuit.consecutiveErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
-              circuit.opened = true;
-              circuit.openedAtConsecutiveErrors = circuit.consecutiveErrors;
-              emitOperationalEvent(observe, {
-                event: "agent.tool.error-circuit-opened",
-                at: operationalTimestamp(),
-                toolCallId: event.toolCallId,
-                toolName: event.toolName,
-                consecutiveErrors: circuit.consecutiveErrors,
-              });
-              // Fail the Turn instead of letting the model retry the same
-              // failing tool forever. The abort rejects the active prompt, the
-              // Turn fails, and the input is left for a later attempt.
-              ctx.abort();
-              return;
-            }
-          }
-        } else if (!circuit.opened) {
-          circuit.consecutiveErrors = 0;
-          delete circuit.lastFailedTool;
-          delete circuit.lastFailedToolCallId;
-        }
-        emitOperationalEvent(observe, {
-          event: "agent.tool.completed",
-          at: operationalTimestamp(),
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          durationMs: Math.round(Math.max(0, performance.now() - call.startedAt)),
-          status: failed ? "error" : "ok",
-        });
-        if (failed || call.args === undefined) return;
-        control.recordToolActivity({
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          callArguments: call.args,
-          result: withoutImagePixels(serializeValue(event.result)),
-        });
-      });
-    },
-  };
-}
-
-function appendSkillDiagnostics(systemPrompt: string, diagnostics: ResourceDiagnostic[]): string {
-  if (diagnostics.length === 0) return systemPrompt;
-  return `${systemPrompt}\n\n${section("Skill Diagnostics", JSON.stringify(diagnostics, null, 2))}`;
-}
-
-async function exists(target: string): Promise<boolean> {
-  try {
-    await access(target);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
-    throw error;
   }
 }
 
@@ -989,58 +780,18 @@ function interactionInputText(
   return lines.join("\n");
 }
 
-interface InputPresentation {
-  text: string;
-  images: ImageContent[];
-}
-
 async function presentInput(
   input: ExecutionInput,
   options: Parameters<typeof inputText>[1],
   attachmentStore: AttachmentStore | undefined,
   supportsNativeImages: boolean,
 ): Promise<InputPresentation> {
-  const attachments = input.kind === "interaction" ? attachmentReferences(input.payload) : [];
-  if (attachments.length === 0) return { text: inputText(input, options), images: [] };
-  if (attachments.length > 1) throw new Error("This Loom version accepts one attachment per Input");
-  if (!attachmentStore) throw new Error("Attachment Input requires an Attachment Store");
-
-  const images: ImageContent[] = [];
-  const descriptions: string[] = [];
-  for (const attachment of attachments) {
-    let representation: string;
-    if (attachment.kind === "image" && supportsNativeImages) {
-      const content = await attachmentStore.read(attachment);
-      images.push({ type: "image", data: content.toString("base64"), mimeType: attachment.mediaType });
-      representation = "native image included in this user message";
-    } else if (attachment.kind === "image") {
-      representation = "metadata only; image content was not shown because the current model does not declare image input support";
-    } else {
-      representation = "metadata only; file content was not parsed or shown automatically";
-    }
-    descriptions.push(attachmentDescription(attachment, representation));
-  }
-  return {
-    text: [
-      inputText(input, options),
-      "",
-      "<attachments>",
-      ...descriptions,
-      "</attachments>",
-    ].join("\n"),
-    images,
-  };
-}
-
-function attachmentDescription(attachment: AttachmentReference, representation: string): string {
-  return [
-    `- id: ${attachment.id}`,
-    `  kind: ${attachment.kind}`,
-    `  media_type: ${attachment.mediaType}`,
-    `  byte_size: ${attachment.byteSize}`,
-    ...(attachment.fileName ? [`  file_name: ${JSON.stringify(attachment.fileName)}`] : []),
-    `  representation: ${representation}`,
-  ].join("\n");
+  return presentInputWithAttachments({
+    input,
+    text: inputText(input, options),
+    attachmentStore,
+    supportsNativeImages,
+  });
 }
 
 function requiresMessageDecision(input: Pick<ExecutionInput, "kind">): boolean {
