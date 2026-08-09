@@ -86,24 +86,28 @@ export async function compactCommittedToolTraces(options: {
   window: ContextWindowState;
   transcriptDirectory: string;
   compactor?: ToolTraceCompactor;
+  toolCallIds?: string[];
 }): Promise<ContextWindowState> {
   const messages = restoreMessages(options.window.committedTrace);
   const collected = collectInteractions(messages);
-  if (collected.raw.length === 0 && collected.expanded.length === 0) return options.window;
-  if (collected.raw.length > 0 && !options.compactor) {
+  const raw = options.toolCallIds === undefined
+    ? collected.raw
+    : collected.raw.filter(interaction => options.toolCallIds!.includes(interaction.toolCallId));
+  if (raw.length === 0 && collected.expanded.length === 0) return options.window;
+  if (raw.length > 0 && !options.compactor) {
     throw new Error("Tool trace compaction is required but no Tool Trace Compactor is configured");
   }
-  if (collected.raw.length > 0 && options.window.transcriptSources.length === 0) {
+  if (raw.length > 0 && options.window.transcriptSources.length === 0) {
     throw new Error("Tool trace compaction requires committed transcript sources");
   }
 
-  const sources = collected.raw.length === 0 ? [] : await readCommittedToolInteractions({
+  const sources = raw.length === 0 ? [] : await readCommittedToolInteractions({
     transcriptDirectory: options.transcriptDirectory,
     transcriptSources: options.window.transcriptSources,
-    toolCallIds: collected.raw.map(interaction => interaction.toolCallId),
+    toolCallIds: raw.map(interaction => interaction.toolCallId),
   });
   const sourceById = new Map(sources.map(source => [source.toolCallId, source]));
-  const candidates = collected.raw.map(interaction => {
+  const candidates = raw.map(interaction => {
     const source = sourceById.get(interaction.toolCallId);
     if (!source
       || source.toolName !== interaction.toolName
@@ -155,14 +159,19 @@ export async function compactCommittedToolTraces(options: {
   };
 }
 
+export function rawToolTraceCallIds(messages: AgentMessage[]): string[] {
+  return collectInteractions(messages).raw.map(interaction => interaction.toolCallId);
+}
+
+export function compactedToolTraceReferences(messages: AgentMessage[]): string[] {
+  return [...authorizedReferences(messages)];
+}
+
 export function createExpandTool(options: {
   window: ContextWindowState;
   transcriptDirectory: string;
+  liveReferences?: () => Iterable<string>;
 }): ToolDefinition {
-  const authorized = new Set([
-    ...options.window.recentActivityReferences,
-    ...authorizedReferences(restoreMessages(options.window.committedTrace)),
-  ]);
   return defineTool({
     name: "expand_tool_result",
     label: "Expand Tool Result",
@@ -172,6 +181,11 @@ export function createExpandTool(options: {
       offset: Type.Optional(Type.Integer({ minimum: 0 })),
     }),
     execute: async (_toolCallId, params) => {
+      const authorized = new Set([
+        ...options.window.recentActivityReferences,
+        ...authorizedReferences(restoreMessages(options.window.committedTrace)),
+        ...(options.liveReferences ? options.liveReferences() : []),
+      ]);
       if (!authorized.has(params.reference)) {
         throw new Error("The tool interaction reference is not authorized by the current Context");
       }

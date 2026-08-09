@@ -43,7 +43,9 @@ import {
 } from "./context.js";
 import {
   compactCommittedToolTraces,
+  compactedToolTraceReferences,
   createExpandTool,
+  rawToolTraceCallIds,
   toolTraceCompactionRequired,
 } from "./tool-trace.js";
 import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
@@ -377,9 +379,11 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         );
         preparedWindow = replacement;
       }
+      const liveToolReferences = new Set<string>();
       const turnTools = [createExpandTool({
         window: preparedWindow,
         transcriptDirectory: this.transcriptDirectory,
+        liveReferences: () => liveToolReferences,
       })];
       if (this.attachmentStore) {
         turnTools.push(createAttachmentTool({
@@ -423,8 +427,12 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       );
       session = preparedSession.session;
       const budget = { ...DEFAULT_CONTEXT_BUDGET, ...this.contextBudget };
-      const fixedTokens = textTokens(session.systemPrompt) + textTokens(JSON.stringify(session.agent.state.tools));
-      const liveMessageLimit = budget.hardContext - budget.outputReserve - budget.safetyMargin - fixedTokens;
+      const fixedTokens = {
+        system: textTokens(session.systemPrompt),
+        toolSchemas: textTokens(JSON.stringify(session.agent.state.tools)),
+      };
+      const liveMessageLimit = budget.hardContext - budget.outputReserve - budget.safetyMargin
+        - fixedTokens.system - fixedTokens.toolSchemas;
       if (preparedSession.skillDiagnostics.length > 0) {
         sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
           version: 1,
@@ -457,16 +465,52 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         turnLive: structuredClone(materials.turnLive),
         windowFrozen: restoreMessages(preparedWindow.frozenSeed),
         committedTrace: restoreMessages(preparedWindow.committedTrace),
-        fixedTokens: {
-          system: textTokens(session.systemPrompt),
-          toolSchemas: textTokens(JSON.stringify(session.agent.state.tools)),
-        },
+        fixedTokens,
         ...(this.contextBudget ? { budget: this.contextBudget } : {}),
       });
       if (!Number.isFinite(liveMessageLimit) || liveMessageLimit < 0) {
         throw new Error("Context budget leaves no room for live Turn messages");
       }
       this.contextLimitCircuit.limit = liveMessageLimit;
+      const compactLiveTrace = async (messages: AgentMessage[], transcriptSources: ContextWindowState["transcriptSources"], toolCallIds: string[]) => {
+        if (toolCallIds.length === 0) return messages;
+        const replacement = await compactCommittedToolTraces({
+          window: {
+            version: 1,
+            id: request.turnId,
+            frozenSeed: [],
+            recentActivityReferences: [],
+            committedTrace: serializeMessages(messages),
+            transcriptSources,
+          },
+          transcriptDirectory: this.transcriptDirectory,
+          ...(this.toolTraceCompactor ? { compactor: this.toolTraceCompactor } : {}),
+          toolCallIds,
+        });
+        return restoreMessages(replacement.committedTrace);
+      };
+      session.agent.prepareNextTurnWithContext = async next => {
+        if (messageTokens(next.context.messages) <= liveMessageLimit) return undefined;
+        const leafId = sessionManager.getLeafId();
+        if (!leafId) throw new Error("Live tool trace compaction requires a transcript leaf");
+        const sources = [...preparedWindow.transcriptSources, {
+          sourceId: request.recordingDay,
+          sessionId: sessionManager.getSessionId(),
+          entryId: leafId,
+        }];
+        const latest = new Set(next.toolResults.map(result => result.toolCallId));
+        let replacement = await compactLiveTrace(next.context.messages, sources, rawToolTraceCallIds(next.context.messages)
+          .filter(toolCallId => !latest.has(toolCallId)));
+        if (messageTokens(replacement) > liveMessageLimit) {
+          replacement = await compactLiveTrace(replacement, sources, rawToolTraceCallIds(replacement));
+        }
+        if (messageTokens(replacement) > liveMessageLimit) {
+          throw new Error("Main Agent context remains over the live Turn limit after tool trace compaction");
+        }
+        for (const reference of compactedToolTraceReferences(replacement)) liveToolReferences.add(reference);
+        session!.agent.state.messages = replacement;
+        return { context: { ...next.context, messages: replacement } };
+      };
       session.agent.state.messages = materialized.messages;
       const previousMessageCount = session.messages.length;
       const prompt = session.prompt(
@@ -792,4 +836,8 @@ function textTokens(text: string): number {
     content: [{ type: "text", text }],
     timestamp: 0,
   }));
+}
+
+function messageTokens(messages: AgentMessage[]): number {
+  return messages.reduce((total, message) => total + Math.max(0, estimateTokens(message)), 0);
 }

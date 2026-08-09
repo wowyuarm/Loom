@@ -3049,7 +3049,7 @@ test("fails a Turn after repeated tool errors instead of retrying the same failu
   );
 });
 
-test("fails a Turn before a tool-result loop exceeds its live context budget (issue #11)", async t => {
+test("compacts a live tool result and continues the same Turn inside its context budget (issue #11)", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-context-limit-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
   const oversizedResult = defineTool({
@@ -3066,7 +3066,7 @@ test("fails a Turn before a tool-result loop exceeds its live context budget (is
     () => fauxAssistantMessage(fauxToolCall("large-result", {}, { id: "large-result-1" }), { stopReason: "toolUse" }),
     context => {
       assert.doesNotMatch(JSON.stringify(context.messages), /x{1000}/);
-      return fauxAssistantMessage("must not run");
+      return fauxAssistantMessage("continued after compaction");
     },
   ]);
   const execution = await createPiAgentExecution({
@@ -3084,19 +3084,29 @@ test("fails a Turn before a tool-result loop exceeds its live context budget (is
       safetyMargin: 0,
       toolTraceReservation: 10_000,
     },
+    toolTraceCompactor: {
+      async compact(inputs) {
+        return inputs.map(input => ({
+          toolCallId: input.toolCallId,
+          callSummary: "large result call",
+          resultSummary: "large result compacted",
+          confirmedFacts: ["the tool returned a result"],
+          sourceClaims: ["the tool returned content"],
+          limitations: ["original retained in Transcript"],
+        }));
+      },
+    },
   });
   t.after(() => execution.close());
 
-  await assert.rejects(
-    execution.start({
+  const result = await execution.start({
       turnId: "turn-live-context-limit",
       leaseToken: 1,
       recordingDay: "2026-07-19",
       inputs: [executionInput("input-live-context-limit", "run the large tool")],
-    }, noEffectControl()).result,
-    /context exceeded the live Turn limit/i,
-  );
-  assert.ok(faux.state.callCount <= 2);
+    }, noEffectControl()).result;
+  assert.equal(result.outcome, "completed");
+  assert.equal(faux.state.callCount, 2);
 });
 
 function raftInteractionContext() {
