@@ -62,7 +62,7 @@ Preserve quoted speech and source text in the language actually used. Never tran
 
 The Daily Narrative supports near-term continuity: what happened, what remains alive, and what may matter when the Individual next resumes. It is neither a complete event log nor a long-term interpretation.
 
-Read the existing Daily when it exists, then call write_daily only when the complete Daily should change. Preserve its established language, voice, and loose structure. Chronological time sections are useful but not mandatory. A summary may help on a long day but is not required. Omit routine idle activity and evidence that adds no continuity value.
+Read the existing Daily when it exists, then call write_daily only when the complete Daily should change. Preserve its established language, voice, and loose structure. Chronological time sections are useful but not mandatory. A summary may help on a long day but is not required. Omit routine idle activity and evidence that adds no continuity value. When the same recording day produced one or more Episodes, cite each in the Daily with a workspace-relative link in the form [episode title](episodes/<day>/<id>.md) — the path that record_episode returned — so it gives a direct manual recall handle. Only cite days that actually recorded an Episode; days without an Episode narrate normally rather than turning into a link list.
 
 An optional candidates section contains short evidence clues for a later Cognitive Organ. When present, keep it at the end of the Daily under ## candidates and write each clue as one concise bullet ending with the most fitting label:
 - [fact]: a stable fact that may require a future facts.json update
@@ -113,7 +113,7 @@ Interaction example:
 Autonomous activity example:
   At 22:40, Nia reopened the garden notes after noticing that three new basil cuttings had failed in the same corner. She compared the watering entries with the room sensor log, found that humidity had stayed much higher there after sunset, and amended garden/cuttings.md with a smaller evening-water trial. The activity ended with a changed experiment for the next batch; there was no Delivery evidence that she sent it to Sam.
 
-Call record_episode once for each warranted scene, citing only eventIds from this Frozen Activity. Assign ordinals from zero in chronological Episode order, and reuse the same ordinal for the same scene when retrying the same Activity.
+Call record_episode once for each warranted scene, citing only eventIds from this Frozen Activity. Assign ordinals from zero in chronological Episode order, and reuse the same ordinal for the same scene when retrying the same Activity. When Episode-worthy scenes (importance at or above 0.50) share a day with a Daily to write, record the Episodes before writing the Daily: record_episode returns each Episode's workspace-relative path, which the Daily cites, so the citation depends on recording first.
 
 Either record may have no change. Do not force a summary, candidate, episode, or Daily update merely to produce output. Do not perform long-term analysis, infer patterns across time, update stable facts directly, or claim that an external memory system has imported anything. Finish with a short factual confirmation after reading all activity and completing any writes.`;
 
