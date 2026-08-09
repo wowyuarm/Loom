@@ -42,6 +42,7 @@ import {
   serializeContextWindowState,
 } from "./context.js";
 import {
+  applyCompactedToolTraceReplacements,
   compactCommittedToolTraces,
   compactedToolTraceReferences,
   createExpandTool,
@@ -493,7 +494,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         if (messageTokens(next.context.messages) <= liveMessageLimit) return undefined;
         const leafId = sessionManager.getLeafId();
         if (!leafId) throw new Error("Live tool trace compaction requires a transcript leaf");
-        const sources = [...preparedWindow.transcriptSources, {
+        const sources = [...preparedWindow.transcriptSources.filter(source => source.sourceId !== request.recordingDay), {
           sourceId: request.recordingDay,
           sessionId: sessionManager.getSessionId(),
           entryId: leafId,
@@ -507,6 +508,16 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         if (messageTokens(replacement) > liveMessageLimit) {
           throw new Error("Main Agent context remains over the live Turn limit after tool trace compaction");
         }
+        // The live Context is only a materialized view.  Retain its compacted
+        // replacements in the complete durable window as well, otherwise a
+        // same-day restart would restore an earlier raw interaction.
+        preparedWindow = {
+          ...preparedWindow,
+          committedTrace: serializeMessages(applyCompactedToolTraceReplacements(
+            restoreMessages(preparedWindow.committedTrace),
+            replacement,
+          )),
+        };
         for (const reference of compactedToolTraceReferences(replacement)) liveToolReferences.add(reference);
         session!.agent.state.messages = replacement;
         return { context: { ...next.context, messages: replacement } };

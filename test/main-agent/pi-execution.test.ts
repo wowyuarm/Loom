@@ -17,6 +17,8 @@ import { openAttachmentStore } from "../../src/integrations/attachments/index.js
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
+import { createToolActivityExtension } from "../../src/main-agent/pi/tool-activity.js";
+import { isRawCompactableToolResult } from "../../src/main-agent/tool-trace.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 import type { EffectRequest, JsonValue } from "../../src/runtime/index.js";
 import type { OperationalEvent } from "../../src/operational-events.js";
@@ -3062,10 +3064,22 @@ test("compacts a live tool result and continues the same Turn inside its context
       details: {},
     }),
   });
+  let reference = "";
   faux.setResponses([
     () => fauxAssistantMessage(fauxToolCall("large-result", {}, { id: "large-result-1" }), { stopReason: "toolUse" }),
     context => {
       assert.doesNotMatch(JSON.stringify(context.messages), /x{1000}/);
+      const compacted = context.messages.find(message => message.role === "toolResult" && message.toolCallId === "large-result-1");
+      assert.ok(compacted && compacted.role === "toolResult");
+      const text = compacted.content.find(block => block.type === "text")?.text;
+      assert.ok(text);
+      reference = (JSON.parse(text) as { reference: string }).reference;
+      return fauxAssistantMessage(fauxToolCall("expand_tool_result", { reference, offset: 0 }, { id: "expand-live" }), { stopReason: "toolUse" });
+    },
+    context => {
+      const expanded = [...context.messages].reverse().find(message => message.role === "toolResult" && message.toolCallId === "expand-live");
+      assert.ok(expanded && expanded.role === "toolResult");
+      assert.match(JSON.stringify(expanded.content), /x{1000}/);
       return fauxAssistantMessage("continued after compaction");
     },
   ]);
@@ -3106,7 +3120,7 @@ test("compacts a live tool result and continues the same Turn inside its context
       inputs: [executionInput("input-live-context-limit", "run the large tool")],
     }, noEffectControl()).result;
   assert.equal(result.outcome, "completed");
-  assert.equal(faux.state.callCount, 2);
+  assert.equal(faux.state.callCount, 3);
 });
 
 test("compacts completed parallel batches incrementally without re-compacting earlier live traces (issue #11)", async t => {
@@ -3196,6 +3210,106 @@ test("fails the same Turn without a partial Context replacement when live compac
     inputs: [executionInput("input-live-compaction-failure", "look up evidence")],
   }, noEffectControl()).result, /compactor unavailable/);
   assert.equal(faux.state.callCount, 1);
+});
+
+test("fails instead of resending raw evidence when live compaction cannot fit the budget (issue #11)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-over-budget-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const lookup = defineTool({
+    name: "lookup", label: "Lookup", description: "Returns oversized evidence.", parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text" as const, text: "x".repeat(1_000_000) }], details: {} }),
+  });
+  faux.setResponses([fauxAssistantMessage(fauxToolCall("lookup", {}, { id: "large" }), { stopReason: "toolUse" })]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)), agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"), modelRuntime, model, harnessSystemPrompt: "primary Agent", additionalTools: [lookup],
+    contextBudget: { hardContext: 20_000, normalMaterial: 10_000, outputReserve: 1_000, safetyMargin: 0, toolTraceReservation: 1 },
+    toolTraceCompactor: { async compact(inputs) { return inputs.map(input => ({
+      toolCallId: input.toolCallId, callSummary: "x".repeat(1_000_000), resultSummary: "x".repeat(1_000_000), confirmedFacts: [], sourceClaims: [], limitations: [],
+    })); } },
+  });
+  t.after(() => execution.close());
+  await assert.rejects(execution.start({ turnId: "turn-live-over-budget", leaseToken: 1, recordingDay: "2026-07-19", inputs: [executionInput("input-live-over-budget", "look up evidence")] }, noEffectControl()).result, /remains over the live Turn limit/);
+  assert.equal(faux.state.callCount, 1);
+});
+
+test("keeps the provider context bounded if an aborting context guard is invoked again (issue #11)", () => {
+  const handlers = new Map<string, (event: { messages: Array<{ role: "user"; content: Array<{ type: "text"; text: string }>; timestamp: number }> }, ctx: { abort(): void }) => unknown>();
+  const circuit: { opened: boolean; limit?: number } = { opened: false };
+  const extension = createToolActivityExtension(noEffectControl(), new Set(), undefined, { consecutiveErrors: 0, opened: false }, circuit);
+  (extension as { factory: (pi: unknown) => void }).factory({ on: (event: string, handler: never) => handlers.set(event, handler as never) } as never);
+  const context = handlers.get("context")!;
+  let aborts = 0;
+  const overLimit = { messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "x".repeat(10_000) }], timestamp: 0 }] };
+  circuit.limit = 1;
+  const first = context(overLimit, { abort: () => { aborts += 1; } });
+  const second = context(overLimit, { abort: () => { aborts += 1; } });
+  assert.equal(aborts, 1);
+  assert.match(JSON.stringify(first), /stopping/);
+  assert.match(JSON.stringify(second), /stopping/);
+  assert.doesNotMatch(JSON.stringify(second), /x{1000}/);
+});
+
+test("never treats message decisions as compactable tool evidence (issue #11)", () => {
+  assert.equal(isRawCompactableToolResult({
+    role: "toolResult", toolCallId: "message-1", toolName: "message", isError: false,
+    content: [{ type: "text", text: "decision" }], timestamp: 0,
+  }), false);
+});
+
+test("persists a same-day live replacement for restart without duplicate transcript sources (issue #11)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-restart-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const lookup = defineTool({
+    name: "lookup", label: "Lookup", description: "Returns deterministic evidence.", parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `${params.query}:${"x".repeat(45_000)}` }], details: {},
+    }),
+  });
+  const compacted: string[][] = [];
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "old" }, { id: "old" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage("old evidence recorded"),
+    fauxAssistantMessage(fauxToolCall("lookup", { query: "new" }, { id: "new" }), { stopReason: "toolUse" }),
+    context => {
+      assert.doesNotMatch(JSON.stringify(context.messages), /old:x{1000}/);
+      return fauxAssistantMessage("live replacement recorded");
+    },
+    context => {
+      assert.doesNotMatch(JSON.stringify(context.messages), /old:x{1000}/);
+      return fauxAssistantMessage("restart continued from the compacted window");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)), agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"), modelRuntime, model, harnessSystemPrompt: "primary Agent",
+    additionalTools: [lookup],
+    contextBudget: { hardContext: 20_000, normalMaterial: 10_000, outputReserve: 1_000, safetyMargin: 0, toolTraceReservation: 50_000 },
+    toolTraceCompactor: { async compact(inputs) {
+      compacted.push(inputs.map(input => input.toolCallId));
+      return inputs.map(input => ({ toolCallId: input.toolCallId, callSummary: "Lookup completed.", resultSummary: "Evidence retained in Transcript.", confirmedFacts: [], sourceClaims: [], limitations: [] }));
+    } },
+  });
+  t.after(() => execution.close());
+  const first = await execution.start({ turnId: "turn-old", leaseToken: 1, recordingDay: "2026-07-19", inputs: [executionInput("input-old", "old")] }, noEffectControl()).result;
+  const second = await execution.start({ turnId: "turn-new", leaseToken: 2, recordingDay: "2026-07-19", inputs: [executionInput("input-new", "new")], executionState: first.executionState }, noEffectControl()).result;
+  execution.close();
+  const recovered = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)), agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"), modelRuntime, model, harnessSystemPrompt: "primary Agent",
+    additionalTools: [lookup],
+    contextBudget: { hardContext: 20_000, normalMaterial: 10_000, outputReserve: 1_000, safetyMargin: 0, toolTraceReservation: 50_000 },
+    toolTraceCompactor: { async compact(inputs) {
+      compacted.push(inputs.map(input => input.toolCallId));
+      return inputs.map(input => ({ toolCallId: input.toolCallId, callSummary: "Lookup completed.", resultSummary: "Evidence retained in Transcript.", confirmedFacts: [], sourceClaims: [], limitations: [] }));
+    } },
+  });
+  t.after(() => recovered.close());
+  const third = await recovered.start({ turnId: "turn-restart", leaseToken: 3, recordingDay: "2026-07-19", inputs: [executionInput("input-restart", "continue")], executionState: second.executionState }, noEffectControl()).result;
+
+  assert.deepEqual(compacted, [["old"]]);
+  assert.equal(new Set(contextWindow(second).transcriptSources.map(source => source.sourceId)).size, 1);
+  assert.doesNotMatch(JSON.stringify(contextWindow(third).committedTrace), /old:x{1000}/);
 });
 
 function raftInteractionContext() {

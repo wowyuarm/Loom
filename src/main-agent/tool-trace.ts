@@ -167,6 +167,52 @@ export function compactedToolTraceReferences(messages: AgentMessage[]): string[]
   return [...authorizedReferences(messages)];
 }
 
+/**
+ * Carries replacements made in a materialized live Context back into the
+ * complete durable Context Window.  Materialization may omit older trace
+ * entries, so replacing the live list alone would lose a compaction after
+ * restart.  Only already-compacted call/result pairs are copied.
+ */
+export function applyCompactedToolTraceReplacements(
+  messages: AgentMessage[],
+  replacement: AgentMessage[],
+): AgentMessage[] {
+  const replacementCalls = new Map<string, unknown>();
+  const replacementResults = new Map<string, {
+    content: Extract<AgentMessage, { role: "toolResult" }>["content"];
+    details: Extract<AgentMessage, { role: "toolResult" }>["details"];
+  }>();
+  for (const message of replacement) {
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block?.type === "toolCall" && typeof block.id === "string") replacementCalls.set(block.id, block);
+      }
+    }
+    if (message.role === "toolResult" && typeof message.toolCallId === "string" && compactionMetadata(message)) {
+      replacementResults.set(message.toolCallId, { content: message.content, details: message.details });
+    }
+  }
+  const copied = structuredClone(messages);
+  for (const message of copied) {
+    if (message.role === "assistant" && Array.isArray(message.content)) {
+      for (let index = 0; index < message.content.length; index += 1) {
+        const block = message.content[index];
+        if (block?.type !== "toolCall" || typeof block.id !== "string") continue;
+        const source = replacementCalls.get(block.id);
+        if (source) message.content[index] = structuredClone(source) as typeof block;
+      }
+    }
+    if (message.role === "toolResult" && typeof message.toolCallId === "string") {
+      const source = replacementResults.get(message.toolCallId);
+      if (source) {
+        message.content = structuredClone(source.content);
+        message.details = structuredClone(source.details);
+      }
+    }
+  }
+  return copied;
+}
+
 export function createExpandTool(options: {
   window: ContextWindowState;
   transcriptDirectory: string;
