@@ -113,6 +113,36 @@ Raft status 有四种状态：
 status。运行中 bridge 后来失联会反映为 `degraded`，当前不会另外推送一条状态变化
 事件。不要把进程仍在运行当成 Raft 一定 connected。
 
+### 多实例同机的 CLI 状态目录隔离
+
+raft CLI 的本地发送状态默认放在系统临时目录，按 agent 分子目录：
+
+- 草稿/重发状态：`<tmp>/slock-cli-attested-send/<agentId>/`（受
+  `SLOCK_CLI_DRAFT_STATE_DIR` 覆盖）；
+- 已消费消息序号：`<tmp>/slock-cli-consumed-seq/<agentId>/`（受
+  `SLOCK_CLI_CONSUMED_SEQ_STATE_DIR` 覆盖）。
+
+同一台机器上运行多个 Loom Instance（多个 External Agent）时，若某个 agent 先创建了
+该目录且权限不允许其他用户/服务写入，后续 agent 发送消息会在 `mkdir` 时失败
+（`EACCES: permission denied, mkdir '/tmp/slock-cli-attested-send/<agentId>/...'`）。
+现象是消息已生成但出站被环境权限卡住，`delivery_attempts` 出现
+`EACCES` 错误、effect 停在 `reconciliation_required`——容易被误判为网络或服务问题。
+
+修复方式：为每个实例在各自 runtime 目录下配置专用状态目录，按实例隔离，不碰共享的
+`/tmp`。以 systemd 为例：
+
+```ini
+Environment=SLOCK_CLI_DRAFT_STATE_DIR=/home/loom-example/.loom/runtime/raft-cli-state
+Environment=SLOCK_CLI_CONSUMED_SEQ_STATE_DIR=/home/loom-example/.loom/runtime/raft-cli-state
+```
+
+修改后重启服务，确认 `systemctl show <unit> --property=Environment` 已生效。已卡住的
+effect 需要把 reconciliation 状态重置为 pending 后重投（操作前备份 runtime.db）；
+`deliveriesNeedingAttention` 统计历史 unknown 失败行属于审计留存，不等于当前有阻塞。
+
+判定要点：先查 `delivery_attempts` 错误类型，再决定是重试、环境修复还是
+runtime 问题，不要凭「消息没发出去」直接归因网络。
+
 ### Ingress 状态
 
 Raft 条目的 `ingress` 字段汇总尚未完成的外部消息——待处理 wake、重试中的 wake、
