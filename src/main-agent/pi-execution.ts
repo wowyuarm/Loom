@@ -55,7 +55,11 @@ import { RESERVED_LOOM_TOOL_NAMES } from "../channels/reserved-tool-names.js";
 import { createAttachmentTool } from "./attachment.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import { createPiSessionFactory, type PreparedPiSession } from "./pi/session.js";
-import { createToolActivityExtension, type ToolErrorCircuit } from "./pi/tool-activity.js";
+import {
+  createToolActivityExtension,
+  type ContextLimitCircuit,
+  type ToolErrorCircuit,
+} from "./pi/tool-activity.js";
 import type { InputPresentation } from "./pi/attachments.js";
 import { presentInput } from "./pi/input.js";
 
@@ -261,6 +265,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     private readonly ordinaryToolNames: Set<string>,
     private readonly observe: OperationalEventObserver | undefined,
     private readonly toolErrorCircuit: ToolErrorCircuit = { consecutiveErrors: 0, opened: false },
+    private readonly contextLimitCircuit: ContextLimitCircuit = { opened: false },
   ) {}
 
   start(request: TurnRequest, control: TurnControl): PiRunningExecution {
@@ -272,6 +277,9 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     delete this.toolErrorCircuit.lastFailedTool;
     delete this.toolErrorCircuit.lastFailedToolCallId;
     delete this.toolErrorCircuit.openedAtConsecutiveErrors;
+    this.contextLimitCircuit.opened = false;
+    delete this.contextLimitCircuit.estimatedTokens;
+    delete this.contextLimitCircuit.limit;
     const sessionManager = openPrimaryTranscriptSession(
       this.transcriptDirectory,
       request.recordingDay,
@@ -399,19 +407,24 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       }) ?? [];
       assertChannelTools(this.channelAgentSurface?.tools.names ?? [], channelTools);
       turnTools.push(...channelTools);
+      const toolActivityExtension = createToolActivityExtension(
+        lifecycle.control(request.turnId),
+        new Set([...this.ordinaryToolNames, ...channelTools.map(tool => tool.name)]),
+        this.observe,
+        this.toolErrorCircuit,
+        this.contextLimitCircuit,
+      );
       const preparedSession = await this.createSession(
         systemPrompt,
         turnTools,
-        createToolActivityExtension(
-          lifecycle.control(request.turnId),
-          new Set([...this.ordinaryToolNames, ...channelTools.map(tool => tool.name)]),
-          this.observe,
-          this.toolErrorCircuit,
-        ),
+        toolActivityExtension,
         lifecycle,
         sessionManager,
       );
       session = preparedSession.session;
+      const budget = { ...DEFAULT_CONTEXT_BUDGET, ...this.contextBudget };
+      const fixedTokens = textTokens(session.systemPrompt) + textTokens(JSON.stringify(session.agent.state.tools));
+      const liveMessageLimit = budget.hardContext - budget.outputReserve - budget.safetyMargin - fixedTokens;
       if (preparedSession.skillDiagnostics.length > 0) {
         sessionManager.appendCustomEntry("loom.skill-diagnostics.v1", {
           version: 1,
@@ -450,6 +463,10 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         },
         ...(this.contextBudget ? { budget: this.contextBudget } : {}),
       });
+      if (!Number.isFinite(liveMessageLimit) || liveMessageLimit < 0) {
+        throw new Error("Context budget leaves no room for live Turn messages");
+      }
+      this.contextLimitCircuit.limit = liveMessageLimit;
       session.agent.state.messages = materialized.messages;
       const previousMessageCount = session.messages.length;
       const prompt = session.prompt(
@@ -464,6 +481,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       this.#acceptsSteering = false;
       this.#throwIfAborted(request.turnId);
       this.#throwIfToolErrorCircuitOpened();
+      this.#throwIfContextLimitOpened();
       if (this.interactionEnabled
         && (requiresMessageDecision(request.inputs[0]!) || lifecycle.hasIncludedInteraction(request.turnId))
         && !hasMessageDecision(messageDecision)) {
@@ -474,6 +492,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         });
         await session.prompt(messageDecisionFollowupText(), { expandPromptTemplates: false });
         this.#throwIfAborted(request.turnId);
+        this.#throwIfContextLimitOpened();
         if (!hasMessageDecision(messageDecision)) {
           throw new Error("Main Agent did not choose message.send or message.no_reply after one correction");
         }
@@ -500,6 +519,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     } catch (error) {
       this.#sessionReady?.reject(error);
       this.#throwIfToolErrorCircuitOpened();
+      this.#throwIfContextLimitOpened();
       throw error;
     } finally {
       session?.dispose();
@@ -537,6 +557,14 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         `Main Agent failed after ${circuit.openedAtConsecutiveErrors ?? circuit.consecutiveErrors} consecutive tool errors on ${circuit.lastFailedTool ?? "unknown tool"} (toolCall ${circuit.lastFailedToolCallId ?? "unknown"})`,
       );
     }
+  }
+
+  #throwIfContextLimitOpened(): void {
+    if (!this.contextLimitCircuit.opened) return;
+    const circuit = this.contextLimitCircuit;
+    throw new Error(
+      `Main Agent context exceeded the live Turn limit (${circuit.estimatedTokens ?? "unknown"} > ${circuit.limit ?? "unknown"} tokens)`,
+    );
   }
 
   async #selectCommittedBranch(

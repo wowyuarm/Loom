@@ -1,4 +1,4 @@
-import type { InlineExtension } from "@earendil-works/pi-coding-agent";
+import { estimateTokens, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { JsonValue, TurnControl } from "../../runtime/index.js";
 import { emitOperationalEvent, operationalTimestamp, type OperationalEventObserver } from "../../operational-events.js";
 
@@ -12,14 +12,47 @@ export interface ToolErrorCircuit {
   openedAtConsecutiveErrors?: number;
 }
 
+/**
+ * The Context Planner only runs before a Turn starts.  Pi appends tool calls
+ * and their results between provider requests, so retain a separate latch for
+ * the live part of that same Turn.
+ */
+export interface ContextLimitCircuit {
+  opened: boolean;
+  estimatedTokens?: number;
+  limit?: number;
+}
+
 export function createToolActivityExtension(
   control: TurnControl,
   ordinaryToolNames: Set<string>,
   observe: OperationalEventObserver | undefined,
   circuit: ToolErrorCircuit,
+  contextLimitCircuit: ContextLimitCircuit,
 ): InlineExtension {
   const calls = new Map<string, { toolName: string; args?: JsonValue; startedAt: number }>();
   return { name: "loom-tool-activity", factory: pi => {
+    pi.on("context", (event, ctx) => {
+      if (contextLimitCircuit.opened) return;
+      const limit = contextLimitCircuit.limit;
+      if (limit === undefined) return;
+      const estimatedTokens = event.messages.reduce((total, message) => total + estimateTokens(message), 0);
+      if (estimatedTokens <= limit) return;
+      contextLimitCircuit.opened = true;
+      contextLimitCircuit.estimatedTokens = estimatedTokens;
+      ctx.abort();
+      // Pi's extension API does not propagate an exception from this hook to
+      // the agent loop.  Replace the provider context as well as aborting so
+      // a provider that starts despite the already-aborted signal never sees
+      // the over-limit tool trace.
+      return {
+        messages: [{
+          role: "user" as const,
+          content: [{ type: "text" as const, text: "This Turn has exceeded Loom's context budget and is stopping." }],
+          timestamp: Date.now(),
+        }],
+      };
+    });
     pi.on("tool_execution_start", event => {
       calls.set(event.toolCallId, { toolName: event.toolName, startedAt: performance.now(),
         ...(ordinaryToolNames.has(event.toolName) ? { args: serializeValue(event.args) } : {}) });

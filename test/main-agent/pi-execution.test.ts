@@ -3049,6 +3049,56 @@ test("fails a Turn after repeated tool errors instead of retrying the same failu
   );
 });
 
+test("fails a Turn before a tool-result loop exceeds its live context budget (issue #11)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-context-limit-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const oversizedResult = defineTool({
+    name: "large-result",
+    label: "Large result",
+    description: "Returns a deliberately oversized result.",
+    parameters: Type.Object({}),
+    execute: async () => ({
+      content: [{ type: "text" as const, text: "x".repeat(1_000_000) }],
+      details: {},
+    }),
+  });
+  faux.setResponses([
+    () => fauxAssistantMessage(fauxToolCall("large-result", {}, { id: "large-result-1" }), { stopReason: "toolUse" }),
+    context => {
+      assert.doesNotMatch(JSON.stringify(context.messages), /x{1000}/);
+      return fauxAssistantMessage("must not run");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "primary Agent",
+    additionalTools: [oversizedResult],
+    contextBudget: {
+      hardContext: 20_000,
+      normalMaterial: 10_000,
+      outputReserve: 1_000,
+      safetyMargin: 0,
+      toolTraceReservation: 10_000,
+    },
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(
+    execution.start({
+      turnId: "turn-live-context-limit",
+      leaseToken: 1,
+      recordingDay: "2026-07-19",
+      inputs: [executionInput("input-live-context-limit", "run the large tool")],
+    }, noEffectControl()).result,
+    /context exceeded the live Turn limit/i,
+  );
+  assert.ok(faux.state.callCount <= 2);
+});
+
 function raftInteractionContext() {
   return {
     routeRef: "raft:server-1",
