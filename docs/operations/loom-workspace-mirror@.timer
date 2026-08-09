@@ -1,0 +1,10 @@
+[Unit]
+Description=Loom Workspace Mirror %i (30-minute poll)
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+Unit=loom-workspace-mirror@%i.service
+
+[Install]
+WantedBy=timers.target

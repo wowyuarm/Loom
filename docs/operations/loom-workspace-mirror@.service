@@ -1,0 +1,13 @@
+[Unit]
+Description=Loom Workspace Mirror %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=loom-%i
+Group=loom-%i
+WorkingDirectory=/opt/loom
+Environment=HOME=/home/loom-%i
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node /opt/loom/src/integrations/workspace-mirror/mirror.mjs --root /home/loom-%i/.loom

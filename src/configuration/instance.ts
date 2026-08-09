@@ -13,6 +13,14 @@ export interface InstanceConfiguration {
   integrations: IntegrationConfiguration;
   modelPolicy?: ModelPolicy;
   defaultInteractionRoute?: string;
+  workspaceMirror?: WorkspaceMirrorConfiguration;
+}
+
+export interface WorkspaceMirrorConfiguration {
+  enabled: boolean;
+  remote: string;
+  branch: string;
+  intervalMinutes: number;
 }
 
 export interface ChannelConfiguration {
@@ -102,7 +110,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models", "interaction", "channels", "integrations", "schedule"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction", "channels", "integrations", "schedule", "workspaceMirror"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -122,6 +130,9 @@ export async function loadInstanceConfiguration(
   const integrations = parseIntegrations(document.integrations);
   const defaultInteractionRoute = parseInteraction(document.interaction);
   const schedule = parseSchedule(document.schedule);
+  const workspaceMirror = document.workspaceMirror === undefined
+    ? undefined
+    : parseWorkspaceMirror(document.workspaceMirror);
   return {
     version: 1,
     timePolicy: createTimePolicy({
@@ -133,6 +144,31 @@ export async function loadInstanceConfiguration(
     integrations,
     ...(modelPolicy ? { modelPolicy } : {}),
     ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
+    ...(workspaceMirror ? { workspaceMirror } : {}),
+  };
+}
+
+function parseWorkspaceMirror(value: unknown): WorkspaceMirrorConfiguration {
+  if (!isObject(value)) throw new Error("Instance Configuration workspaceMirror must be an object");
+  assertOnlyKeys(value, ["enabled", "remote", "branch", "intervalMinutes"], "Instance Configuration workspaceMirror");
+  if (typeof value.enabled !== "boolean") {
+    throw new Error("Instance Configuration workspaceMirror.enabled must be a boolean");
+  }
+  if (typeof value.remote !== "string" || !value.remote.trim()) {
+    throw new Error("Instance Configuration workspaceMirror.remote must be a non-empty string");
+  }
+  const branch = value.branch === undefined ? "main" : value.branch;
+  if (typeof branch !== "string" || !branch.trim()) {
+    throw new Error("Instance Configuration workspaceMirror.branch must be a non-empty string");
+  }
+  const intervalMinutes = value.intervalMinutes === undefined
+    ? 30
+    : parsePositiveMinutes(value.intervalMinutes, "Instance Configuration workspaceMirror.intervalMinutes", 30);
+  return {
+    enabled: value.enabled,
+    remote: value.remote.trim(),
+    branch: branch.trim(),
+    intervalMinutes,
   };
 }
 
