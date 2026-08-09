@@ -33,7 +33,10 @@ export function createToolActivityExtension(
   const calls = new Map<string, { toolName: string; args?: JsonValue; startedAt: number }>();
   return { name: "loom-tool-activity", factory: pi => {
     pi.on("context", (event, ctx) => {
-      if (contextLimitCircuit.opened) return;
+      // An abort is advisory to providers.  A provider can still return a
+      // tool call, causing Pi to attempt another request.  Once this guard
+      // opens, every such request must receive the bounded stop context.
+      if (contextLimitCircuit.opened) return stoppedContext();
       const limit = contextLimitCircuit.limit;
       if (limit === undefined) return;
       const estimatedTokens = event.messages.reduce((total, message) => total + estimateTokens(message), 0);
@@ -45,13 +48,7 @@ export function createToolActivityExtension(
       // the agent loop.  Replace the provider context as well as aborting so
       // a provider that starts despite the already-aborted signal never sees
       // the over-limit tool trace.
-      return {
-        messages: [{
-          role: "user" as const,
-          content: [{ type: "text" as const, text: "This Turn has exceeded Loom's context budget and is stopping." }],
-          timestamp: Date.now(),
-        }],
-      };
+      return stoppedContext();
     });
     pi.on("tool_execution_start", event => {
       calls.set(event.toolCallId, { toolName: event.toolName, startedAt: performance.now(),
@@ -73,6 +70,16 @@ export function createToolActivityExtension(
       if (!failed && call.args !== undefined) control.recordToolActivity({ toolCallId: event.toolCallId, toolName: event.toolName, callArguments: call.args, result: withoutImagePixels(serializeValue(event.result)) });
     });
   } };
+}
+
+function stoppedContext() {
+  return {
+    messages: [{
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "This Turn has exceeded Loom's context budget and is stopping." }],
+      timestamp: Date.now(),
+    }],
+  };
 }
 
 function serializeValue(value: unknown): JsonValue { return JSON.parse(JSON.stringify(value)) as JsonValue; }

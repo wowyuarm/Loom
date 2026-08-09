@@ -3109,6 +3109,95 @@ test("compacts a live tool result and continues the same Turn inside its context
   assert.equal(faux.state.callCount, 2);
 });
 
+test("compacts completed parallel batches incrementally without re-compacting earlier live traces (issue #11)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-incremental-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const lookup = defineTool({
+    name: "lookup",
+    label: "Lookup",
+    description: "Returns deliberately large deterministic evidence.",
+    parameters: Type.Object({ query: Type.String() }),
+    execute: async (_toolCallId, params) => ({
+      content: [{ type: "text" as const, text: `${params.query}:${"x".repeat(250_000)}` }],
+      details: {},
+    }),
+  });
+  const compactedBatches: string[][] = [];
+  faux.setResponses([
+    fauxAssistantMessage([
+      fauxToolCall("lookup", { query: "first" }, { id: "first" }),
+      fauxToolCall("lookup", { query: "second" }, { id: "second" }),
+    ], { stopReason: "toolUse" }),
+    context => {
+      assert.doesNotMatch(JSON.stringify(context.messages), /x{1000}/);
+      return fauxAssistantMessage(fauxToolCall("lookup", { query: "third" }, { id: "third" }), { stopReason: "toolUse" });
+    },
+    context => {
+      assert.doesNotMatch(JSON.stringify(context.messages), /x{1000}/);
+      return fauxAssistantMessage("all compacted evidence considered");
+    },
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "primary Agent",
+    additionalTools: [lookup],
+    contextBudget: { hardContext: 20_000, normalMaterial: 10_000, outputReserve: 1_000, safetyMargin: 0, toolTraceReservation: 1 },
+    toolTraceCompactor: {
+      async compact(inputs) {
+        compactedBatches.push(inputs.map(input => input.toolCallId));
+        return inputs.map(input => ({
+          toolCallId: input.toolCallId,
+          callSummary: `Called ${input.toolName}.`,
+          resultSummary: "Large evidence was retained in the Transcript.",
+          confirmedFacts: [], sourceClaims: [], limitations: ["Use the reference to expand the original."],
+        }));
+      },
+    },
+  });
+  t.after(() => execution.close());
+  const result = await execution.start({
+    turnId: "turn-live-incremental", leaseToken: 1, recordingDay: "2026-07-19",
+    inputs: [executionInput("input-live-incremental", "look up all three")],
+  }, noEffectControl()).result;
+
+  assert.equal(result.outcome, "completed");
+  // The compactor bounds each model request independently, but both parallel
+  // results were persisted before either request ran; no earlier trace is
+  // sent again when the later batch crosses the limit.
+  assert.deepEqual(compactedBatches, [["first"], ["second"], ["third"]]);
+  assert.equal(faux.state.callCount, 3);
+  assert.doesNotMatch(JSON.stringify(contextWindow(result).committedTrace), /x{1000}/);
+});
+
+test("fails the same Turn without a partial Context replacement when live compaction fails (issue #11)", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-live-compaction-failure-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  const lookup = defineTool({
+    name: "lookup", label: "Lookup", description: "Returns oversized evidence.", parameters: Type.Object({}),
+    execute: async () => ({ content: [{ type: "text" as const, text: "x".repeat(1_000_000) }], details: {} }),
+  });
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("lookup", {}, { id: "large" }), { stopReason: "toolUse" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)), agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"), modelRuntime, model, harnessSystemPrompt: "primary Agent",
+    additionalTools: [lookup],
+    contextBudget: { hardContext: 20_000, normalMaterial: 10_000, outputReserve: 1_000, safetyMargin: 0, toolTraceReservation: 1 },
+    toolTraceCompactor: { async compact() { throw new Error("compactor unavailable"); } },
+  });
+  t.after(() => execution.close());
+  await assert.rejects(execution.start({
+    turnId: "turn-live-compaction-failure", leaseToken: 1, recordingDay: "2026-07-19",
+    inputs: [executionInput("input-live-compaction-failure", "look up evidence")],
+  }, noEffectControl()).result, /compactor unavailable/);
+  assert.equal(faux.state.callCount, 1);
+});
+
 function raftInteractionContext() {
   return {
     routeRef: "raft:server-1",
