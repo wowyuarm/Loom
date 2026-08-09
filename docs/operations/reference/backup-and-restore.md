@@ -5,7 +5,10 @@ This guide covers a complete Runtime Instance. Read
 
 Backup and restore are Operator procedures, not Loom commands or scheduled
 Harness jobs. Git or GitHub history of selected Workspace material is a separate
-human review surface and never replaces a complete Instance backup.
+human review surface and never replaces a complete Instance backup. Workspace
+Mirror（见 [Workspace Mirror Integration](../integrations/workspace-mirror.md)）
+是这一原则的实例级实现：定期把 Workspace 镜像到私有 Git remote 供人查看，
+但它不包含 Runtime 状态，不能用于恢复，也不能替代本指南描述的完整备份。
 
 ## Backup Boundary
 

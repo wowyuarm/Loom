@@ -34,7 +34,7 @@ the authorized environment.
 | View live state, understand recent Agent runs, investigate failure or recover a process | [Status And Diagnosis](reference/status-and-diagnosis.md) |
 | Back up, restore or migrate a complete Instance | [Backup, Restore And Migration](reference/backup-and-restore.md) |
 | Enable or verify an Interaction Channel | [Weixin](../channels/weixin.md) or [Raft](../channels/raft.md) |
-| Enable or verify an Integration | [nmem](../integrations/nmem.md) or [Web Access](../integrations/web.md) |
+| Enable or verify an Integration | [nmem](../integrations/nmem.md), [Web Access](../integrations/web.md) or [Workspace Mirror](../integrations/workspace-mirror.md) |
 
 Read only the guides needed for the user's request. Login, configuration and
 acceptance specifics belong to the corresponding Channel or Integration guide.

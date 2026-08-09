@@ -10,7 +10,7 @@ Keep assembly choices, credentials and runtime state separate:
 
 | Material | Location | Purpose |
 | --- | --- | --- |
-| Instance assembly | `configuration/instance.yaml` | Time policy, model roles, schedules, enabled Channels, enabled Integrations and the default Interaction Route. |
+| Instance assembly | `configuration/instance.yaml` | Time policy, model roles, schedules, enabled Channels, enabled Integrations, the default Interaction Route and optional Workspace Mirror. |
 | Pi model credentials | `configuration/pi/auth.json` | API keys or OAuth credentials used by the configured model providers. |
 | Pi custom model definitions | `configuration/pi/models.json` | Provider endpoints and models not supplied by Pi. |
 | Channel configuration | `configuration/channels/<name>/config.json` | Non-secret route, endpoint and behavior settings owned by that Interaction Channel. |
@@ -20,10 +20,12 @@ Keep assembly choices, credentials and runtime state separate:
 | Runtime state | `runtime/` | Loom-owned recovery, Channel and Integration state; never edit it as configuration. |
 
 `instance.yaml` accepts only `version`, `time`, `models`, `interaction`,
-`channels`, `integrations` and `schedule`. Unknown fields are rejected. A
-Channel or Integration is assembled only when its `enabled` value is true.
-At least one Interaction Channel must be enabled: a configuration with zero
-enabled Channels is rejected when the Host opens.
+`channels`, `integrations`, `schedule` and `workspaceMirror`. Unknown fields are
+rejected. A Channel or Integration is assembled only when its `enabled` value is
+true. At least one Interaction Channel must be enabled: a configuration with zero
+enabled Channels is rejected when the Host opens. `workspaceMirror` 是可选段：
+enabled/remote/branch/intervalMinutes，配置了才启用镜像（详见
+[Workspace Mirror Integration](../../integrations/workspace-mirror.md)）。
 
 ## Models
 
