@@ -20,7 +20,7 @@ import path from "node:path";
 import process from "node:process";
 import { parse } from "yaml";
 
-const GITIGNORE_PATTERNS = ["*token*", "*auth*", "*.env", "*.bak"];
+const GITIGNORE_PATTERNS = ["*token*", "*auth*", "*.env", "*.bak", "*.bak-*"];
 
 function usage() {
   console.error("Usage: node src/integrations/workspace-mirror/mirror.mjs --root <instance-root>");
