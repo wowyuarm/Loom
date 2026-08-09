@@ -663,6 +663,14 @@ export type CloseActivityResult =
 export interface CloseActivityOptions {
   inactiveBefore?: string;
   openedBefore?: string;
+  /**
+   * Allow a proactive fair-split freeze: close the active Segment for
+   * Orientation even when neither the idle nor the maximum age cutoff has been
+   * reached. Ambient (thread_reply / channel_activity) pending Inputs do not
+   * block this split; only foreground or non-interaction pending Inputs (the
+   * ones that must run first) still block it.
+   */
+  allowForcedSplit?: boolean;
 }
 
 export type FormOpportunityResult =
@@ -740,6 +748,12 @@ export interface Runtime {
   requeueCognitiveOrganWork(localWorkId: string): RequeueCognitiveOrganWorkResult;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
+  /**
+   * Next scheduled Proactive Pulse time (as an ISO string), creating the
+   * schedule if needed. Lets the Scheduler wake at the Pulse cadence even when
+   * an active Segment would otherwise keep it waiting on the idle/max gate.
+   */
+  opportunityPulseNextRunAt(observedAt: Date, initialDelayMs: number): Promise<string>;
   runAfterChatContinuation(options: RunAfterChatContinuationOptions): Promise<RunAfterChatContinuationResult>;
   runAttentionMaintenance(options: RunAttentionMaintenanceOptions): Promise<RunAttentionMaintenanceResult>;
   runMemoryReflection(options: RunMemoryReflectionOptions): Promise<RunMemoryReflectionResult>;

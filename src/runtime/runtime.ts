@@ -73,6 +73,7 @@ import type {
   RuntimeAgentRunSummary,
   RuntimeCognitiveOrganWorkStatus,
   RuntimeOperationalStatus,
+  InteractionContext,
   ThreadActivityObservation,
   ThreadMaintenance,
   ThreadMaintenanceResult,
@@ -243,6 +244,28 @@ const RUNTIME_AGENT_NAMES: RuntimeAgentName[] = [
   "memory-reflector",
   "thread-maintainer",
 ];
+
+/**
+ * Foreground Interaction signals interrupt or preempt Proactivity; ambient
+ * signals do not. A missing or unknown signal is conservatively treated as
+ * foreground so existing interaction behavior is preserved rather than
+ * silently downgraded.
+ */
+export function isPreemptingInteractionSignal(signal: InteractionContext["signal"] | undefined): boolean {
+  switch (signal) {
+    case "thread_reply":
+    case "channel_activity":
+      return false;
+    case "direct_message":
+    case "mention":
+    case "task":
+    case "reminder":
+      return true;
+    case undefined:
+    case "other":
+      return true;
+  }
+}
 
 function deliveryRetryDelay(attempt: number): number {
   const exponent = Math.min(
@@ -421,7 +444,7 @@ class SqliteRuntime implements Runtime {
         lateArriving,
       );
       if (result.changes === 1) {
-        if (input.kind === "interaction") {
+        if (input.kind === "interaction" && isPreemptingInteractionSignal(input.interaction?.signal)) {
           this.#cancelPendingAfterChat(now, "new_human_input");
           this.#discardUnclaimedOpportunities(now);
         }
@@ -440,28 +463,41 @@ class SqliteRuntime implements Runtime {
 
     if (accepted.disposition === "accepted") {
       if (input.kind === "interaction") {
-        this.#activeOrientation?.supersede();
-        if (input.interaction?.actor.kind !== "agent" && input.interaction?.actor.kind !== "system") {
+        const preempting = isPreemptingInteractionSignal(input.interaction?.signal);
+        if (preempting) {
+          this.#activeOrientation?.supersede();
+        }
+        if (preempting && input.interaction?.actor.kind !== "agent" && input.interaction?.actor.kind !== "system") {
           await this.#cancelActiveCognitiveOrgan("new_human_input");
         }
       }
       const active = this.#active;
       if (active && !active.finishing && input.kind === "interaction") {
-        const sameWave = active.interactionWaveId === undefined
-          || active.interactionWaveId === accepted.interactionWaveId;
-        if (sameWave) {
-          active.interactionWaveId ??= accepted.interactionWaveId;
-        }
-        // Wave mismatch is not a dead end: an Input of the same scope may still
-        // steer into the running Turn while its reply gate is open. The
-        // authoritative gate check happens inside the steering transaction.
-        const scopeMatches = active.interactionScopeKey !== undefined
-          && active.interactionScopeKey === accepted.interactionScopeKey;
-        if (sameWave || scopeMatches) {
-          const steering = active.steeringTail.then(async () => {
-            await this.#steerInput(active, id);
-          });
-          active.steeringTail = steering.catch(() => {});
+        const preempting = isPreemptingInteractionSignal(input.interaction?.signal);
+        // An ambient (non-preempting) signal must not convert a not-yet-
+        // interactive Proactive Turn into an Interaction Turn: it stays pending
+        // until the Proactive Turn finishes, and must not seize the Turn's wave
+        // scope (which would otherwise block a later foreground Input from
+        // steering). It may still steer into a running Interaction Turn under
+        // the ordinary reply-gate rules.
+        const ambientConvertsProactive = !preempting && active.interactionScopeKey === undefined;
+        if (!ambientConvertsProactive) {
+          const sameWave = active.interactionWaveId === undefined
+            || active.interactionWaveId === accepted.interactionWaveId;
+          if (sameWave) {
+            active.interactionWaveId ??= accepted.interactionWaveId;
+          }
+          // Wave mismatch is not a dead end: an Input of the same scope may still
+          // steer into the running Turn while its reply gate is open. The
+          // authoritative gate check happens inside the steering transaction.
+          const scopeMatches = active.interactionScopeKey !== undefined
+            && active.interactionScopeKey === accepted.interactionScopeKey;
+          if (sameWave || scopeMatches) {
+            const steering = active.steeringTail.then(async () => {
+              await this.#steerInput(active, id);
+            });
+            active.steeringTail = steering.catch(() => {});
+          }
         }
       }
       return { disposition: "accepted", inputId: id };
@@ -648,6 +684,12 @@ class SqliteRuntime implements Runtime {
     });
   }
 
+  async opportunityPulseNextRunAt(observedAt: Date, initialDelayMs: number): Promise<string> {
+    assertPositiveDuration(initialDelayMs, "initialDelayMs");
+    const schedule = this.#ensurePulseSchedule(observedAt, initialDelayMs);
+    return schedule.next_pulse_after;
+  }
+
   async runOpportunityPulse(
     options: RunOpportunityPulseOptions,
   ): Promise<RunOpportunityPulseResult> {
@@ -667,6 +709,18 @@ class SqliteRuntime implements Runtime {
 
     const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
     try {
+      // Proactive fair-split: when the Pulse is due and a Segment is still
+      // active but safe to freeze (no running Turn, Delivery, close, after-chat
+      // or foreground Input), freeze it now so Orientation sees the complete
+      // Frozen Activity without waiting for the 30-minute idle gate. Ambient
+      // pending thread replies do not block this split; they spill into the
+      // next Segment and are processed after the Proactivity chance.
+      if (this.#readActiveSegment()) {
+        const split = await this.#splitActiveSegmentForProactivePulse();
+        if (!split.frozen) {
+          return { disposition: "busy" };
+        }
+      }
       const result = await this.#formOpportunityAt(options.observedAt, nextRunAt, true);
       if (result.disposition === "accepted") return { ...result, nextRunAt };
       if (result.disposition === "none") return { ...result, nextRunAt };
@@ -743,7 +797,7 @@ class SqliteRuntime implements Runtime {
 
     const admitted = this.#transaction(() => {
       if (!this.#isOpportunityIdle()
-        || this.#latestOpportunityTransitionSequence() !== snapshot.transitionSequence) {
+        || this.#opportunityWorldChangedSince(snapshot.transitionSequence)) {
         return { disposition: "stale", runId: result.runId } as const;
       }
       const inputId = this.#nextId();
@@ -1174,7 +1228,10 @@ class SqliteRuntime implements Runtime {
       const nextOverdueCheckAt = this.#recordOverdueActivityClose(options, reason);
       return { disposition: "busy", reason, ...(nextOverdueCheckAt ? { nextOverdueCheckAt } : {}) };
     }
-    if (this.#hasPendingInput()) {
+    const hasBlockingInput = options.allowForcedSplit
+      ? this.#hasSplitBlockingInput()
+      : this.#hasPendingInput();
+    if (hasBlockingInput) {
       const inputId = this.#readPendingInputId();
       if (!inputId) throw new Error("Pending Input exists but its id could not be read");
       const reason: CloseActivityBusyReason = { kind: "pending_input", inputId };
@@ -1184,6 +1241,17 @@ class SqliteRuntime implements Runtime {
     const segment = this.#readActiveSegment();
     if (!segment) return { disposition: "no_activity" };
     return this.#freezeActivity(segment, options);
+  }
+
+  /**
+   * Freeze the currently active Segment for a proactive fair-split. Returns
+   * whether the freeze succeeded; a busy/not_due result means the Segment must
+   * stay open (for example a foreground Input arrived, or a Turn/Delivery is
+   * still running) and the Pulse should not consume a cadence.
+   */
+  async #splitActiveSegmentForProactivePulse(): Promise<{ frozen: boolean }> {
+    const closed = await this.closeActivity({ allowForcedSplit: true });
+    return { frozen: closed.disposition === "activity_frozen" };
   }
 
   #busyActivityReason(): CloseActivityBusyReason | undefined {
@@ -1255,9 +1323,10 @@ class SqliteRuntime implements Runtime {
     const claimed = this.#claimActivityClose(segment.id, closePolicy);
     if (!claimed) {
       // Distinguish the real blocker: a running Turn, a pending Input, a
+      const blockingInput = closePolicy.allowForcedSplit ? this.#hasSplitBlockingInput() : this.#hasPendingInput();
       const reason: CloseActivityBusyReason = this.#readRunningTurn()
         ? { kind: "main_agent_turn", turnId: this.#readRunningTurn()!.id }
-        : this.#hasPendingInput()
+        : blockingInput
           ? (() => {
               const inputId = this.#readPendingInputId();
               if (!inputId) throw new Error("Pending Input exists but its id could not be read");
@@ -1285,11 +1354,13 @@ class SqliteRuntime implements Runtime {
         claimed.fencingToken,
         frozen.activity,
         frozen.successorExecutionState,
+        closePolicy,
       );
       if (!committed) {
         // The close yielded to a new Input: report that concrete blocker with
         // the persisted re-check time instead of a generic closing race.
-        const reason: CloseActivityBusyReason = this.#hasPendingInput()
+        const blockingInput = closePolicy.allowForcedSplit ? this.#hasSplitBlockingInput() : this.#hasPendingInput();
+        const reason: CloseActivityBusyReason = blockingInput
           ? (() => {
               const inputId = this.#readPendingInputId();
               if (!inputId) throw new Error("Pending Input exists but its id could not be read");
@@ -2271,6 +2342,26 @@ class SqliteRuntime implements Runtime {
     return Boolean(this.#database.prepare("SELECT 1 FROM inputs WHERE status = 'pending' LIMIT 1").get());
   }
 
+  /**
+   * Whether any pending Input must run before a proactive fair-split freeze:
+   * foreground Interaction signals (and all non-interaction Inputs) do; ambient
+   * (thread_reply / channel_activity) Interaction Inputs do not and are allowed
+   * to spill into the next Segment.
+   */
+  #hasSplitBlockingInput(): boolean {
+    const rows = this.#database.prepare(`
+      SELECT kind, interaction_json FROM inputs WHERE status = 'pending'
+    `).all() as unknown as Array<{
+      kind: InputKind;
+      interaction_json: string | null;
+    }>;
+    return rows.some(row => {
+      if (row.kind !== "interaction") return true;
+      const interaction = row.interaction_json ? JSON.parse(row.interaction_json) as { signal?: InteractionContext["signal"] } : undefined;
+      return isPreemptingInteractionSignal(interaction?.signal);
+    });
+  }
+
   #discardUnclaimedOpportunities(discardedAt: Date): void {
     const opportunities = this.#database.prepare(`
       SELECT id FROM inputs
@@ -2316,7 +2407,7 @@ class SqliteRuntime implements Runtime {
       && !this.#activeActivityAttemptId
       && !this.#hasRunningTurn()
       && !this.#readActiveSegment()
-      && !this.#hasPendingInput()
+      && !this.#hasSplitBlockingInput()
       && !this.#hasPendingDeliveryWork();
   }
 
@@ -2368,20 +2459,70 @@ class SqliteRuntime implements Runtime {
     return row.sequence;
   }
 
+  /**
+   * Whether any transition added after `snapshotSequence` changes the world in a
+   * way that should stale an in-flight Opportunity. An ambient
+   * (non-preempting) Interaction accept does NOT stale it: by contract such a
+   * reply is non-preempting and simply stays pending to be processed exactly
+   * once after the Opportunity. A foreground Interaction, a non-interaction
+   * Input, or any Delivery/Effect/Activity/Segment/Turn change does stale it.
+   */
+  #opportunityWorldChangedSince(snapshotSequence: number): boolean {
+    const rows = this.#database.prepare(`
+      SELECT
+        transitions.entity_type,
+        transitions.from_state,
+        transitions.to_state,
+        inputs.kind AS input_kind,
+        inputs.interaction_json
+      FROM transitions
+      LEFT JOIN inputs ON inputs.id = transitions.entity_id
+      WHERE transitions.sequence > ?
+    `).all(snapshotSequence) as unknown as Array<{
+      entity_type: string;
+      from_state: string | null;
+      to_state: string | null;
+      input_kind?: string | null;
+      interaction_json?: string | null;
+    }>;
+    for (const row of rows) {
+      if (row.entity_type === "input"
+        && row.input_kind === "interaction"
+        && row.from_state === null
+        && row.to_state === "pending"
+        && !isPreemptingInteractionSignal(
+          row.interaction_json
+            ? (JSON.parse(row.interaction_json) as { signal?: InteractionContext["signal"] }).signal
+            : undefined,
+        )) {
+        // An ambient accept is non-preempting; it must not stale the
+        // Opportunity.
+        continue;
+      }
+      return true;
+    }
+    return false;
+  }
+
   #claimActivityClose(segmentId: string, closePolicy: CloseActivityOptions):
     | { request: ActivityFreezeRequest; fencingToken: number; disposition?: never }
     | { disposition: "not_due"; openedAt: string; lastActivityAt: string }
     | undefined {
     return this.#transaction(() => {
-      if (this.#hasRunningTurn() || this.#hasPendingInput()
-        || this.#readAfterChatContinuation()?.status === "pending") return undefined;
+      const blockingInput = closePolicy.allowForcedSplit ? this.#hasSplitBlockingInput() : this.#hasPendingInput();
+      if (this.#hasRunningTurn() || blockingInput
+        || (closePolicy.allowForcedSplit && this.#hasPendingDeliveryWork())
+        || this.#readAfterChatContinuation()?.status === "pending") {
+        return undefined;
+      }
       const segment = this.#readActiveSegment();
       if (!segment || segment.id !== segmentId || segment.status !== "active") return undefined;
       const idleDue = closePolicy.inactiveBefore !== undefined
         && segment.last_activity_at <= closePolicy.inactiveBefore;
       const ageDue = closePolicy.openedBefore !== undefined
         && segment.opened_at <= closePolicy.openedBefore;
-      if ((closePolicy.inactiveBefore !== undefined || closePolicy.openedBefore !== undefined)
+      if (!closePolicy.allowForcedSplit
+        && (closePolicy.inactiveBefore !== undefined || closePolicy.openedBefore !== undefined)
         && !idleDue && !ageDue) {
         return {
           disposition: "not_due",
@@ -2579,6 +2720,7 @@ class SqliteRuntime implements Runtime {
     fencingToken: number,
     activity: FrozenActivity,
     successorExecutionState: JsonValue,
+    closePolicy: CloseActivityOptions = {},
   ): boolean {
     if (activity.segmentId !== request.segment.id
       || activity.openedAt !== request.segment.openedAt
@@ -2594,7 +2736,15 @@ class SqliteRuntime implements Runtime {
         || segment.close_fencing_token !== fencingToken) {
         throw new Error(`Activity close for ${request.segment.id} no longer owns its lease`);
       }
-      if (this.#hasPendingInput()) {
+      // Close-yield preserves human-input priority: yield once a foreground
+      // (preempting) Input arrives so it runs in the original Segment context.
+      // An ambient pending reply under an allowForcedSplit fair-split does not
+      // force a yield — it belongs to the next Segment and is processed after
+      // the Proactivity chance.
+      const yieldBlocking = closePolicy.allowForcedSplit
+        ? this.#hasSplitBlockingInput()
+        : this.#hasPendingInput();
+      if (yieldBlocking) {
         const now = this.#now();
         const changed = this.#database.prepare(`
           UPDATE active_segment
@@ -3428,7 +3578,7 @@ class SqliteRuntime implements Runtime {
         SELECT id, kind, payload_json, interaction_json, interaction_wave_id, occurred_at, late_arriving
         FROM inputs
         WHERE status = 'pending'
-        ORDER BY accepted_at, id
+        ORDER BY CASE WHEN kind = 'opportunity' THEN 0 ELSE 1 END, accepted_at, id
         LIMIT 1
       `).get() as unknown as Pick<InputRow,
         "id" | "kind" | "payload_json" | "interaction_json" | "interaction_wave_id" | "occurred_at" | "late_arriving"

@@ -501,10 +501,10 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
   await writeIndividualMaterials(root);
   const provider = await startOpenAiProvider(
     { text: "A private response" },
-    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -988,15 +988,17 @@ test("retries a failed Orientation Pulse from its persisted due time", async t =
   assert.equal(recovered.status().runtime.proactivePulse?.lastError, undefined);
 });
 
-test("keeps a due Pulse behind an open Activity until the Activity closes", async t => {
+test("Fair-splits an open Activity at Pulse expiry so Orientation gets its chance", async t => {
   const root = await createInstanceRoot();
   await writeIndividualMaterials(root);
+  // At 10:30 a due Pulse Fair-splits the open Segment and runs Orientation;
+  // the frozen Activity is then recorded by the Life Recorder.
   const provider = await startOpenAiProvider(
     { text: "A private response" },
-    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
+    { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
+    { text: "Recorded." },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -1016,12 +1018,13 @@ test("keeps a due Pulse behind an open Activity until the Activity closes", asyn
   assert.equal(provider.requests(), 1);
 
   now = new Date("2026-07-22T10:30:00.000Z");
-  assert.deepEqual(await instance.runOnce(now), {
-    disposition: "waiting",
-    nextRunAt: "2026-07-22T11:00:00.000Z",
-  });
+  const result = await instance.runOnce(now);
+  assert.equal(result.disposition, "waiting", JSON.stringify(result));
   assert.equal(provider.requests(), 5);
-  assert.equal(instance.status().runtime.activeSegment, undefined);
+  assert.equal(instance.status().runtime.activeSegment, undefined,
+    "the due Pulse Fair-split the open Segment");
+  assert.equal(instance.status().runtime.activities[0]?.status, "recorded",
+    "the frozen Activity is recorded by the Life Recorder");
 });
 
 test("keeps a due Pulse unclaimed while model configuration is blocked", async t => {

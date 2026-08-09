@@ -1,4 +1,4 @@
-export { openRuntime } from "./runtime.js";
+export { openRuntime, isPreemptingInteractionSignal } from "./runtime.js";
 export {
   createScheduler,
   DEFAULT_ACTIVITY_IDLE_MS,

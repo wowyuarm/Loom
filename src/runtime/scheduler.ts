@@ -1,4 +1,5 @@
 import type { AdvanceResult, CloseActivityBusyReason, Runtime, RuntimeStatus } from "./types.js";
+import { isPreemptingInteractionSignal } from "./runtime.js";
 
 export const DEFAULT_ACTIVITY_IDLE_MS = 30 * 60 * 1_000;
 export const DEFAULT_ACTIVITY_MAX_MS = 2 * 60 * 60 * 1_000;
@@ -136,6 +137,47 @@ class RuntimeScheduler implements Scheduler {
     let deferredLane: SchedulerRunResult | undefined;
     while (true) {
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
+
+      // A due Proactive Pulse may Fair-split an active (not yet idle) Segment
+      // before any pending ambient Inputs are reprocessed, so Orientation gets
+      // its fair opportunity first. This fires only when there is a pending
+      // ambient Input to spill into the next Segment; with none, the normal
+      // close/idle and active-branch Pulse handle the freeze on their own term.
+      // The split itself blocks on busy conditions and foreground pending Inputs;
+      // a due after-chat continuation keeps its place; and a Pulse that cannot
+      // split (busy) falls through to the normal close/idle gates so no Pulse is
+      // swallowed.
+      if (this.#proactivePulse
+        && agentWork === "allow"
+        && await this.#isProactivePulseOverdue(observedAt)
+        && this.#hasPendingAmbientInput(this.#runtime.status())) {
+        const status = this.#runtime.status();
+        if (status.activeSegment) {
+          const pulse = await this.#runtime.runOpportunityPulse({
+            observedAt,
+            initialDelayMs: this.#proactivePulse.initialDelayMs ?? this.#proactivePulse.intervalMs,
+            cadenceMs: pulseCadenceFor(observedAt, this.#proactivePulse),
+            retryDelayMs: this.#proactivePulse.retryDelayMs ?? DEFAULT_PULSE_RETRY_MS,
+            agentWork,
+          });
+          if (pulse.disposition === "accepted" || pulse.disposition === "stale" || pulse.disposition === "none") {
+            // Pulse ran (split + Orientation); loop so the formed Opportunity
+            // (if any) is claimed before the pending ambient replies.
+            if (deferredLane) return { disposition: "busy" };
+            continue;
+          }
+          if (pulse.disposition === "failed") {
+            return {
+              disposition: "deferred",
+              reason: "orientation_failed",
+              nextRunAt: pulse.nextRunAt,
+              error: pulse.error,
+            };
+          }
+          // busy / waiting / agent_work_deferred: fall through to normal flow.
+        }
+      }
+
       const advanced = await this.#runtime.advance({ agentWork, observedAt });
       const terminal = deferredResult(advanced, observedAt);
       if (terminal) {
@@ -230,14 +272,66 @@ class RuntimeScheduler implements Scheduler {
         }
         return deferredLane ?? { disposition: "busy" };
       }
-      const nextRunAt = new Date(Math.min(
+      const idleCloseAt = new Date(Math.min(
         new Date(active.lastActivityAt).getTime() + this.#activityIdleMs,
         new Date(active.openedAt).getTime() + this.#activityMaxMs,
       ));
-      if (observedAt < nextRunAt) {
+      // A due Proactive Pulse may Fair-split an otherwise-idle-blocked Segment:
+      // consult the Pulse cadence so it can wake before the idle/max gate.
+      const pulseNextAt = this.#proactivePulse
+        ? await this.#runtime.opportunityPulseNextRunAt(
+            observedAt,
+            this.#proactivePulse.initialDelayMs ?? this.#proactivePulse.intervalMs,
+          )
+        : undefined;
+      const pulseDue = pulseNextAt !== undefined && observedAt >= new Date(pulseNextAt);
+      // A pending maintenance/recording failure must be surfaced before a
+      // Proactive fair-split consumes attention; it already kept its lane.
+      if (pulseDue && agentWork === "allow" && !deferredLane) {
+        const pulse = await this.#runtime.runOpportunityPulse({
+          observedAt,
+          initialDelayMs: this.#proactivePulse!.initialDelayMs ?? this.#proactivePulse!.intervalMs,
+          cadenceMs: pulseCadenceFor(observedAt, this.#proactivePulse!),
+          retryDelayMs: this.#proactivePulse!.retryDelayMs ?? DEFAULT_PULSE_RETRY_MS,
+          agentWork,
+        });
+        const pulseCompletedSplit = pulse.disposition === "none";
+        if (pulse.disposition === "accepted" || pulse.disposition === "stale" || pulseCompletedSplit) {
+          // The Segment was (or will be) Fair-split and Orientation ran; loop so
+          // the post-freeze work (Activity recording, Thread maintenance, the
+          // formed Opportunity) can proceed and surface in this pass.
+          if (deferredLane) return { disposition: "busy" };
+          continue;
+        }
+        if (pulse.disposition === "waiting") {
+          if (deferredLane) return deferredLane;
+          return {
+            disposition: "waiting",
+            nextRunAt: earlierTime(
+              pulse.nextRunAt,
+              idleCloseAt.toISOString(),
+            ),
+          };
+        }
+        if (pulse.disposition === "agent_work_deferred") {
+          return { disposition: "deferred", reason: "agent_work_not_admitted" };
+        }
+        if (pulse.disposition === "failed") {
+          return {
+            disposition: "deferred",
+            reason: "orientation_failed",
+            nextRunAt: pulse.nextRunAt,
+            error: pulse.error,
+          };
+        }
+        // pulse busy: the Segment could not be Fair-split right now (running
+        // Turn, Delivery, after-chat or foreground Input). Fall through to the
+        // normal idle/max close gate below.
+      }
+      if (observedAt < idleCloseAt) {
         if (deferredLane) return deferredLane;
         return earliestWaiting(
-          { disposition: "waiting", nextRunAt: nextRunAt.toISOString() },
+          { disposition: "waiting", nextRunAt: idleCloseAt.toISOString() },
           afterChatWaiting,
           deliveryWaiting,
         )!;
@@ -276,6 +370,26 @@ class RuntimeScheduler implements Scheduler {
       }
       if (closed.disposition === "no_activity") return deferredLane ?? { disposition: "idle" };
     }
+  }
+
+  /** Whether the Proactive Pulse has reached (or passed) its next scheduled tick. */
+  async #isProactivePulseOverdue(observedAt: Date): Promise<boolean> {
+    const pulse = this.#proactivePulse;
+    if (!pulse) return false;
+    const nextRunAt = await this.#runtime.opportunityPulseNextRunAt(
+      observedAt,
+      pulse.initialDelayMs ?? pulse.intervalMs,
+    );
+    return observedAt >= new Date(nextRunAt);
+  }
+
+  /** Whether any pending Interaction Input is ambient (non-preempting). */
+  #hasPendingAmbientInput(status: RuntimeStatus): boolean {
+    return status.inputs.some(input =>
+      input.status === "pending"
+      && input.kind === "interaction"
+      && !isPreemptingInteractionSignal(input.interaction?.signal),
+    );
   }
 
   async #runAttentionMaintenance(
