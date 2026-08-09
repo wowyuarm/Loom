@@ -47,6 +47,11 @@ export class RaftActivityProjector {
   readonly #runs = new Map<string, string>();
   /** toolCallId -> toolName for tools that started but have not completed. */
   readonly #tools = new Map<string, string>();
+  /**
+   * Failure class of the last run that ended while a tool was still active;
+   * applied to the trailing Stop once the projection finally goes Idle.
+   */
+  #pendingFailureCategory: string | undefined;
 
   observe(event: OperationalEvent): void {
     for (const mapped of this.#map(event)) {
@@ -80,12 +85,25 @@ export class RaftActivityProjector {
       case "agent.run.finished": {
         const agentName = this.#runs.get(event.runId);
         this.#runs.delete(event.runId);
-        if (this.#runs.size > 0 || this.#tools.size > 0) return [];
+        const failureCategory = event.result === "failed" && event.failureCategory
+          ? event.failureCategory
+          : undefined;
+        if (this.#runs.size > 0 || this.#tools.size > 0) {
+          // The run ended while work is still active; keep the failure class
+          // for the trailing Stop that will be emitted once everything is done.
+          if (failureCategory) this.#pendingFailureCategory = failureCategory;
+          return [];
+        }
+        const errorClass = failureCategory ?? this.#pendingFailureCategory;
+        this.#pendingFailureCategory = undefined;
         return [{
           hookEventName: "Stop",
           eventId: randomUUID(),
           ...(agentName ? { sessionId: agentName } : {}),
           occurredAt: event.at,
+          // Only a real failure carries a bounded error class; interrupted and
+          // cancelled runs are not displayed as failures.
+          ...(errorClass ? { errorClass } : {}),
         }];
       }
       case "agent.tool.started": {
@@ -116,7 +134,11 @@ export class RaftActivityProjector {
             hookEventName: "Stop",
             eventId: randomUUID(),
             occurredAt: event.at,
+            ...(this.#pendingFailureCategory
+              ? { errorClass: this.#pendingFailureCategory }
+              : {}),
           });
+          this.#pendingFailureCategory = undefined;
         }
         return result;
       }

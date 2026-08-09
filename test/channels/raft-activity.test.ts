@@ -9,8 +9,15 @@ function runStarted(runId: string, agentName = "main-agent", at = "2026-08-09T00
   return { event: "agent.run.started", at, runId, agentName };
 }
 
-function runFinished(runId: string, result: "succeeded" | "failed" | "interrupted" = "succeeded", at = "2026-08-09T00:00:05.000Z"): OperationalEvent {
-  return { event: "agent.run.finished", at, runId, agentName: "main-agent", result };
+function runFinished(runId: string, result: "succeeded" | "failed" | "interrupted" = "succeeded", at = "2026-08-09T00:00:05.000Z", failureCategory?: string): OperationalEvent {
+  return {
+    event: "agent.run.finished",
+    at,
+    runId,
+    agentName: "main-agent",
+    result,
+    ...(failureCategory ? { failureCategory } : {}),
+  };
 }
 
 function toolStarted(toolCallId: string, toolName = "read", at = "2026-08-09T00:00:01.000Z"): OperationalEvent {
@@ -158,4 +165,105 @@ test("parseActivityDrainMax bounds the requested max", () => {
   assert.equal(parseActivityDrainMax("abc"), 0);
   assert.equal(parseActivityDrainMax("-1"), 0);
   assert.equal(parseActivityDrainMax("1.5"), 0);
+});
+
+test("maps a failed run Stop with a bounded errorClass only for real failures", () => {
+  const projector = new RaftActivityProjector();
+  projector.observe(runStarted("run-1"));
+  projector.observe(runFinished("run-1", "failed", "2026-08-09T00:00:05.000Z", "tool_error"));
+
+  const drain = projector.drain(10);
+  assert.deepEqual(drainHooks(drain), ["UserPromptSubmit", "Stop"]);
+  assert.equal(drain.events[1]?.errorClass, "tool_error");
+});
+
+test("keeps interrupted and cancelled runs without a failure errorClass", () => {
+  const projector = new RaftActivityProjector();
+  projector.observe(runStarted("run-1"));
+  projector.observe({
+    event: "agent.run.finished",
+    at: "2026-08-09T00:00:05.000Z",
+    runId: "run-1",
+    agentName: "main-agent",
+    result: "interrupted",
+    failureCategory: "cancelled",
+  });
+  const drain = projector.drain(10);
+  assert.deepEqual(drainHooks(drain), ["UserPromptSubmit", "Stop"]);
+  assert.equal(drain.events[1]?.errorClass, undefined);
+
+  const second = new RaftActivityProjector();
+  second.observe(runStarted("run-2"));
+  second.observe(runFinished("run-2", "succeeded", "2026-08-09T00:00:05.000Z"));
+  assert.equal(second.drain(10).events[1]?.errorClass, undefined);
+});
+
+test("failed run still emits Stop with errorClass when a tool outlives the run", () => {
+  const projector = new RaftActivityProjector();
+  projector.observe(runStarted("run-1"));
+  projector.observe(toolStarted("tool-1", "read"));
+  // The run fails while the tool is still active: no Stop yet.
+  projector.observe(runFinished("run-1", "failed", "2026-08-09T00:00:03.000Z", "tool_error"));
+  assert.deepEqual(drainHooks(projector.drain(10)), ["UserPromptSubmit", "PreToolUse"]);
+  // The tool completes last; the trailing Stop carries the failure class.
+  projector.observe(toolCompleted("tool-1", "ok", 50, "2026-08-09T00:00:04.000Z"));
+  const drain = projector.drain(10);
+  assert.deepEqual(drainHooks(drain), ["PostToolUse", "Stop"]);
+  assert.equal(drain.events[1]?.errorClass, "tool_error");
+});
+
+test("keeps an earlier failed run's errorClass when a newer run interleaves", () => {
+  const projector = new RaftActivityProjector();
+  // run-1 fails while its tool is still active, then a second run starts and
+  // finishes while the first run's tool completes in between. The final Stop
+  // must still report the first run's failure class.
+  projector.observe(runStarted("run-1"));
+  projector.observe(toolStarted("tool-1", "read"));
+  projector.observe(runFinished("run-1", "failed", "2026-08-09T00:00:03.000Z", "tool_error"));
+  projector.observe(runStarted("run-2", "memory-reflector", "2026-08-09T00:00:03.500Z"));
+  projector.observe(toolCompleted("tool-1", "ok", 50, "2026-08-09T00:00:04.000Z"));
+  projector.observe(runFinished("run-2", "succeeded", "2026-08-09T00:00:05.000Z"));
+
+  const drain = projector.drain(10);
+  assert.deepEqual(drainHooks(drain), [
+    "UserPromptSubmit",
+    "PreToolUse",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+  ]);
+  assert.equal(drain.events[4]?.errorClass, "tool_error");
+});
+
+test("a later failed run supersedes an earlier held failure class", () => {
+  const projector = new RaftActivityProjector();
+  projector.observe(runStarted("run-1"));
+  projector.observe(toolStarted("tool-1", "read"));
+  projector.observe(runFinished("run-1", "failed", "2026-08-09T00:00:03.000Z", "tool_error"));
+  projector.observe(runStarted("run-2"));
+  projector.observe(runFinished("run-2", "failed", "2026-08-09T00:00:04.000Z", "provider"));
+  projector.observe(toolCompleted("tool-1", "ok", 50, "2026-08-09T00:00:05.000Z"));
+
+  const drain = projector.drain(10);
+  assert.equal(drain.events.at(-1)?.errorClass, "provider");
+});
+
+test("consumed pending failure does not leak into a later independent run", () => {
+  const projector = new RaftActivityProjector();
+  // First cycle: run fails while its tool is still active; the trailing Stop
+  // consumes the held failure class.
+  projector.observe(runStarted("run-1"));
+  projector.observe(toolStarted("tool-1", "read"));
+  projector.observe(runFinished("run-1", "failed", "2026-08-09T00:00:03.000Z", "tool_error"));
+  projector.observe(toolCompleted("tool-1", "ok", 50, "2026-08-09T00:00:04.000Z"));
+  const first = projector.drain(10);
+  assert.deepEqual(drainHooks(first), ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
+  assert.equal(first.events[3]?.errorClass, "tool_error");
+
+  // Second cycle: a clean run must not carry the earlier failure class.
+  projector.observe(runStarted("run-2"));
+  projector.observe(runFinished("run-2", "succeeded", "2026-08-09T00:00:06.000Z"));
+  const second = projector.drain(10);
+  assert.deepEqual(drainHooks(second), ["UserPromptSubmit", "Stop"]);
+  assert.equal(second.events[1]?.errorClass, undefined);
 });

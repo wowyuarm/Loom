@@ -3766,3 +3766,33 @@ const duplicateAnchorExecution: AgentExecution = {
     };
   },
 };
+
+test("does not emit a finish event when the run row is already gone", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-orphan-finish-"));
+  const now = new Date("2026-08-03T10:00:00.000Z");
+  const first = openRuntime({ root, now: () => now });
+  first.close();
+
+  // A running Turn whose agent run row no longer exists (e.g. restored from a
+  // partial backup). The expired-lease recovery must not emit a finish event
+  // because the database update cannot take effect.
+  const database = new DatabaseSync(path.join(root, "runtime.db"));
+  database.exec(`
+    INSERT INTO active_segment (singleton, id, opened_at, last_activity_at, status)
+    VALUES (1, 'segment-orphan', '2026-08-03T09:00:00.000Z', '2026-08-03T09:00:00.000Z', 'active');
+    INSERT INTO turns (id, segment_id, status, lease_owner, fencing_token, lease_expires_at,
+                       started_at, recording_day)
+    VALUES ('turn-orphan', 'segment-orphan', 'running', 'owner-1', 1, '2026-08-03T09:59:00.000Z',
+            '2026-08-03T09:58:00.000Z', '2026-08-03');
+  `);
+  database.close();
+
+  const events: OperationalEvent[] = [];
+  const reopened = openRuntime({ root, now: () => now, observe: event => events.push(event) });
+  t.after(() => reopened.close());
+  assert.equal(reopened.status().turns[0]?.status, "interrupted");
+  assert.equal(
+    events.some(event => event.event === "agent.run.finished" && event.runId === "turn-orphan"),
+    false,
+  );
+});

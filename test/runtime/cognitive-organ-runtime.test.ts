@@ -15,6 +15,7 @@ import {
   type TurnControl,
   type TurnRequest,
 } from "../../src/runtime/index.js";
+import type { OperationalEvent } from "../../src/operational-events.js";
 import { createTimePolicy } from "../../src/configuration/index.js";
 import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 
@@ -1442,4 +1443,66 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
       /thread maintenance is already completed/,
     );
   }
+});
+
+test("emits agent.run.started/finished for a Cognitive Organ run", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-run-events-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  const events: OperationalEvent[] = [];
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, `record-${activity.segmentId}`),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => ({ outcome: "no_change", runId: "attention-1", path: "notes/attention.md" }),
+      cancel: async () => {},
+    },
+    observe: event => events.push(event),
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  // Establish one recorded activity so the attention schedule becomes due.
+  await runtime.acceptInput({
+    source: "test",
+    sourceId: "organ-day",
+    kind: "interaction",
+    payload: { text: "day one" },
+  });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+  await runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+
+  now = new Date("2026-07-19T11:00:00.001Z");
+  const result = await runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  assert.equal(result.disposition, "completed");
+
+  const started = events.filter(event =>
+    event.event === "agent.run.started" && event.agentName === "attention-maintainer");
+  const finished = events.filter((event): event is Extract<OperationalEvent, { event: "agent.run.finished" }> =>
+    event.event === "agent.run.finished" && event.agentName === "attention-maintainer");
+  assert.equal(started.length, 1);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0]?.result, "succeeded");
+  assert.ok(started[0] && finished[0]);
+  const startedAt = events.indexOf(started[0]);
+  const finishedAt = events.indexOf(finished[0]);
+  assert.ok(startedAt !== -1 && finishedAt !== -1 && startedAt < finishedAt);
 });

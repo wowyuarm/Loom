@@ -1863,11 +1863,14 @@ class SqliteRuntime implements Runtime {
     endedAt: Date,
     failureCategory?: string,
   ): void {
-    this.#database.prepare(`
+    const changed = this.#database.prepare(`
       UPDATE agent_runs
       SET status = ?, ended_at = ?, outcome = ?, failure_category = ?
       WHERE id = ? AND status = 'running'
     `).run(result, endedAt.toISOString(), outcome ?? null, failureCategory ?? null, id);
+    // The run must actually be updated before its completion is observable;
+    // an already-finished or unknown run never emits a finish event.
+    if (changed.changes !== 1) return;
     const row = this.#database.prepare(`
       SELECT agent_name FROM agent_runs WHERE id = ?
     `).get(id) as unknown as { agent_name: string } | undefined;

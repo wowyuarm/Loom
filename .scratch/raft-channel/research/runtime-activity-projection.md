@@ -1,6 +1,6 @@
 # 将 Loom 运行状态投影到 Raft：源码调研与最小设计
 
-调研日期：2026-08-08  
+调研日期：2026-08-08
 状态：初步设计，尚未批准或实现。
 
 ## 结论
@@ -166,4 +166,3 @@ Runtime、Agent 或 Interaction Channel 的收发。
   [`plugins/raft-channel/src/activity.ts`](https://github.com/botiverse/raft-external-agents/blob/72c31894f933b9aa9243195d038d66ee79589593/plugins/raft-channel/src/activity.ts)
 - 同一实现的测试：
   [`plugins/raft-channel/src/activity.test.ts`](https://github.com/botiverse/raft-external-agents/blob/72c31894f933b9aa9243195d038d66ee79589593/plugins/raft-channel/src/activity.test.ts)
-
