@@ -245,6 +245,8 @@ export interface OpenConfiguredRaftChannelOptions {
   configurationFile: string;
   stateFile: string;
   remote?: RaftRemote;
+  /** Optional Raft activity projection handed to the default CLI remote. */
+  activity?: import("./raft-activity.js").RaftActivityProjector;
 }
 
 interface WakeRow {
@@ -1411,6 +1413,7 @@ export async function openConfiguredRaftChannel(
     selfMemberId,
     principalMemberId,
     principalDmTarget,
+    ...(options.activity ? { activity: options.activity } : {}),
   });
   return openRaftChannel({
     stateFile: options.stateFile,
@@ -1430,6 +1433,7 @@ async function createConfiguredRemote(configuration: {
   selfMemberId: string;
   principalMemberId: string;
   principalDmTarget: string;
+  activity?: import("./raft-activity.js").RaftActivityProjector;
 }): Promise<RaftRemote> {
   const { openRaftCliRemote } = await import("./raft-cli-remote.js");
   return openRaftCliRemote({
@@ -1438,6 +1442,7 @@ async function createConfiguredRemote(configuration: {
     expectedSelfMemberId: configuration.selfMemberId,
     expectedPrincipalMemberId: configuration.principalMemberId,
     principalDmTarget: configuration.principalDmTarget,
+    ...(configuration.activity ? { activity: configuration.activity } : {}),
     bridgeStateDirectory: path.join(path.dirname(configuration.stateFile), "raft-bridge"),
   });
 }

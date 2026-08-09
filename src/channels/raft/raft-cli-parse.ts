@@ -1,4 +1,5 @@
 import type { JsonValue } from "../../runtime/index.js";
+import { ACTIVITY_QUEUE_LIMIT } from "./raft-activity.js";
 import type { RaftRemoteMessage, RaftRemotePlace } from "./raft-channel.js";
 
 export const SUPPORTED_RAFT_CLI_VERSION = "0.0.17";
@@ -79,6 +80,17 @@ export function cursorOffset(cursor: string | undefined): number {
   if (cursor === undefined) return 0;
   if (!/^(?:0|[1-9][0-9]*)$/.test(cursor.trim())) throw new Error("Raft cursor is invalid");
   return Number(cursor);
+}
+
+/**
+ * Bounded `max` for one activity drain: absent means the queue limit,
+ * malformed or negative values drain nothing, and the value is capped at
+ * the queue limit so a misbehaving bridge cannot request unbounded work.
+ */
+export function parseActivityDrainMax(value: string | null): number {
+  if (value === null) return ACTIVITY_QUEUE_LIMIT;
+  if (!/^(?:0|[1-9][0-9]*)$/.test(value.trim())) return 0;
+  return Math.min(Number(value), ACTIVITY_QUEUE_LIMIT);
 }
 
 export function parseTarget(target: string): { base: string; thread: boolean } {

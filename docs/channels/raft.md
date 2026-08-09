@@ -94,8 +94,12 @@ Host 会自动建立仅监听 loopback 的临时 wake endpoint，并启动固定
 复制其中一部分来代替完整 Instance 备份。
 
 固定版本的 bridge 还会从 wake 地址推导本地 `/activity/drain`。Loom 在该地址返回
-合法的空结果，因为它没有要交给 Raft 的 channel plugin activity；这不会读取消息，
-也不会把 Workspace、Transcript、Life Recorder 或私人活动发送给 Raft。
+`raft-activity-drain.v1`：把 agent run / tool 生命周期投影成 Raft hook 事件
+（`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`），
+用有界内存队列按 `max` 排空并报告 `dropped`。投影只包含 hook 名、随机事件 ID、
+稳定的 agent session、工具名、时间、耗时和有限错误类别；不读取消息，也不发送
+prompt、消息正文、thinking、tool 输入输出、Transcript、Workspace、Life Recorder
+或原始错误文本。activity 是可丢失的 UI 遥测，不持久化，也不进入 Runtime Store。
 
 Raft status 有四种状态：
 
@@ -219,7 +223,10 @@ hold、task 冲突等明确未执行结果记为 `not_sent`；连接在结果确
    ref 类型时不会形成 Effect。
 10. human 在 DM 发出请求后，Individual 能明确选择一个此前已接触的 shared channel；
     顶层 task Input 同时提供 channel 默认位置和该 task thread 的可选位置。
-11. bridge 的 `/activity/drain` 返回合法空结果，日志不再持续出现 HTTP 404。
+11. bridge 的 `/activity/drain` 返回 `raft-activity-drain.v1`；Raft UI 能按
+    Idle -> Thinking -> Working -> Thinking -> Idle 显示真实 run/tool 生命周期，
+    `dropped` 在溢出时按次报告，且 activity 中不含 prompt、消息正文、thinking、
+    tool 输入输出、Transcript、Workspace 或原始错误文本（日志不再持续出现 HTTP 404）。
 12. 停掉 Host 后发送 DM，再启动 Host；无需额外新消息或 wake，旧 DM 也能进入一次且
     只进入一次，bridge 补偿日志不再反复显示同一批 `handoff_pending`。
 

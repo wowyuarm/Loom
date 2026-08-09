@@ -21,6 +21,7 @@ import {
   openConfiguredRaftChannel,
   type RaftRemote,
 } from "../channels/raft/index.js";
+import { RaftActivityProjector } from "../channels/raft/raft-activity.js";
 import {
   openLoomInteractionChannels,
   type InteractionChannel,
@@ -299,6 +300,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
   let web: WebAccessIntegration | undefined;
   let attachmentStore: AttachmentStore | undefined;
   let channels: LoomInteractionChannels | undefined;
+  let observeChain: OpenLoomHostOptions["observe"] | undefined;
   const interactionChannels: InteractionChannel[] = [];
   try {
     const layout = resolveInstanceLayout(root);
@@ -321,13 +323,25 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       interactionChannels.push(weixin);
     }
     if (configuration.channels.raft) {
+      const raftActivity = new RaftActivityProjector();
       const raft = await openConfiguredRaftChannel({
         configurationFile: layout.raftConfigurationFile,
         stateFile: layout.raftStateFile,
         ...(options.raftRemote ? { remote: options.raftRemote } : {}),
+        activity: raftActivity,
       });
       if (!raft) throw new Error("Enabled Raft requires config.json");
       interactionChannels.push(raft);
+      // Project the Runtime/Main-Agent lifecycle onto Raft activity in
+      // addition to the operator observer; projection failures are isolated
+      // by the observer contract and never change Runtime behavior.
+      const observe: OpenLoomHostOptions["observe"] = options.observe
+        ? event => {
+            options.observe?.(event);
+            raftActivity.observe(event);
+          }
+        : event => raftActivity.observe(event);
+      observeChain = observe;
     } else if (options.raftRemote) {
       throw new Error("Raft Remote was provided while the Channel is disabled");
     }
@@ -358,6 +372,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
     });
     const instance = await openLoomInstance({
       ...instanceOptions,
+      ...(observeChain || options.observe ? { observe: observeChain ?? options.observe } : {}),
       root,
       attachmentStore,
       interactionEnabled: true,

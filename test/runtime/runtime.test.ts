@@ -3666,3 +3666,103 @@ test("reports pending_input when an arriving Input yields the close (issue #4)",
   assert.equal(overdueReason.inputId, incoming.inputId);
   assert.equal(activeSegment?.nextOverdueCheckAt, "2026-08-08T13:15:00.000Z");
 });
+
+test("emits agent.run.started/finished for a main Agent Turn after commit", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-run-events-"));
+  const events: OperationalEvent[] = [];
+  const now = new Date("2026-08-03T10:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    now: () => now,
+    observe: event => events.push(event),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "run-event-message",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  assert.deepEqual(await runtime.advance(), { disposition: "turn_completed" });
+
+  const started = events.filter(event => event.event === "agent.run.started");
+  const finished = events.filter(event => event.event === "agent.run.finished");
+  assert.equal(started.length, 1);
+  assert.equal(finished.length, 1);
+  const runId = runtime.status().turns[0]?.id;
+  assert.ok(runId);
+  assert.deepEqual(started[0], {
+    event: "agent.run.started",
+    at: "2026-08-03T10:00:00.000Z",
+    runId,
+    agentName: "main-agent",
+  });
+  assert.deepEqual(finished[0], {
+    event: "agent.run.finished",
+    at: "2026-08-03T10:00:00.000Z",
+    runId,
+    agentName: "main-agent",
+    result: "succeeded",
+  });
+  const startedAt = events.findIndex(event => event.event === "agent.run.started");
+  const finishedAt = events.findIndex(event => event.event === "agent.run.finished");
+  assert.ok(startedAt !== -1 && finishedAt !== -1 && startedAt < finishedAt);
+});
+
+test("does not emit run events from a rolled-back completing transaction", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-run-rollback-"));
+  const events: OperationalEvent[] = [];
+  const now = new Date("2026-08-03T10:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: duplicateAnchorExecution,
+    now: () => now,
+    observe: event => events.push(event),
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({
+    source: "test-channel",
+    sourceId: "rollback-message",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  await assert.rejects(runtime.advance(), /duplicate Input anchors/);
+
+  // The claiming transaction committed, so the run start is visible; the
+  // completing transaction rolled back, so its optimistic "succeeded" finish
+  // must never have been emitted. Only the later failing transaction emits a
+  // finish, and only with the bounded failure category.
+  const started = events.filter(event => event.event === "agent.run.started");
+  const finished = events.filter(event => event.event === "agent.run.finished");
+  assert.equal(started.length, 1);
+  assert.equal(finished.length, 1);
+  assert.equal(finished[0]?.result, "failed");
+  assert.equal(finished[0]?.failureCategory, "invalid_result");
+  assert.equal(runtime.status().turns[0]?.status, "failed");
+});
+
+const duplicateAnchorExecution: AgentExecution = {
+  start(request: TurnRequest, control: TurnControl): RunningExecution {
+    control.prepareExecutionState(request.executionState ?? {
+      generation: 0,
+      items: [],
+    });
+    control.includeInput(request.inputs[0]!.id);
+    return {
+      result: Promise.resolve({
+        outcome: "completed",
+        inputAnchors: [
+          { inputId: request.inputs[0]!.id, transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "a" } },
+          { inputId: request.inputs[0]!.id, transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "b" } },
+        ],
+        transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: `entry-${request.turnId}` },
+        ...executionResult(request, { sourceId: request.recordingDay, sessionId: "session-1", entryId: `entry-${request.turnId}` }),
+      }),
+      steer: async input => control.includeInput(input.id),
+      abort: async () => {},
+    };
+  },
+};

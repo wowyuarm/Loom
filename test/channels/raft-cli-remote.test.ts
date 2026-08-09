@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -236,6 +237,69 @@ test("validates a pinned Raft profile and resolves and sends through the 0.0.17 
   assert.equal(remote.status?.().available, false);
 });
 
+test("serves projected activity through /activity/drain with bounded max and dropped", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-activity-"));
+  const cli = path.join(root, "fake-raft.mjs");
+  await writeFile(cli, fakeRaftCli(), "utf8");
+  const drainFile = path.join(root, "drain-result.json");
+  const previousDrainFile = process.env.LOOM_TEST_DRAIN_FILE;
+  process.env.LOOM_TEST_DRAIN_FILE = drainFile;
+  try {
+    const { RaftActivityProjector } = await import("../../src/channels/raft/raft-activity.js");
+    const activity = new RaftActivityProjector();
+    activity.observe({ event: "agent.run.started", at: "2026-08-09T00:00:00.000Z", runId: "run-1", agentName: "main-agent" });
+    activity.observe({ event: "agent.tool.started", at: "2026-08-09T00:00:01.000Z", toolCallId: "tool-1", toolName: "read" });
+    activity.observe({ event: "agent.tool.completed", at: "2026-08-09T00:00:02.000Z", toolCallId: "tool-1", toolName: "read", durationMs: 120, status: "ok" });
+    activity.observe({ event: "agent.run.finished", at: "2026-08-09T00:00:03.000Z", runId: "run-1", agentName: "main-agent", result: "succeeded" });
+
+    const remote = await openRaftCliRemote({
+      profile: "loom-pilot",
+      expectedServerId: "server-1",
+      expectedSelfMemberId: "agent-loom",
+      expectedPrincipalMemberId: "human-yu",
+      principalDmTarget: "dm:@yu",
+      bridgeStateDirectory: path.join(root, "bridge"),
+      cliEntrypoint: cli,
+      activity,
+    });
+    assert.ok(remote.start);
+    assert.ok(remote.stop);
+    await remote.start(async () => ({ ok: true }));
+    try {
+      await eventually(() => {
+        try {
+          return JSON.parse(readFileSync(drainFile, "utf8")).events?.length === 4;
+        } catch {
+          return false;
+        }
+      });
+      const drained = JSON.parse(readFileSync(drainFile, "utf8")) as {
+        schema: string;
+        events: Array<{ hookEventName: string; sessionId?: string; toolName?: string; status?: string; occurredAt: string; durationMs?: number }>;
+        dropped: number;
+      };
+      assert.equal(drained.schema, "raft-activity-drain.v1");
+      assert.deepEqual(drained.events.map(event => event.hookEventName), [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+      ]);
+      assert.equal(drained.events[0]?.sessionId, "main-agent");
+      assert.equal(drained.events[1]?.toolName, "read");
+      assert.equal(drained.events[2]?.status, "ok");
+      assert.equal(drained.events[2]?.durationMs, 120);
+      assert.equal(drained.dropped, 0);
+    } finally {
+      assert.ok(remote.stop);
+      await remote.stop();
+    }
+  } finally {
+    if (previousDrainFile === undefined) delete process.env.LOOM_TEST_DRAIN_FILE;
+    else process.env.LOOM_TEST_DRAIN_FILE = previousDrainFile;
+  }
+});
+
 test("rejects a Raft profile whose server binding differs from Instance Configuration", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-binding-"));
   const cli = path.join(root, "fake-raft.mjs");
@@ -441,7 +505,7 @@ if (command[0] === "--version") {
 
 function fakeRaftCli(): string {
   return `#!/usr/bin/env node
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const command = args[0] === "--profile" ? args.slice(2) : args;
 if (command[0] === "--version") {
@@ -522,9 +586,16 @@ if (command[0] === "--version") {
   process.stdout.write(JSON.stringify({ type: "bridge_process_started", pid: process.pid, mode: "poll" }) + "\\n");
   const activityEndpoint = new URL(endpoint);
   activityEndpoint.pathname = "/activity/drain";
+  const wrongToken = await fetch(activityEndpoint, { headers: { "x-raft-bridge-token": "wrong-token" } });
+  if (wrongToken.status !== 401) throw new Error("Loom accepted a wrong bridge token");
   const activity = await fetch(activityEndpoint, { headers });
   const activityResult = await activity.json();
-  if (!activity.ok || activityResult.schema !== "raft-activity-drain.v1" || activityResult.events.length !== 0 || activityResult.dropped !== 0) {
+  if (!activity.ok || activityResult.schema !== "raft-activity-drain.v1") {
+    throw new Error("Loom did not provide the Raft activity drain contract");
+  }
+  if (process.env.LOOM_TEST_DRAIN_FILE) {
+    writeFileSync(process.env.LOOM_TEST_DRAIN_FILE, JSON.stringify(activityResult));
+  } else if (activityResult.events.length !== 0 || activityResult.dropped !== 0) {
     throw new Error("Loom did not provide the empty Raft activity drain contract");
   }
   const invalid = await fetch(endpoint, {

@@ -1843,6 +1843,17 @@ class SqliteRuntime implements Runtime {
       INSERT INTO agent_runs (id, agent_name, status, started_at)
       VALUES (?, ?, 'running', ?)
     `).run(id, name, startedAt.toISOString());
+    const event: OperationalEvent = {
+      event: "agent.run.started",
+      at: startedAt.toISOString(),
+      runId: id,
+      agentName: name,
+    };
+    if (this.#pendingOperationalEvents) {
+      this.#pendingOperationalEvents.push(event);
+    } else {
+      emitOperationalEvent(this.#observe, event);
+    }
   }
 
   #finishAgentRun(
@@ -1857,6 +1868,22 @@ class SqliteRuntime implements Runtime {
       SET status = ?, ended_at = ?, outcome = ?, failure_category = ?
       WHERE id = ? AND status = 'running'
     `).run(result, endedAt.toISOString(), outcome ?? null, failureCategory ?? null, id);
+    const row = this.#database.prepare(`
+      SELECT agent_name FROM agent_runs WHERE id = ?
+    `).get(id) as unknown as { agent_name: string } | undefined;
+    const event: OperationalEvent = {
+      event: "agent.run.finished",
+      at: endedAt.toISOString(),
+      runId: id,
+      agentName: row?.agent_name ?? "unknown",
+      result,
+      ...(failureCategory ? { failureCategory } : {}),
+    };
+    if (this.#pendingOperationalEvents) {
+      this.#pendingOperationalEvents.push(event);
+    } else {
+      emitOperationalEvent(this.#observe, event);
+    }
   }
 
   close(): void {

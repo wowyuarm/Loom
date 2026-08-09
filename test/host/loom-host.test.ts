@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { openLoomHost, readLoomInteractionHistory, readLoomStatus } from "../../src/host/index.js";
 import type { RaftRemote } from "../../src/channels/raft/index.js";
+import type { OperationalEvent } from "../../src/operational-events.js";
 import { weixinOpaqueRef } from "../../src/channels/weixin/index.js";
 import { resolveInstanceLayout } from "../../src/instance/layout.js";
 import { openRuntime, type AgentExecution } from "../../src/runtime/index.js";
@@ -496,6 +497,42 @@ test("assembles one explicitly enabled Raft Channel and owns its lifecycle", asy
 
   await host.stop();
   assert.equal(host.status().channels?.raft?.state, "stopped");
+});
+
+test("chains the operator observer through Raft activity projection", async t => {
+  const root = await preparedInstanceRoot();
+  await configureRaft(root);
+  const events: OperationalEvent[] = [];
+  const remote: RaftRemote = {
+    resolveMessage: async () => { throw new Error("no wake expected"); },
+    sendText: async () => { throw new Error("no send expected"); },
+    listPlaces: async () => ({ items: [] }),
+    readActivity: async () => ({ items: [] }),
+    searchMessages: async () => ({ items: [] }),
+    openReference: async () => ({ objectKind: "place", evidence: {}, references: [] }),
+  };
+  const host = await openLoomHost({
+    root,
+    machineTimeZone: "UTC",
+    raftRemote: remote,
+    observe: event => events.push(event),
+  });
+  t.after(() => host.stop());
+  await host.start();
+  await eventually(() => host.status().channels?.raft?.state === "connected");
+
+  await host.acceptInput({
+    source: "test-channel",
+    sourceId: "observe-chain",
+    kind: "interaction",
+    payload: { text: "hello" },
+  });
+  // The Raft activity projection must not swallow the operator observer: the
+  // same committed transition still reaches the external observer.
+  await eventually(() => events.some(event =>
+    event.event === "runtime.transition" && event.entityType === "input"));
+
+  await host.stop();
 });
 
 test("assembles Weixin and Raft Channels together in one Host", async t => {

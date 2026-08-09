@@ -58,6 +58,21 @@ export type OperationalEvent =
       toolName: string;
     }
   | {
+      event: "agent.run.started";
+      at: string;
+      runId: string;
+      agentName: string;
+    }
+  | {
+      event: "agent.run.finished";
+      at: string;
+      runId: string;
+      agentName: string;
+      result: "succeeded" | "failed" | "interrupted";
+      /** Bounded failure category; never the raw error text. */
+      failureCategory?: string;
+    }
+  | {
       event: "agent.tool.completed";
       at: string;
       toolCallId: string;

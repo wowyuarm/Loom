@@ -33,6 +33,7 @@ import {
   jsonObject,
   localTimestamp,
   objectField,
+  parseActivityDrainMax,
   parseChannelInfo,
   parseHistory,
   parseInboxNotices,
@@ -54,6 +55,7 @@ import {
   type InboxSpoolEntry,
   type RaftProfile,
 } from "./raft-cli-parse.js";
+import type { RaftActivityProjector } from "./raft-activity.js";
 
 export { SUPPORTED_RAFT_CLI_VERSION };
 
@@ -67,6 +69,8 @@ export interface OpenRaftCliRemoteOptions {
   cliEntrypoint?: string;
   /** Bounded wait for one CLI command before the child is terminated and the call fails retryable. */
   commandTimeoutMs?: number;
+  /** Optional Raft activity projection; enables real /activity/drain payloads. */
+  activity?: RaftActivityProjector;
 }
 
 class DefaultRaftCliRemote implements RaftRemote {
@@ -81,11 +85,13 @@ class DefaultRaftCliRemote implements RaftRemote {
   #bridgeError: string | undefined;
 
   readonly #commandTimeoutMs: number;
+  readonly #activity: RaftActivityProjector | undefined;
 
   constructor(private readonly options: OpenRaftCliRemoteOptions) {
     this.#profile = required(options.profile, "Raft profile");
     this.#entrypoint = options.cliEntrypoint ?? packagedRaftEntrypoint();
     this.#commandTimeoutMs = options.commandTimeoutMs ?? 60_000;
+    this.#activity = options.activity;
   }
 
   async validate(): Promise<void> {
@@ -857,8 +863,9 @@ class DefaultRaftCliRemote implements RaftRemote {
     }
     const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
     if (request.method === "GET" && pathname === "/activity/drain") {
+      const max = parseActivityDrainMax(new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("max"));
       response.statusCode = 200;
-      response.end(JSON.stringify({
+      response.end(JSON.stringify(this.#activity?.drain(max) ?? {
         schema: "raft-activity-drain.v1",
         events: [],
         dropped: 0,
