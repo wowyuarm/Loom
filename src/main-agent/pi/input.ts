@@ -1,5 +1,5 @@
 import type { InteractionDestination, ExecutionInput } from "../../runtime/index.js";
-import type { AttachmentStore } from "../../integrations/attachments/index.js";
+import type { AttachmentStore } from "../../attachments/index.js";
 import { presentInputWithAttachments, type InputPresentation } from "./attachments.js";
 
 export interface InputTextOptions {

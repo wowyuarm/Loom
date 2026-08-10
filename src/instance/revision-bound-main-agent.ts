@@ -18,7 +18,7 @@ import type {
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { InstanceLayout } from "./layout.js";
-import type { AttachmentStore } from "../integrations/attachments/index.js";
+import type { AttachmentStore } from "../attachments/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 

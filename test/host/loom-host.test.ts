@@ -888,3 +888,26 @@ async function eventually(predicate: () => boolean): Promise<void> {
   }
   assert.fail("condition was not reached");
 }
+
+test("host assembly rejects a legacy-only attachment path before creating any file", async () => {
+  const root = await preparedInstanceRoot();
+  await mkdir(path.join(root, "runtime", "integrations", "attachments"), { recursive: true });
+  await assert.rejects(
+    openLoomHost({ root, machineTimeZone: "UTC" }),
+    /migrate it to .*runtime\/attachments/,
+  );
+  // Refusal happens before the host lock, status socket or any runtime file.
+  await assert.rejects(stat(path.join(root, "runtime", "host-lock.db")));
+  await assert.rejects(stat(path.join(root, "runtime", "attachments")));
+});
+
+test("host assembly rejects when both attachment paths exist", async () => {
+  const root = await preparedInstanceRoot();
+  await mkdir(path.join(root, "runtime", "attachments"), { recursive: true });
+  await mkdir(path.join(root, "runtime", "integrations", "attachments"), { recursive: true });
+  await assert.rejects(
+    openLoomHost({ root, machineTimeZone: "UTC" }),
+    /found at both/,
+  );
+  await assert.rejects(stat(path.join(root, "runtime", "host-lock.db")));
+});

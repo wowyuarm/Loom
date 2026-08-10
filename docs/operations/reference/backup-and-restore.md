@@ -13,7 +13,8 @@ Mirror（见 [Workspace Mirror Integration](../integrations/workspace-mirror.md)
 ## Backup Boundary
 
 The backup unit is the complete Instance Root. It includes Workspace, Runtime
-and Channel and Integration state, Transcripts, configuration, credentials, attachments and
+and Channel and Integration state, Transcripts, configuration, credentials, the Instance-level
+attachment store (`runtime/attachments/`), and
 protected Workspace-write recovery material. Do not select subdirectories.
 
 Do not copy a live Instance Root. Loom has SQLite WAL databases and ordinary

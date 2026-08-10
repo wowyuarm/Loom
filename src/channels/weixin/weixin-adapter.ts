@@ -10,7 +10,7 @@ import type {
   OutboundDelivery,
   RuntimeInput,
 } from "../../runtime/index.js";
-import type { AttachmentStore } from "../../integrations/attachments/index.js";
+import type { AttachmentStore } from "../../attachments/index.js";
 import type { InteractionChannel } from "../channel.js";
 import type { InteractionChannelAgentSurface } from "../surface.js";
 import { parseAttachmentReference, type AttachmentReference } from "../../attachments/index.js";

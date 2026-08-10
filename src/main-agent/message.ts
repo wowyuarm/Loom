@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 
 import type { InteractionDestination, TurnControl } from "../runtime/index.js";
-import type { AttachmentStore } from "../integrations/attachments/index.js";
+import type { AttachmentStore } from "../attachments/index.js";
 
 export interface MessageTurnDecision {
   sent: number;

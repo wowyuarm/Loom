@@ -24,7 +24,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   │     Weixin · Raft
   │
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Web Access · nmem · Attachments
+        Web Access · nmem
 ```
 
 | 模块 | 职责 |
@@ -33,7 +33,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 | Main Agent | 主 Agent 的 Pi 执行、Context、Primary Agent Transcript 与 tool trace。 |
 | Cognitive Organs | Harness 内化且版本化的认知维护能力。 |
 | Interaction Channels | 协议接入、ingress、Delivery 与恢复；向 Main Agent 暴露 guidance、tools 和 destinations。 |
-| Integrations | 外部记忆服务、Web Access 和附件存储。 |
+| Integrations | 外部记忆服务与 Web Access。 |
 
 ### 持久面
 
@@ -124,7 +124,17 @@ Integrations 把 Instance 连接到非 channel 外部服务。它们不是 Inter
 | --- | --- |
 | Web Access | 有界的网页搜索与抓取工具。 |
 | nmem | 外部记忆服务：投影 Episodes 和 Conversation Threads，提供 `nmem_recall` 与 Working Memory 证据。 |
-| Attachments | 入站媒体与出站文件快照的持久存储。 |
+
+## Instance Persistent Surfaces
+
+Instance Root 内、Agent Workspace 外的持久面，由 Host 直接持有：
+
+| 持久面 | 内容 |
+| --- | --- |
+| Runtime Store | 恢复事实：Input/Effect/Delivery、Transcript、Activity、State。 |
+| Attachment Store（`runtime/attachments/`） | 入站媒体与出站文件快照的不可变原始字节，30 天无引用保留。 |
+
+Attachment Store 不是 Integration，也不是 Interaction Channel：它由 Host 打开并持有单一 live Store，Host 与 Instance 共享同一对象；只根据 pending/active Input 与 pending/reconciliation-required Effect 的引用触发 retention。原始字节不进 Runtime Store、Transcript、Context state、Activity、认知材料或 nmem；外部字节只有显式 `copyToWorkspace` 才进入 Agent Workspace。
 
 ## Host
 

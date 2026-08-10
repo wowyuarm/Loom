@@ -3,6 +3,14 @@
 Status: resolved
 Type: Main Agent + Integration
 
+> **Superseded note (2026-08-10)**: The integration ownership framing above predates the
+> Channel abstraction (issue #7). After Channels were extracted, the Attachment Store is
+> no longer an Integration: it is an Instance-level persistent surface held by the Host
+> (see `docs/architecture.md` "Instance Persistent Surfaces"). This ticket's decisions on
+> durable content, references, retention, and Workspace confinement remain in force;
+> only the physical home changed from `runtime/integrations/attachments/` to
+> `runtime/attachments/`. Implemented in task #31.
+
 ## Problem
 
 The first Weixin route deliberately closes text only. Adding images, voice, files, video, or quoted media would otherwise force Weixin wire fields directly into Runtime Input and the Main Agent message tool. Loom first needs one channel-neutral attachment contract that preserves durable evidence and lets each model receive only representations it can actually use.

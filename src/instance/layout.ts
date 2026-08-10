@@ -53,7 +53,7 @@ export function resolveInstanceLayout(root: string): InstanceLayout {
     nmemConfigurationFile: path.join(nmemRoot, "config.json"),
     nmemAuthFile: path.join(nmemRoot, "auth.json"),
     statusSocketPath: path.join(resolvedRoot, "runtime", "status.sock"),
-    attachmentStoreRoot: path.join(resolvedRoot, "runtime", "integrations", "attachments"),
+    attachmentStoreRoot: path.join(resolvedRoot, "runtime", "attachments"),
     workspaceRoot: path.join(resolvedRoot, "workspace"),
     runtimeRoot: path.join(resolvedRoot, "runtime"),
     workspaceMutationRoot: path.join(resolvedRoot, "runtime", "workspace-mutations"),

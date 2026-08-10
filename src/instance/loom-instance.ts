@@ -41,9 +41,10 @@ import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { recoverWorkspaceMutations } from "../workspace/workspace-mutation.js";
 import { resolveInstanceLayout, type InstanceLayout } from "./layout.js";
 import {
+  assertNoLegacyAttachmentStore,
   openAttachmentStore,
   type AttachmentStore,
-} from "../integrations/attachments/index.js";
+} from "../attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
 import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 import type { WebAccessIntegration } from "../integrations/web/index.js";
@@ -247,6 +248,7 @@ function mergeNextRunAt(
 
 export async function openLoomInstance(options: OpenLoomInstanceOptions): Promise<LoomInstance> {
   const layout = resolveInstanceLayout(options.root);
+  await assertNoLegacyAttachmentStore(layout.attachmentStoreRoot);
   const configuration = await loadAssemblyConfiguration(layout, options.machineTimeZone);
   const nmemEnabled = Boolean(options.nmem?.endpoint);
   if (configuration.integrations.nmem !== nmemEnabled) {

@@ -13,7 +13,7 @@ import {
 import { Type } from "typebox";
 
 import { createNmemRecallTool } from "../../src/integrations/nmem/index.js";
-import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";

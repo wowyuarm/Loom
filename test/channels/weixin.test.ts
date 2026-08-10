@@ -12,7 +12,7 @@ import {
   weixinOpaqueRef,
   type WeixinRemote,
 } from "../../src/channels/weixin/index.js";
-import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import type { RuntimeInput } from "../../src/runtime/index.js";
 
@@ -653,7 +653,7 @@ async function weixinPaths(): Promise<{
   const configurationFile = path.join(root, "configuration", "channels", "weixin", "config.json");
   const authFile = path.join(root, "configuration", "channels", "weixin", "auth.json");
   const stateFile = path.join(root, "runtime", "channels", "weixin.db");
-  const attachmentStoreRoot = path.join(root, "runtime", "integrations", "attachments");
+  const attachmentStoreRoot = path.join(root, "runtime", "attachments");
   const attachmentStore = await openAttachmentStore({ root: attachmentStoreRoot });
   await mkdir(path.dirname(configurationFile), { recursive: true });
   await Promise.all([

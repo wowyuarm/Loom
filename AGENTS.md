@@ -35,7 +35,8 @@ src/
   channels/         Interaction Channel 抽象：Weixin 与 Raft Adapter、集合与 surface 合并
   instance/          Instance 装配、布局、Process Driver 与初始化
   host/             单 Instance 的 live owner
-  integrations/     Web、nmem 和附件 Adapter
+  integrations/     Web、nmem Adapter（非 Channel 外部服务接入）
+  attachments/      Instance 级 Attachment Store：不可变内容寻址持久面
   configuration/    Instance 配置、时间和模型 revision
 test/               与 src/ 对应的 Node test 覆盖
 docs/               ADR、架构概览、Cognitive Organs、工程约定和接入说明
@@ -120,5 +121,5 @@ Skills 按当前问题触发，不是一张 ticket 必须走完的流程，也�
 - [Harness layers map](.scratch/harness-layers/map.md) - 当前阶段、已闭合工作和下一步
 - [ADR](docs/adr/) - 长期取舍
 - [Channel docs](docs/channels/) - Weixin、Raft
-- [Integration docs](docs/integrations/) - Web、nmem 与附件
+- [Integration docs](docs/integrations/) - Web、nmem
 - [Agent-guided operations](docs/operations/agent-guided-instance-operations.md) - 实例初始化、VPS 部署与多 Individual 运维

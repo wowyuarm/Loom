@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { openLoomInstance } from "../../src/instance/index.js";
-import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { beginWorkspaceMutation } from "../../src/workspace/workspace-mutation.js";
 import type { DeliveryAttemptRequest, InteractionContext } from "../../src/runtime/index.js";
@@ -58,7 +58,7 @@ test("retains Input attachment content until 30 days after the Input is consumed
   const instance = await openLoomInstance({ root, machineTimeZone: "UTC", now: () => now });
   t.after(() => instance.close());
   const attachments = await openAttachmentStore({
-    root: path.join(root, "runtime", "integrations", "attachments"),
+    root: path.join(root, "runtime", "attachments"),
     now: () => now,
   });
   t.after(() => attachments.close());
@@ -115,7 +115,7 @@ test("retains outbound attachment content while Delivery requires reconciliation
   let instanceClosed = false;
   t.after(() => { if (!instanceClosed) instance.close(); });
   const attachments = await openAttachmentStore({
-    root: path.join(root, "runtime", "integrations", "attachments"),
+    root: path.join(root, "runtime", "attachments"),
     now: () => now,
   });
   t.after(() => attachments.close());

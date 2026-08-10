@@ -3,7 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import path from "node:path";
 
-import type { AttachmentStore } from "../integrations/attachments/index.js";
+import type { AttachmentStore } from "../attachments/index.js";
 
 interface AttachmentToolDetails {
   action: "copy_to_workspace";

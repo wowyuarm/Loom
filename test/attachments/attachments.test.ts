@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { openAttachmentStore } from "../../src/integrations/attachments/index.js";
+import { openAttachmentStore } from "../../src/attachments/index.js";
 
 test("persists immutable attachment content across store reopen", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-attachments-"));
@@ -87,4 +87,38 @@ test("deletes attachment content 30 days after its last active reference ends", 
   now = new Date("2026-09-14T00:00:00.000Z");
   await store.reconcileRetention({ activeAttachmentIds: [], observedAt: now });
   await assert.rejects(store.read(attachment), /is unavailable/);
+});
+
+test("fails closed when only the legacy integration-owned path exists", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attachments-"));
+  const legacy = path.join(root, "runtime", "integrations", "attachments");
+  await mkdir(legacy, { recursive: true });
+  await assert.rejects(
+    openAttachmentStore({ root: path.join(root, "runtime", "attachments") }),
+    /migrate it to .*runtime\/attachments/,
+  );
+});
+
+test("fails closed when both new and legacy attachment paths exist", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attachments-"));
+  await mkdir(path.join(root, "runtime", "attachments"), { recursive: true });
+  await mkdir(path.join(root, "runtime", "integrations", "attachments"), { recursive: true });
+  await assert.rejects(
+    openAttachmentStore({ root: path.join(root, "runtime", "attachments") }),
+    /found at both/,
+  );
+});
+
+test("refuses before modifying anything on a legacy-path conflict", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attachments-"));
+  const legacy = path.join(root, "runtime", "integrations", "attachments");
+  await mkdir(legacy, { recursive: true });
+  await writeFile(path.join(legacy, "attachments.db"), "precious", "utf8");
+  await assert.rejects(
+    openAttachmentStore({ root: path.join(root, "runtime", "attachments") }),
+    /legacy path/,
+  );
+  // No new directory was created and the legacy content is untouched.
+  await assert.rejects(stat(path.join(root, "runtime", "attachments")));
+  assert.equal(await readFile(path.join(legacy, "attachments.db"), "utf8"), "precious");
 });

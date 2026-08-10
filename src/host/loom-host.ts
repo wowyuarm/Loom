@@ -38,9 +38,10 @@ import type {
   RuntimeInput,
 } from "../runtime/index.js";
 import {
+  assertNoLegacyAttachmentStore,
   openAttachmentStore,
   type AttachmentStore,
-} from "../integrations/attachments/index.js";
+} from "../attachments/index.js";
 import { LOOM_VERSION } from "../version.js";
 import {
   createLoomStatusServer,
@@ -296,6 +297,7 @@ class DefaultLoomHost implements LoomHost {
 
 export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHost> {
   const root = path.resolve(options.root);
+  await assertNoLegacyAttachmentStore(path.join(root, "runtime", "attachments"));
   const ownership = await acquireInstanceRootOwnership(root);
   let web: WebAccessIntegration | undefined;
   let attachmentStore: AttachmentStore | undefined;

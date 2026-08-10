@@ -52,7 +52,7 @@ import {
 import type { ToolTraceCompactor } from "../agents/tool-trace-compactor.js";
 import { createMessageTool, type MessageTurnDecision } from "./message.js";
 import { loadDailyContext } from "./daily-context.js";
-import type { AttachmentStore } from "../integrations/attachments/index.js";
+import type { AttachmentStore } from "../attachments/index.js";
 import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 import { RESERVED_LOOM_TOOL_NAMES } from "../channels/reserved-tool-names.js";
 import { createAttachmentTool } from "./attachment.js";

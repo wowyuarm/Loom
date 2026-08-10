@@ -32,7 +32,7 @@ Runtime                         持有 Runtime Store（本地 SQLite）
   ├── Interaction Channels       默认关闭，Instance Configuration 显式启用
   │     Weixin · Raft
   └── Integrations               默认关闭，Instance Configuration 显式启用
-        Web Access · nmem · Attachments
+        Web Access · nmem
 ```
 
 这些东西归属分明：**Agent Workspace** 是 Individual 自己的--身份、关系、记忆、私人工作都在这里，Harness 不替它决定。运行事实、执行证据和装配配置归 Harness 持有，让进程能恢复、能审计、能重新装配。
@@ -116,7 +116,8 @@ Instance Root 布局：
 │   ├── status.sock            运行中 Host 的本机只读状态入口
 │   ├── workspace-mutations/   认知器官多文件 revision 恢复
 │   ├── channels/              weixin.db · raft.db · raft-bridge/
-│   └── integrations/          nmem.db · attachments/
+│   ├── attachments/           attachments.db · objects/
+│   └── integrations/          nmem.db
 ├── transcripts/{main,organs}/
 └── backups/                   认知器官写前备份
 ```

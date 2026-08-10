@@ -39,7 +39,7 @@ interaction:
 
 `channels.weixin.enabled: false` 表示未启用，Host 不读取或连接 Weixin。显式启用后，两个文件必须同时存在；只存在一个文件、JSON 无效、字段不完整或 route 不一致时，Host 会拒绝打开。至少一个 Interaction Channel 必须启用：所有 Channel 都禁用时 Host 拒绝打开。
 
-动态 cursor、peer context token、最近成功 poll 和远程错误保存在 `runtime/channels/weixin.db`。附件原始内容和 retention 状态保存在 `runtime/integrations/attachments/`。不要手工编辑这些文件或只复制其中一部分来替代正常 Instance 备份。
+动态 cursor、peer context token、最近成功 poll 和远程错误保存在 `runtime/channels/weixin.db`。附件原始内容和 retention 状态保存在 `runtime/attachments/`。不要手工编辑这些文件或只复制其中一部分来替代正常 Instance 备份。
 
 ## Runtime Behavior
 

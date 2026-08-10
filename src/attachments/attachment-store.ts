@@ -3,8 +3,8 @@ import { mkdir, open, readFile, realpath, rename, rm, stat } from "node:fs/promi
 import { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 
-import type { AttachmentKind, AttachmentReference } from "../../attachments/index.js";
-import { parseAttachmentReference } from "../../attachments/index.js";
+import type { AttachmentKind, AttachmentReference } from "./reference.js";
+import { parseAttachmentReference } from "./reference.js";
 
 export interface PutAttachment {
   kind: AttachmentKind;
@@ -33,8 +33,55 @@ export async function openAttachmentStore(options: {
   now?: () => Date;
 }): Promise<AttachmentStore> {
   const root = path.resolve(options.root);
+  await assertNoLegacyAttachmentStore(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
   return new FileAttachmentStore(root, options.now ?? (() => new Date()));
+}
+
+/**
+ * Fail closed on the historical Integration-owned location. The Instance
+ * persistent surface is runtime/attachments/; a store left at the old
+ * runtime/integrations/attachments/ path must be migrated, not silently
+ * opened elsewhere or duplicated. Nothing is created or modified before the
+ * check completes, so call this at the assembly boundary before any lock,
+ * directory, or database file is touched.
+ */
+export async function assertNoLegacyAttachmentStore(root: string): Promise<void> {
+  const resolved = path.resolve(root);
+  const legacyRoot = path.join(resolved, "..", "integrations", "attachments");
+  const [newExists, legacyExists] = await Promise.all([
+    directoryExists(resolved),
+    directoryExists(legacyRoot),
+  ]);
+  if (newExists && legacyExists) {
+    throw new Error(
+      `Attachment store found at both ${resolved} and ${legacyRoot}; migrate the legacy directory before starting`,
+    );
+  }
+  if (legacyExists) {
+    throw new Error(
+      `Attachment store found only at legacy path ${legacyRoot}; migrate it to ${resolved} before starting`,
+    );
+  }
+}
+
+async function directoryExists(pathname: string): Promise<boolean> {
+  try {
+    return (await stat(pathname)).isDirectory();
+  } catch (error) {
+    // Only a missing path counts as absent; any other stat failure (for
+    // example permission denied) must surface instead of being treated as
+    // a clean pass.
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+}
+
+function isMissingPathError(error: unknown): boolean {
+  const code = typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code: unknown }).code)
+    : "";
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 class FileAttachmentStore implements AttachmentStore {

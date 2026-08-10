@@ -131,7 +131,7 @@ _Avoid_: individual capability, relationship material, executor abstraction
 _Avoid_: browser automation, interaction channel, web memory, external action
 
 **Attachment**:
-随一份 Input 或 outbound Effect 携带的不可变内容引用及其有界元数据。原始内容由 Instance Root 内、Agent Workspace 外的 Integration-owned store 持有；Attachment 不是独立 Input，也不是 channel wire payload。
+随一份 Input 或 outbound Effect 携带的不可变内容引用及其有界元数据。原始内容由 Instance Root 内、Agent Workspace 外的 Attachment Store（`runtime/attachments/`）持有；Attachment 不是独立 Input，也不是 channel wire payload。
 _Avoid_: workspace file, message, remote media item, embedded bytes
 
 **Attachment Snapshot**:

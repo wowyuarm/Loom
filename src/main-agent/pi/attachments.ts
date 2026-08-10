@@ -1,7 +1,7 @@
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExecutionInput } from "../../runtime/index.js";
 import { attachmentReferences, type AttachmentReference } from "../../attachments/index.js";
-import type { AttachmentStore } from "../../integrations/attachments/index.js";
+import type { AttachmentStore } from "../../attachments/index.js";
 
 export interface InputPresentation {
   text: string;
