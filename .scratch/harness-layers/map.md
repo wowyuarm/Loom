@@ -150,6 +150,8 @@ Local 已启用，Weixin 与 nmem 保持关闭。迁移使用了已核验的完�
 
 ## Source References
 
+- Current: [53 — Organ Workspace Write Limits (byte-level)](issues/53-workspace-write-limits.md). 防止 organ 维护文件失控膨胀（Xi index.md 1.16MB 案例）；src 常量上限表 + mutation.write 与各局部 atomicWrite 统一查表；recoverable error 只拒当前 write；未匹配路径默认放行。
+
 - Xi [Harness Generalization Map](../../../Xi/.scratch/harness-generalization/map.md)
 - Xi [03 — Runtime Kernel Contract](../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)
 - Xi [04 — Runtime Instance, Workspace, and Individual](../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
