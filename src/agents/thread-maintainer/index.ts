@@ -240,15 +240,19 @@ class PiThreadMaintainer implements ThreadMaintainer {
           if (currentReferenceIds.has(reference.referenceId)) {
             currentReadOffsets.set(reference.referenceId, endOffset);
           }
+          const remaining = events.length - endOffset;
           return toolResult({
             type: "loom.thread-activity-page",
             version: 1,
+            ...(remaining > 0
+              ? { notice: `${remaining} of ${events.length} events remain unread: continue read_thread_activity with offset ${endOffset} until nextOffset is null before deciding.` }
+              : {}),
             referenceId: reference.referenceId,
             activityId: reference.activityId,
             turnId: reference.turnId,
             turn,
             offset,
-            nextOffset: endOffset < events.length ? endOffset : null,
+            nextOffset: remaining > 0 ? endOffset : null,
             totalEvents: events.length,
             events: events.slice(offset, endOffset),
           });
@@ -504,9 +508,19 @@ function assertGrounded(
     if (!readPaths.has(required)) throw new Error(`Thread Maintainer did not read affected file ${required}`);
   }
   for (const reference of currentReferences.filter(candidate => candidate.relation === "changed")) {
-    const total = request.activity.events.filter(event => event.turnId === reference.turnId).length;
-    if ((readOffsets.get(reference.referenceId) ?? 0) !== total) {
-      throw new Error(`Thread Maintainer did not read all current Turn evidence for ${reference.referenceId}`);
+    const events = request.activity.events.filter(event => event.turnId === reference.turnId);
+    const total = events.length;
+    const read = readOffsets.get(reference.referenceId) ?? 0;
+    if (read !== total) {
+      const unread = events.slice(read).slice(0, 3)
+        .map(event => `${event.kind}@${event.at}`)
+        .join(", ");
+      const more = events.length - read - 3;
+      const suffix = more > 0 ? `, and ${more} more` : "";
+      throw new Error(
+        `Thread Maintainer did not read all current Turn evidence for ${reference.referenceId}: `
+        + `read ${read} of ${total} events; unread: ${unread}${suffix}`,
+      );
     }
   }
 }

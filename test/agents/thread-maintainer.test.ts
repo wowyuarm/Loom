@@ -384,8 +384,62 @@ test("refuses a structural decision made from only part of the current Turn", as
 
   await assert.rejects(
     maintainer.maintain(request(current, "turn-partial")),
-    /did not read all current Turn evidence/i,
+    /did not read all current Turn evidence for evidence-activity-partial-turn-partial-thread-garden: read 1 of 2 events; unread: output@2026-07-21T01:52:00.000Z/,
   );
+});
+
+test("surfaces an unread remainder notice and lets the model finish the page", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-thread-remainder-notice-"));
+  const workspaceRoot = await createWorkspace(root);
+  const current = activity("activity-remainder", "turn-remainder", "first event");
+  // 21 events: the default page size is 20, so the first page must carry a notice.
+  for (let index = 1; index < 21; index += 1) {
+    current.events.push({
+      eventId: `activity-remainder-${index}`,
+      turnId: "turn-remainder",
+      at: `2026-07-21T01:51:0${index % 10}.000Z`,
+      actorRef: "individual",
+      kind: "output",
+      content: { text: `event ${index}` },
+    });
+  }
+  const { faux, model, modelRuntime } = await createTestPi(root, "thread-remainder-notice");
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("read", { path: "index.md" }, { id: "read-index" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read", { path: "garden/thread.md" }, { id: "read-thread" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read_thread_activity", {
+      referenceId: "evidence-activity-remainder-turn-remainder-thread-garden",
+      offset: 0,
+    }, { id: "read-first-page" }), { stopReason: "toolUse" }),
+    context => {
+      // The first page carries an explicit unread-remainder notice, not only the field.
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /1 of 21 events remain unread: continue read_thread_activity with offset 20 until nextOffset is null/);
+      return fauxAssistantMessage(fauxToolCall("read_thread_activity", {
+        referenceId: "evidence-activity-remainder-turn-remainder-thread-garden",
+        offset: 20,
+      }, { id: "read-second-page" }), { stopReason: "toolUse" });
+    },
+    context => {
+      const json = JSON.stringify(context.messages);
+      // The second page (offset 20) is the last one: nextOffset is null and
+      // no new notice is emitted, while the first page's notice stays in history.
+      assert.match(json, /"offset":20,"nextOffset":null/);
+      return fauxAssistantMessage("NO_CHANGE");
+    },
+  ]);
+  const maintainer = await createPiThreadMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    stateFile: path.join(root, "state", "thread-evidence.json"),
+    modelRuntime,
+    model,
+    loadActivity: async activityId => activityId === current.segmentId ? current : undefined,
+    nextThreadRef: () => "thread-garden",
+  });
+
+  assert.equal((await maintainer.maintain(request(current, "turn-remainder"))).outcome, "no_change");
 });
 
 test("derives Thread observations only from structured Workspace tool evidence", () => {
