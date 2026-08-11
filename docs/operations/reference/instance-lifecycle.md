@@ -102,3 +102,10 @@ the relevant Channel or Integration checks.
 Do not replace Instance Roots or credentials during a code update. If the Host
 does not stop normally, investigate before forcing it; durable recovery does not
 make an unexplained interruption harmless.
+
+After any migration, restore or manual copy that touches the Instance Root,
+check file ownership before starting the Host. Every file and directory must
+belong to the Instance account; root-owned leftovers (a common migration
+artifact) stay latent until a configuration or runtime write path hits
+`EACCES`. Verify with `find <instance-root> ! -user <instance-account>` and
+`chown` the leftovers back to the Instance account.

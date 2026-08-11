@@ -53,6 +53,11 @@ acceptance specifics belong to the corresponding Channel or Integration guide.
   private Workspace material in logs, tickets or summaries.
 - Treat unavailable or insufficient evidence as `unknown`. Do not infer that a
   running service means its models, Agents, Channels or Integrations are working.
+- Check ownership after any migration or restore: every file and directory under
+  the Instance Root must belong to the matching Instance account. Root-owned
+  leftovers are a common migration artifact that stays latent until a
+  configuration or runtime write path hits `EACCES`; `chown` them back to the
+  Instance account rather than waiting for a failure.
 - Obtain explicit authorization before interrupting a live Host, changing host
   configuration, accessing private backup material, restoring or migrating.
 
