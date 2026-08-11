@@ -27,6 +27,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
       assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "ls",
         "read",
@@ -60,7 +61,7 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       scene: "Alex asked Rowan to keep their actions distinct in future memory.",
       evidenceEventIds: ["event-input-1"],
     }, { id: "record-episode" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("Recorded the activity."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -104,7 +105,7 @@ test("allows no change when Daily and Episodes do not exist", async () => {
       fauxToolCall("read_activity", { offset: 0 }, { id: "read-activity" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("No durable narrative change."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -229,7 +230,7 @@ test("accepts a namespaced external actor as attributed evidence", async () => {
       fauxToolCall("read_activity", { offset: 0 }, { id: "read-activity" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("No durable narrative change."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -352,10 +353,10 @@ test("reuses the episode identity when the same segment ordinal is recorded agai
   faux.setResponses([
     fauxAssistantMessage(fauxToolCall("read_activity", { offset: 0 }, { id: "read-first" }), { stopReason: "toolUse" }),
     episodeCall(),
-    fauxAssistantMessage("First recording complete."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-first" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("read_activity", { offset: 0 }, { id: "read-retry" }), { stopReason: "toolUse" }),
     episodeCall(),
-    fauxAssistantMessage("Retry recording complete."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-retry" }), { stopReason: "toolUse" }),
   ]);
   let run = 0;
   const recorder = await createPiLifeRecorder({

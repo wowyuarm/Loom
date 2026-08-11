@@ -34,6 +34,7 @@ test("reflects grounded evidence into protected core material", async () => {
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "ls",
         "nmem_recall",
@@ -73,7 +74,7 @@ test("reflects grounded evidence into protected core material", async () => {
         { stopReason: "toolUse" },
       );
     },
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -144,7 +145,7 @@ test("accepts a completed reflection after the model recovers from a tool error"
       }, { id: "replace-after-recovery" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -187,7 +188,7 @@ test("counts Workspace-internal absolute paths as complete core reads", async ()
       }, { id: "read-activity-absolute" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -226,7 +227,7 @@ test("accepts an explicit terminal outcome after explanatory prose", async () =>
       }, { id: "read-activity-terminal-outcome" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The evidence does not cross a durable threshold.\n\nNO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -276,7 +277,7 @@ test("commits grounded replacements regardless of final model wording", async ()
       }, { id: "replace-invalid-facts" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -349,7 +350,7 @@ test("treats missing optional Workspace evidence as an explicit absence", async 
       }, { id: "read-activity" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -441,7 +442,7 @@ test("accepts a long core material after every consecutive page is read", async 
       }, { id: "read-activity" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -481,7 +482,7 @@ test("keeps local reflection available when nmem evidence is unavailable", async
         { stopReason: "toolUse" },
       );
     },
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-nmem" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -538,7 +539,7 @@ test("updates stable facts, identity, and both behavior views in one revision", 
       fauxToolCall("replace_core_material", { material, content }, { id: `replace-${index}` }),
       { stopReason: "toolUse" },
     )),
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-multi" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -591,7 +592,7 @@ test("derives an update from durable replacements instead of final model wording
       }, { id: "replace-memory" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The durable material now carries the supported change."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-wording" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -625,6 +626,7 @@ test("omits nmem tools and guidance when the Integration is not enabled", async 
       assert.doesNotMatch(context.systemPrompt ?? "", /nmem/i);
       assert.doesNotMatch(userPrompt(context.messages), /nmem/i);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "ls",
         "read",
@@ -641,7 +643,7 @@ test("omits nmem tools and guidance when the Integration is not enabled", async 
       }, { id: "read-activity" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-omitted" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),

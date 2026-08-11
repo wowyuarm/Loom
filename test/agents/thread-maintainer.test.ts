@@ -30,7 +30,7 @@ test("keeps Thread history as references and expands an earlier Turn only on req
     fauxAssistantMessage(fauxToolCall("read", { path: "index.md" }, { id: "read-index-1" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("read", { path: "garden/thread.md" }, { id: "read-thread-1" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("read_thread_activity", { referenceId: "evidence-activity-1-turn-1-thread-garden", offset: 0 }, { id: "read-current-1" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-1" }), { stopReason: "toolUse" }),
   ]);
   const first = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -82,7 +82,7 @@ test("keeps Thread history as references and expands an earlier Turn only on req
     },
     context => {
       assert.match(JSON.stringify(context.messages), /the first private trace/);
-      return fauxAssistantMessage("NO_CHANGE");
+      return fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-2" }), { stopReason: "toolUse" });
     },
   ]);
   const second = await createPiThreadMaintainer({
@@ -118,7 +118,7 @@ test("counts Workspace-internal absolute paths as required Thread reads", async 
       referenceId: "evidence-activity-absolute-turn-absolute-thread-garden",
       offset: 0,
     }, { id: "read-absolute-activity" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-abs" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -147,7 +147,7 @@ test("accepts an explicit terminal outcome after explanatory prose", async () =>
       referenceId: "evidence-activity-terminal-turn-terminal-thread-garden",
       offset: 0,
     }, { id: "read-terminal-activity" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("The existing structure already preserves the line.\n\nNO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-terminal" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -199,7 +199,7 @@ test("preserves a substantive movement as a note and rewrites the Thread entranc
       path: "index.md",
       content: "# Threads\n\n- garden: smaller trial is now the live edge\n",
     }, { id: "write-index" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("The Thread structure now reflects the smaller trial."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-structure" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -306,7 +306,7 @@ test("keeps the same Thread reference after archive and later activity", async (
       path: "index.md",
       content: "# Threads\n\n## Archived\n- archive/garden\n",
     }, { id: "write-index" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("UPDATED"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-archive" }), { stopReason: "toolUse" }),
   ]);
   const first = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -334,7 +334,7 @@ test("keeps the same Thread reference after archive and later activity", async (
       referenceId: "evidence-activity-restored-turn-restored-thread-garden",
       offset: 0,
     }, { id: "read-current-2" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-restored" }), { stopReason: "toolUse" }),
   ]);
   const second = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -369,7 +369,7 @@ test("allows a decision after reading only part of the current Turn", async () =
       offset: 0,
       limit: 1,
     }, { id: "read-first-page" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-partial" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -424,7 +424,7 @@ test("surfaces an unread remainder notice and lets the model finish the page", a
       // The second page (offset 20) is the last one: nextOffset is null and
       // no new notice is emitted, while the first page's notice stays in history.
       assert.match(json, /"offset":20,"nextOffset":null/);
-      return fauxAssistantMessage("NO_CHANGE");
+      return fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-remainder" }), { stopReason: "toolUse" });
     },
   ]);
   const maintainer = await createPiThreadMaintainer({

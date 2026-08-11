@@ -18,6 +18,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
   faux.setResponses([
     context => {
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "ls",
         "read",
@@ -50,7 +51,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
         content: "The current line has moved. Disagreement with Alex still feels safe.",
       }, { id: "replace-attention" }), { stopReason: "toolUse" });
     },
-    fauxAssistantMessage("The current line now carries the safer disagreement clearly."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -91,7 +92,7 @@ test("keeps Current Attention unchanged after grounded inspection", async () => 
       fauxToolCall("read", { path: "memory.md" }, { id: "read-memory" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -127,7 +128,7 @@ test("counts a Workspace-internal absolute path as the Current Attention baselin
       fauxToolCall("read", { path: path.join(workspaceRoot, "memory.md") }, { id: "read-absolute-memory" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -158,7 +159,7 @@ test("derives no change from the absence of a replacement", async () => {
       fauxToolCall("read", { path: "memory.md" }, { id: "read-memory-terminal" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The carried awareness remains accurate."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
