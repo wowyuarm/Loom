@@ -179,6 +179,9 @@ class RuntimeScheduler implements Scheduler {
       }
 
       const advanced = await this.#runtime.advance({ agentWork, observedAt });
+      const advanceWaiting = advanced.disposition === "waiting"
+        ? { disposition: "waiting" as const, nextRunAt: advanced.nextRunAt }
+        : undefined;
       const terminal = deferredResult(advanced, observedAt);
       if (terminal) {
         if (terminal.reason === "activity_recording_failed" || terminal.reason === "thread_maintenance_failed") {
@@ -212,7 +215,7 @@ class RuntimeScheduler implements Scheduler {
         }
         return { disposition: "busy" };
       }
-      if (advanced.disposition !== "idle" && !deferredLane) continue;
+      if (advanced.disposition !== "idle" && advanced.disposition !== "waiting" && !deferredLane) continue;
 
       const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
       if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") {
@@ -235,7 +238,7 @@ class RuntimeScheduler implements Scheduler {
         if (reflection && reflection.disposition !== "waiting") deferredLane ??= reflection;
         if (!this.#proactivePulse) {
           if (deferredLane) return deferredLane;
-          return earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting)
+          return earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting, advanceWaiting)
             ?? { disposition: "idle" };
         }
         const pulse = await this.#runtime.runOpportunityPulse({
@@ -255,7 +258,7 @@ class RuntimeScheduler implements Scheduler {
             disposition: "waiting",
             nextRunAt: earlierTime(
               pulse.nextRunAt,
-              earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting)?.nextRunAt,
+              earliestWaiting(maintenance, reflection, afterChatWaiting, deliveryWaiting, advanceWaiting)?.nextRunAt,
             ),
           };
         }
@@ -334,6 +337,7 @@ class RuntimeScheduler implements Scheduler {
           { disposition: "waiting", nextRunAt: idleCloseAt.toISOString() },
           afterChatWaiting,
           deliveryWaiting,
+          advanceWaiting,
         )!;
       }
 
@@ -366,6 +370,7 @@ class RuntimeScheduler implements Scheduler {
           },
           afterChatWaiting,
           deliveryWaiting,
+          advanceWaiting,
         )!;
       }
       if (closed.disposition === "no_activity") return deferredLane ?? { disposition: "idle" };
@@ -446,6 +451,7 @@ class RuntimeScheduler implements Scheduler {
     if (result.disposition === "agent_work_deferred") {
       return { disposition: "deferred", reason: "agent_work_not_admitted" };
     }
+    if (result.disposition === "idle") return undefined;
     return { disposition: "busy" };
   }
 }

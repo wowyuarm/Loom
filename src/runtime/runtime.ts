@@ -303,6 +303,12 @@ interface CognitiveOrganClaim {
   agentRunId: string;
 }
 
+type ThreadMaintenanceReadiness =
+  | { disposition: "idle" }
+  | { disposition: "running" }
+  | { disposition: "waiting"; nextRunAt: string }
+  | { disposition: "claimable"; pending: { activity: FrozenActivity } };
+
 /** Outcome of one Cognitive Organ budget cycle as seen by the domain entry point. */
 export type CognitiveOrganRunOutcome<Result> =
   | { disposition: "completed"; result: Result }
@@ -989,14 +995,20 @@ class SqliteRuntime implements Runtime {
     }
 
     if (options.agentWork === "defer" && (
-      (this.#activityRecorder && this.#hasPendingActivityRecording())
-      || (this.#threadMaintenance && this.#hasPendingThreadMaintenance())
+      (this.#activityRecorder && this.#hasRunnableActivityRecording())
+      || (this.#threadMaintenance && this.#hasRunnableThreadMaintenance())
     )) {
       return { disposition: "agent_work_deferred" };
     }
     const recording = await this.#advanceActivityRecording();
-    if (recording.disposition !== "idle") return recording;
-    return this.#advanceThreadMaintenance();
+    if (recording.disposition !== "idle" && recording.disposition !== "waiting") return recording;
+    const thread = await this.#advanceThreadMaintenance();
+    if (thread.disposition === "waiting") {
+      if (recording.disposition === "waiting" && Date.parse(recording.nextRunAt) <= Date.parse(thread.nextRunAt)) return recording;
+      return thread;
+    }
+    if (thread.disposition !== "idle") return thread;
+    return recording;
   }
 
   async runAttentionMaintenance(
@@ -1018,9 +1030,13 @@ class SqliteRuntime implements Runtime {
     const activities = this.#activitiesInSequenceRange(schedule.cursor_sequence, windowEnd);
     const begun = this.#beginCognitiveOrganAttempt("attention-maintainer", `window:${windowEnd}`);
     if (!begun.claim) {
-      return begun.nextAttemptAt
-        ? { disposition: "waiting", nextRunAt: begun.nextAttemptAt }
-        : { disposition: "busy" };
+      if (begun.nextAttemptAt) return { disposition: "waiting", nextRunAt: begun.nextAttemptAt };
+      // A terminal blocked work record remains visible and requeueable, but
+      // it is not an active writer. Do not let it turn this independent lane
+      // into a scheduler-wide busy loop.
+      return this.#cognitiveOrgan.currentWork("attention-maintainer")?.status === "running"
+        ? { disposition: "busy" }
+        : { disposition: "idle" };
     }
     const claim = begun.claim;
     this.#attentionMaintenanceRunning = true;
@@ -1134,9 +1150,10 @@ class SqliteRuntime implements Runtime {
 
     const begun = this.#beginCognitiveOrganAttempt("memory-reflector", `day:${reflectionDay}`);
     if (!begun.claim) {
-      return begun.nextAttemptAt
-        ? { disposition: "waiting", nextRunAt: begun.nextAttemptAt }
-        : { disposition: "busy" };
+      if (begun.nextAttemptAt) return { disposition: "waiting", nextRunAt: begun.nextAttemptAt };
+      return this.#cognitiveOrgan.currentWork("memory-reflector")?.status === "running"
+        ? { disposition: "busy" }
+        : { disposition: "idle" };
     }
     const claim = begun.claim;
     this.#memoryReflectionRunning = true;
@@ -2173,8 +2190,8 @@ class SqliteRuntime implements Runtime {
       && !this.#readActiveSegment()
       && !this.#hasPendingInput()
       && !this.#hasPendingDeliveryWork()
-      && !this.#hasPendingActivityRecording()
-      && !this.#hasPendingThreadMaintenance()
+      && !this.#hasRunnableActivityRecording()
+      && !this.#hasRunnableThreadMaintenance()
       && !this.#hasHeldCognitiveOrganWork();
   }
 
@@ -2226,9 +2243,20 @@ class SqliteRuntime implements Runtime {
     `).get(reflectionDay);
     if (unsettledActivity) return false;
     const unsettledThread = this.#database.prepare(`
-      SELECT 1 FROM thread_maintenance
-      WHERE activity_id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
-        AND status <> 'completed'
+      SELECT 1 FROM thread_maintenance tm
+      WHERE tm.activity_id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
+        AND tm.status <> 'completed'
+        AND NOT EXISTS (
+          SELECT 1 FROM cognitive_work w
+          WHERE w.organ = 'thread-maintainer'
+            AND w.domain_ref = 'activity:' || tm.activity_id
+            AND w.status = 'blocked'
+            AND w.rowid = (
+              SELECT MAX(rowid) FROM cognitive_work w2
+              WHERE w2.organ = 'thread-maintainer'
+                AND w2.domain_ref = 'activity:' || tm.activity_id
+            )
+        )
       LIMIT 1
     `).get(reflectionDay);
     return !unsettledThread;
@@ -2390,6 +2418,12 @@ class SqliteRuntime implements Runtime {
     return Boolean(this.#database.prepare(
       "SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1",
     ).get());
+  }
+
+  #hasRunnableActivityRecording(): boolean {
+    if (!this.#hasPendingActivityRecording()) return false;
+    const status = this.#cognitiveOrgan.currentWork("life-recorder")?.status;
+    return status === undefined || status === "running" || status === "completed" || status === "cancelled";
   }
 
   #hasPendingDeliveryWork(): boolean {
@@ -3057,20 +3091,26 @@ class SqliteRuntime implements Runtime {
 
   async #advanceThreadMaintenance(): Promise<AdvanceResult> {
     if (!this.#threadMaintenance) return { disposition: "idle" };
-    const pending = this.#queryPendingThreadMaintenance();
-    if (!pending) {
-      const unfinished = this.#database.prepare(`
-        SELECT 1 FROM thread_maintenance WHERE status <> 'completed' LIMIT 1
-      `).get();
-      return unfinished ? { disposition: "busy" } : { disposition: "idle" };
-    }
+    const readiness = this.#threadMaintenanceReadiness();
+    if (readiness.disposition === "idle") return { disposition: "idle" };
+    if (readiness.disposition === "running") return { disposition: "busy" };
+    if (readiness.disposition === "waiting") return { disposition: "waiting", nextRunAt: readiness.nextRunAt };
+    const pending = readiness.pending;
     const begun = this.#beginCognitiveOrganAttempt(
       "thread-maintainer",
       `activity:${pending.activity.segmentId}`,
     );
-    if (!begun.claim) return { disposition: "busy" };
+    if (!begun.claim) {
+      if (begun.nextAttemptAt) return { disposition: "waiting", nextRunAt: begun.nextAttemptAt };
+      // A blocked or backing-off Thread work item remains visible for an
+      // operator, but it must not monopolize the scheduler: Pulse, Reflection
+      // and Attention are independent maintenance lanes.  Only an actually
+      // running attempt is a single-writer busy condition.
+      const work = this.#cognitiveOrgan.currentWork("thread-maintainer");
+      return work?.status === "running" ? { disposition: "busy" } : { disposition: "idle" };
+    }
     const claim = begun.claim;
-    const claimed = this.#claimPendingThreadMaintenance(claim.agentRunId);
+    const claimed = this.#claimPendingThreadMaintenance(claim.agentRunId, pending.activity.segmentId);
     if (!claimed) {
       // Domain claim lost to a concurrent path (should not happen under the
       // single-writer gate): close the budget cycle as interrupted.
@@ -3120,22 +3160,18 @@ class SqliteRuntime implements Runtime {
     }
   }
 
-  #queryPendingThreadMaintenance(): {
-    activity: FrozenActivity;
-  } | undefined {
-    const next = this.#database.prepare(`
+  #pendingThreadMaintenances(): Array<{ activity: FrozenActivity }> {
+    const rows = this.#database.prepare(`
       SELECT thread_maintenance.activity_id, activities.frozen_activity_json
       FROM thread_maintenance
       JOIN activities ON activities.id = thread_maintenance.activity_id
       WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
-      ORDER BY thread_maintenance.created_at, thread_maintenance.activity_id
-      LIMIT 1
-    `).get() as unknown as {
+      ORDER BY activities.sequence
+    `).all() as unknown as Array<{
       activity_id: string;
       frozen_activity_json: string;
-    } | undefined;
-    if (!next) return undefined;
-    return { activity: JSON.parse(next.frozen_activity_json) as FrozenActivity };
+    }>;
+    return rows.map(row => ({ activity: JSON.parse(row.frozen_activity_json) as FrozenActivity }));
   }
 
   /** Release a cancelled maintenance back to pending without recording a failure. */
@@ -3171,7 +3207,7 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #claimPendingThreadMaintenance(agentRunId: string): {
+  #claimPendingThreadMaintenance(agentRunId: string, activityId: string): {
     activity: FrozenActivity;
     observations: ThreadActivityObservation[];
     agentRunId: string;
@@ -3185,9 +3221,8 @@ class SqliteRuntime implements Runtime {
         FROM thread_maintenance
         JOIN activities ON activities.id = thread_maintenance.activity_id
         WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
-        ORDER BY thread_maintenance.created_at, thread_maintenance.activity_id
-        LIMIT 1
-      `).get() as unknown as {
+          AND thread_maintenance.activity_id = ?
+      `).get(activityId) as unknown as {
         activity_id: string;
         observations_json: string;
         attempt_count: number;
@@ -3311,12 +3346,37 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #hasPendingThreadMaintenance(): boolean {
-    return Boolean(this.#database.prepare(`
-      SELECT 1 FROM thread_maintenance
-      WHERE status <> 'completed'
-      LIMIT 1
-    `).get());
+  #hasRunnableThreadMaintenance(): boolean {
+    const readiness = this.#threadMaintenanceReadiness();
+    return readiness.disposition === "running" || readiness.disposition === "claimable";
+  }
+
+  #threadMaintenanceReadiness(): ThreadMaintenanceReadiness {
+    const pending = this.#pendingThreadMaintenances();
+    const work = this.#cognitiveOrgan.currentWork("thread-maintainer");
+    if (work?.status === "running") {
+      const head = pending[0];
+      if (work.requeuedFrom && !this.#activeCognitiveOrgan && head
+        && `activity:${head.activity.segmentId}` === work.domainRef) {
+        return { disposition: "claimable", pending: head };
+      }
+      return { disposition: "running" };
+    }
+    if (work?.status === "blocked" || work?.status === "intervention_required") return { disposition: "idle" };
+    if (work?.status === "retry_wait") {
+      const head = pending[0];
+      // Thread Maintenance owns one FIFO queue. A later Activity never
+      // overtakes a retrying head, so its original attempt budget survives.
+      if (head && `activity:${head.activity.segmentId}` === work.domainRef
+        && work.nextAttemptAt && Date.parse(work.nextAttemptAt) > this.#now().getTime()) {
+        return { disposition: "waiting", nextRunAt: work.nextAttemptAt };
+      }
+      if (head && `activity:${head.activity.segmentId}` === work.domainRef) {
+        return { disposition: "claimable", pending: head };
+      }
+      return { disposition: "idle" };
+    }
+    return pending[0] ? { disposition: "claimable", pending: pending[0] } : { disposition: "idle" };
   }
 
   async #advanceActivityRecording(): Promise<AdvanceResult> {
@@ -3328,10 +3388,18 @@ class SqliteRuntime implements Runtime {
       const unfinished = this.#database.prepare(`
         SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1
       `).get();
-      return unfinished ? { disposition: "busy" } : { disposition: "idle" };
+      if (!unfinished) return { disposition: "idle" };
+      return this.#cognitiveOrgan.currentWork("life-recorder")?.status === "running"
+        ? { disposition: "busy" }
+        : { disposition: "idle" };
     }
     const begun = this.#beginCognitiveOrganAttempt("life-recorder", "recording");
-    if (!begun.claim) return { disposition: "busy" };
+    if (!begun.claim) {
+      if (begun.nextAttemptAt) return { disposition: "waiting", nextRunAt: begun.nextAttemptAt };
+      return this.#cognitiveOrgan.currentWork("life-recorder")?.status === "running"
+        ? { disposition: "busy" }
+        : { disposition: "idle" };
+    }
     const claim = begun.claim;
     const claimed = this.#claimPendingActivity(claim.agentRunId);
     if (!claimed) {

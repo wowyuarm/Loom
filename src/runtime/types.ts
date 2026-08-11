@@ -634,6 +634,7 @@ export interface AdvanceOptions {
 
 export type AdvanceResult =
   | { disposition: "idle" }
+  | { disposition: "waiting"; nextRunAt: string }
   | { disposition: "turn_completed" }
   | { disposition: "delivery_completed" }
   | { disposition: "delivery_not_sent"; nextRunAt: string }
@@ -711,6 +712,7 @@ export interface RunAttentionMaintenanceOptions {
 export type RunAttentionMaintenanceResult =
   | { disposition: "waiting"; nextRunAt: string }
   | { disposition: "completed"; result: AttentionMaintenanceResult; nextRunAt: string }
+  | { disposition: "idle" }
   | { disposition: "busy" }
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; nextRunAt: string; error: string };
@@ -725,6 +727,7 @@ export interface RunMemoryReflectionOptions {
 export type RunMemoryReflectionResult =
   | { disposition: "waiting"; nextRunAt: string }
   | { disposition: "completed"; reflectionDay: string; result?: MemoryReflectionResult; nextRunAt: string }
+  | { disposition: "idle" }
   | { disposition: "busy" }
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; reflectionDay: string; nextRunAt: string; error: string };
