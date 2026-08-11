@@ -102,7 +102,14 @@ test("exposes an overdue active Segment through the operator status socket (issu
   `);
   database.close();
 
-  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  // Freeze the Host clock just before the planted next-overdue-check so the
+  // overdue record (kept from closing by the running Turn) is reported
+  // untouched instead of being re-checked against a real clock.
+  const host = await openLoomHost({
+    root,
+    machineTimeZone: "UTC",
+    now: () => new Date("2026-08-08T08:30:00.000Z"),
+  });
   t.after(() => host.stop());
   await host.start();
   await eventually(() => host.status().state === "running");
