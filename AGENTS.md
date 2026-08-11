@@ -76,8 +76,9 @@ CLI 默认 Instance Root 是 `~/.loom`。开发期 `npm run build && npm link` �
 
 ## Testing
 
-- 修改代码后先跑与风险相称的测试：Main Agent、配置、Workspace 改动用 `npm run test:fast`；Runtime 改动用 `npm run test:runtime`；Channel、Host、Instance 或 Integration 改动用 `npm run test:host`。跨层改动可组合运行。
-- 完成一个工作单元时仍跑 `npm run typecheck` 和完整 `npm test`；分层入口用于更快定位和反馈，不替代全量验证。
+- 修改代码后先跑与风险相称的测试：Main Agent、配置、Workspace 改动用 `npm run test:fast`；Runtime 改动用 `npm run test:runtime`；Channel、Host、Instance 或 Integration 改动用 `npm run test:host`。跨层改动可组合运行这些档位，覆盖改动实际触及的子系统。
+- 全量 `npm run test`（连同 `npm run typecheck`）只在确有充分理由时跑，**不是**每完成一个单元就默认要跑的步骤。充分理由限定为：改动横切多个子系统，或该 task 的合同/验收/复审明确要求「全量无新回归」证据。默认目标是「最窄充分」：先跑改动所在档位，跑挂再向更全扩展；分层入口用于更快定位和反馈，不替代全量验证的必要场合。
+- coding 与 review agent 都不默认重复跑全量。全量是合入/release 前的一次性确认，不是每轮迭代或每张 review 的固定步骤：复审时若改动只落在单层，跑对应档位即可；只有改动确实横跨多层、或验收写成需全量时，才跑全量。
 - 测试通过公开接口观察行为，不检查私有 SQLite 状态或 prompt 字符串。
 - 模型能力、语言和写作品味用真实实例观察，不用 faux provider 测试伪造质量结论。
 - 不把生产或个人 Instance Root 当测试目录；使用测试创建的临时 root。
