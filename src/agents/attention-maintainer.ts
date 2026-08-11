@@ -18,6 +18,7 @@ import { Type } from "typebox";
 import type { FrozenActivity } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
+import { enforceWorkspaceWriteLimit } from "../workspace/workspace-write-limits.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
@@ -209,6 +210,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
           if (content === normalizeAttention(previousAttention)) {
             throw new Error("Replacement is identical to the existing Current Attention; return NO_CHANGE instead");
           }
+          enforceWorkspaceWriteLimit(ATTENTION_PATH, content);
           await atomicWrite(attentionFile, content);
           replaced = true;
           return toolResult({ type: "loom.current-attention-replaced", version: 1, path: ATTENTION_PATH });

@@ -79,3 +79,31 @@ test("restores an incomplete Thread tree including moves", async () => {
   assert.equal(await readFile(path.join(threadRoot, "garden", "thread.md"), "utf8"), "living thread\n");
   assert.equal((await stat(threadRoot)).mode & 0o777, 0o750);
 });
+
+test("rejects an over-limit write and leaves the mutation usable for a smaller write", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-limit-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const journalRoot = path.join(root, "runtime", "workspace-mutations");
+  await mkdir(workspaceRoot, { recursive: true });
+
+  const opened = await beginWorkspaceMutation<{ outcome: "updated"; runId: string }>({
+    workspaceRoot,
+    journalRoot,
+    operationKey: "life-recorder:activity-overlimit",
+  });
+  assert.equal(opened.state, "active");
+
+  const over = "x".repeat(128 * 1024 + 1); // daily cap is 128 KiB
+  await assert.rejects(
+    opened.mutation.write("daily/2026-08-11.md", over),
+    /WorkspaceWriteLimitExceeded|daily\/2026-08-11\.md/,
+  );
+
+  // After the rejected write the mutation is still usable: a valid write lands.
+  await opened.mutation.write("daily/2026-08-11.md", "small narrative\n");
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "daily", "2026-08-11.md"), "utf8"),
+    "small narrative\n",
+  );
+  await opened.mutation.complete({ outcome: "updated", runId: "recorder-1" });
+});

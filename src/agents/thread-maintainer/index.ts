@@ -245,7 +245,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
             type: "loom.thread-activity-page",
             version: 1,
             ...(remaining > 0
-              ? { notice: `${remaining} of ${events.length} events remain unread: continue read_thread_activity with offset ${endOffset} until nextOffset is null before deciding.` }
+              ? { notice: `${remaining} of ${events.length} events remain unread; continue with offset ${endOffset} to read the rest.` }
               : {}),
             referenceId: reference.referenceId,
             activityId: reference.activityId,
@@ -272,7 +272,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
         }),
         executionMode: "sequential",
         execute: async (_toolCallId, params) => {
-          assertGrounded(indexRead, requiredReads, readPaths, currentReferences, currentReadOffsets, request);
+          assertGrounded(indexRead, requiredReads, readPaths);
           const relative = normalizeRelativePath(params.path, "Thread write path");
           await transaction.write(relative, params.content);
           return toolResult({ type: "loom.thread-file-written", version: 1, path: relative });
@@ -292,7 +292,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
         }),
         executionMode: "sequential",
         execute: async (_toolCallId, params) => {
-          assertGrounded(indexRead, requiredReads, readPaths, currentReferences, currentReadOffsets, request);
+          assertGrounded(indexRead, requiredReads, readPaths);
           const source = normalizeRelativePath(params.source, "Thread move source");
           const destination = normalizeRelativePath(params.destination, "Thread move destination");
           if (source === "index.md" || destination === "index.md") {
@@ -316,7 +316,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
         currentReferences,
         tools,
       );
-      assertGrounded(indexRead, requiredReads, readPaths, currentReferences, currentReadOffsets, request);
+      assertGrounded(indexRead, requiredReads, readPaths);
       if (!transaction.mutated) {
         const result: ThreadMaintenanceResult = { outcome: "no_change", runId, changedPaths: [] };
         await mutation.complete({ result, moves: [] });
@@ -499,29 +499,10 @@ function assertGrounded(
   indexRead: boolean,
   requiredReads: Set<string>,
   readPaths: Set<string>,
-  currentReferences: ThreadEvidenceReference[],
-  readOffsets: Map<string, number>,
-  request: ThreadMaintenanceRequest,
 ): void {
   if (!indexRead) throw new Error("Thread Maintainer must read the current Thread Index before deciding");
   for (const required of requiredReads) {
     if (!readPaths.has(required)) throw new Error(`Thread Maintainer did not read affected file ${required}`);
-  }
-  for (const reference of currentReferences.filter(candidate => candidate.relation === "changed")) {
-    const events = request.activity.events.filter(event => event.turnId === reference.turnId);
-    const total = events.length;
-    const read = readOffsets.get(reference.referenceId) ?? 0;
-    if (read !== total) {
-      const unread = events.slice(read).slice(0, 3)
-        .map(event => `${event.kind}@${event.at}`)
-        .join(", ");
-      const more = events.length - read - 3;
-      const suffix = more > 0 ? `, and ${more} more` : "";
-      throw new Error(
-        `Thread Maintainer did not read all current Turn evidence for ${reference.referenceId}: `
-        + `read ${read} of ${total} events; unread: ${unread}${suffix}`,
-      );
-    }
   }
 }
 

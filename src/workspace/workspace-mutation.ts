@@ -12,6 +12,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { enforceWorkspaceWriteLimit } from "./workspace-write-limits.js";
+
 export interface WorkspaceMutationOptions {
   workspaceRoot: string;
   journalRoot: string;
@@ -92,6 +94,7 @@ class DurableWorkspaceMutation<Result> implements WorkspaceMutation<Result> {
   async write(relativePath: string, content: string | Buffer): Promise<void> {
     this.#assertActive();
     const normalized = normalizeRelativePath(relativePath);
+    enforceWorkspaceWriteLimit(normalized, content);
     const target = await resolveWorkspaceFile(this.workspaceRoot, normalized);
     if (!this.#manifest.snapshots.some(snapshot => snapshot.path === normalized)) {
       const snapshot = await captureFileSnapshot(target, normalized, this.journalDirectory);

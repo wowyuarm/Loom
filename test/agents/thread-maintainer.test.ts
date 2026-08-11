@@ -348,7 +348,7 @@ test("keeps the same Thread reference after archive and later activity", async (
   assert.equal((await second.maintain(request(restoredActivity, "turn-restored", "archive/garden"))).outcome, "no_change");
 });
 
-test("refuses a structural decision made from only part of the current Turn", async () => {
+test("allows a decision after reading only part of the current Turn", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-thread-partial-current-"));
   const workspaceRoot = await createWorkspace(root);
   const current = activity("activity-partial", "turn-partial", "first event");
@@ -382,10 +382,9 @@ test("refuses a structural decision made from only part of the current Turn", as
     nextThreadRef: () => "thread-garden",
   });
 
-  await assert.rejects(
-    maintainer.maintain(request(current, "turn-partial")),
-    /did not read all current Turn evidence for evidence-activity-partial-turn-partial-thread-garden: read 1 of 2 events; unread: output@2026-07-21T01:52:00.000Z/,
-  );
+  // The full-read gate was removed (YuCreate decision): the model may decide
+  // after partial reading; the unread-remainder notice carries the information.
+  assert.equal((await maintainer.maintain(request(current, "turn-partial"))).outcome, "no_change");
 });
 
 test("surfaces an unread remainder notice and lets the model finish the page", async () => {
@@ -414,7 +413,7 @@ test("surfaces an unread remainder notice and lets the model finish the page", a
     context => {
       // The first page carries an explicit unread-remainder notice, not only the field.
       const messages = JSON.stringify(context.messages);
-      assert.match(messages, /1 of 21 events remain unread: continue read_thread_activity with offset 20 until nextOffset is null/);
+      assert.match(messages, /1 of 21 events remain unread; continue with offset 20 to read the rest\./);
       return fauxAssistantMessage(fauxToolCall("read_thread_activity", {
         referenceId: "evidence-activity-remainder-turn-remainder-thread-garden",
         offset: 20,
@@ -579,3 +578,25 @@ async function createTestPi(root: string, provider: string) {
   assert.ok(model);
   return { faux, model, modelRuntime };
 }
+
+test("ThreadWorkspaceTransaction enforces the byte limit and stays usable after rejection", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-thread-limit-"));
+  const { ThreadWorkspaceTransaction } = await import("../../src/agents/thread-maintainer/workspace.js");
+  const threadsRoot = path.join(root, "threads");
+  const transaction = await ThreadWorkspaceTransaction.begin(threadsRoot);
+
+  const overIndex = "x".repeat(256 * 1024 + 1);
+  await assert.rejects(transaction.write("index.md", overIndex), /WorkspaceWriteLimitExceeded/);
+
+  const overLine = "y".repeat(256 * 1024 + 1);
+  await assert.rejects(transaction.write("garden/thread.md", overLine), /WorkspaceWriteLimitExceeded/);
+
+  // A note under threads/<line>/notes/ is not limited by default.
+  const bigNote = "z".repeat(1024 * 1024);
+  await transaction.write("garden/notes/2026-08-11.md", bigNote);
+  assert.equal((await readFile(path.join(threadsRoot, "garden", "notes", "2026-08-11.md"), "utf8")).length, 1024 * 1024);
+
+  // The transaction remains usable after a rejected write.
+  await transaction.write("index.md", "small index\n");
+  assert.equal(await readFile(path.join(threadsRoot, "index.md"), "utf8"), "small index\n");
+});

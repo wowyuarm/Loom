@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { enforceWorkspaceWriteLimit } from "../../workspace/workspace-write-limits.js";
+
 interface WorkspaceFileSnapshot {
   content: Buffer;
   mode: number;
@@ -30,6 +32,9 @@ export class ThreadWorkspaceTransaction {
   }
 
   async write(relativePath: string, content: string): Promise<void> {
+    // Entries are relative to the threads/ root; enforce against the
+    // workspace-relative path so the shared byte-limit table applies.
+    enforceWorkspaceWriteLimit(`threads/${relativePath}`, content);
     const target = path.join(this.root, relativePath);
     let previous: Buffer | undefined;
     let mode = 0o600;

@@ -205,16 +205,16 @@ Loom 现有分层解决的都是真实问题：Runtime Store 保存恢复事实�
 
 这一步删除歧义，不新增恢复权限，也不需要通用 health framework。
 
-### 2. 形成一份可供 status 与 cognition 共用的退化事实
+### 2. 形成一份可供 status 与 Orientation 共用的退化事实
 
 Loom 需要知道“自己的哪一部分已退化”，但不应复制一套调度状态。候选是 Runtime Store 中很小的 **Harness Condition** 投影：
 
 - 来源仍是现有权威状态机；Condition 不参与 domain claim、顺序或完成判断。
 - 每个 condition 以 `kind + subject ref` 去重，只记录 open / resolved 转换、首次和最近观察时间、有界失败类别、责任层和可核对引用；不保存原始消息、prompt、Workspace 内容、凭据或无界错误。
 - 只在重要转换时形成认知证据：例如 work 首次 blocked、同一故障指纹跨预算周期重现、scheduled responsibility 明显 overdue、Channel ingress 进入 failed、Model Runtime blocked、Workspace recovery fail closed。普通 retry wait 不反复打扰 Individual。
-- `loom status` 和 Orientation / Main Agent Context 读取同一投影。Condition 恢复后由原权威状态重新观察并标 resolved；“发出恢复命令”本身不能关闭它。
+- `loom status` 和 Orientation 读取同一投影；Main Agent 的普通 Turn 不直接接收 Condition。Condition 恢复后由原权威状态重新观察并标 resolved；“发出恢复命令”本身不能关闭它。
 
-Condition 是可见证据和去重边界，不是新的 job registry、告警平台或 desired-state API。若后续证明确实没有 cognition 消费者，应不建立该投影，只继续改进 status。
+Condition 是可见证据和去重边界，不是新的 job registry、告警平台或 desired-state API。Orientation 是唯一 cognition consumer：它判断是否形成 Opportunity、私下处理或联系用户，不把故障事实直接注入每个对话 Turn。
 
 ### 3. 保留一个不依赖 cognition 的最小生命线
 
@@ -236,7 +236,57 @@ Condition 是可见证据和去重边界，不是新的 job registry、告警平
 5. **验证**：再次读取权威状态和领域结果；命令成功、进程重启或 work 被 requeue 都不是恢复证明。
 6. **收口**：恢复后标 resolved；相同故障继续存在时抑制重复动作和重复通知，升级给 Individual 或 Operator。
 
-其中 Harness 可以直接执行已有的 bounded retry、lease recovery、Workspace Mutation recovery、failure isolation 和 crash restart；Individual 可以在自身 Workspace 与消息权限内调查、修正材料和求助。是否给 Main Agent 一个 condition-specific requeue action，需要单独决定并设置同一故障指纹下的次数上限；不应把现有 Operator `loom requeue-organ` 原样暴露成可无限调用的普通工具。
+其中 Harness 可以直接执行已有的 bounded retry、lease recovery、Workspace Mutation recovery、failure isolation 和 crash restart；Orientation 可以把重要 Condition 形成 Opportunity，Individual 再在自身 Workspace 与消息权限内调查、修正材料和求助。是否给 Main Agent 一个 condition-specific requeue action，需要单独决定并设置同一故障指纹下的次数上限；不应把现有 Operator `loom requeue-organ` 原样暴露成可无限调用的普通工具。
+
+## 已确认的产品方向
+
+YuCreate 于 2026-08-11 确认总体方向，并收窄了 cognition 边界：
+
+- 一个 Cognitive Organ 失败时，无依赖的生活能力继续；真实依赖它的工作可以等待。
+- Harness Condition 可以建立，但只供 Orientation 使用，不直接进入 Main Agent 的普通 Context。
+- Orientation 后续需要明确 prompt 合同：判断影响、持续时间、权限和是否已处理，再决定 `none`、形成私人 Opportunity 或联系用户；它不能机械报警，也不能在 Condition 未 resolved 时声称恢复。
+- Harness 自己负责正常的有界重试；Condition 只在明确不可重试或预算耗尽、已经形成实质退化时进入 Orientation，不把每次 attempt 失败变成 Proactivity 输入。
+
+### 重试与 Condition 的先后
+
+建议按失败分类运行：
+
+1. retryable failure 继续使用现有 attempt / total deadline 预算和 backoff；预算内恢复时不形成面向 Orientation 的 active Condition。
+2. 已明确的 permission、integrity、contract / invariant failure 不做无意义的模型重试，直接进入 blocked 并形成 Condition。
+3. unknown failure 可以使用有界预算，但相同故障指纹连续出现时停止增加频率；预算耗尽后形成一个去重 Condition。
+4. requeue 开启的是新的预算周期，不是恢复证明；同一指纹跨预算周期重现时不得自动继续 requeue。
+
+## 当前依赖关系核对
+
+“故障隔离”不能理解为所有 lane 永不等待。当前 Runtime 已有以下硬依赖、软依赖和独立关系，spec 应逐条保留或明确修改：
+
+| 上游状态 | 必须等待的工作 | 可以继续的工作 | 原因 |
+| --- | --- | --- | --- |
+| Main Agent Turn 或任何真实 writer 正在运行 | 同一 Instance 的其他 writer、Activity close | 当前执行本身；新 Input 保持 durable pending | 单 Instance / Workspace 单写者与 fencing 边界 |
+| 任一 Cognitive Organ 为 `intervention_required` | 新 Main Agent Turn、其他 model writer、维护与 Orientation | Input 接收、可安全的既有外部事实处理 | cancel grace 后不能证明旧 writer 已停止，必须全局保护 Workspace；这与普通 `blocked` 不同 |
+| Pending Delivery | 新 Turn、Orientation、Activity close 通常让路 | Delivery 自身；Input 可先持久接收 | 人类已接受的 Effect 优先，不能因 Proactivity 改变发送顺序 |
+| Delivery `reconciliation_required` | 同一 Effect 不得自动重发 | 新 wake 后可继续检查其他安全工作；外部 reconciliation 决定该 Delivery | 未知是否已发送，重试可能重复外部效果 |
+| Life Recorder 对 Activity 失败 | 该 recorder lane 的后续 FIFO；Memory Reflection 对应日保持不完整 | Thread Maintainer、Attention、Pulse、Interaction 可在各自 idle / writer gate 满足时继续 | Reflection 明确要求当日 Activity 都 recorded；其他 organ 使用 Frozen Activity，不依赖 Episode receipt |
+| Thread Maintainer 队首 retry / blocked | 同一 Thread maintenance FIFO 的后续 Activity | 其他 organ lane、Interaction 与 Pulse | Thread 内容有顺序依赖；跨 organ 没有同一 FIFO |
+| Thread work 最新状态为 `blocked` | 后续 Thread work 仍等待 | 对应日 Reflection 可带着这一退化事实继续 | 当前 `#reflectionDayComplete()` 把 terminal blocked 视为可降级完成；running、retry wait、requeued 或 intervention 仍 gate Reflection |
+| Active Segment 尚未安全冻结 | Life Recorder、Thread maintenance、Attention、Reflection 的新窗口；普通 Pulse 等待或按公平切分合同冻结 | 当前 Turn、Delivery、after-chat；新 Input 按优先级处理 | Frozen Activity 是维护证据边界；Pulse 的 fair split 是受前台和 Delivery gate 限制的例外 |
+| Model Runtime `blocked` | 新 Main Agent、Orientation 和所有模型型 Cognitive Organ | Input 接收、确定的 Delivery、无模型 Activity close、nmem 等安全 reconciliation | 配置错误不能丢输入或撤销已有外部行动 |
+| nmem / Channel 单项失败 | 该 Integration / Channel 自己的失败项或明确 FIFO 依赖 | Runtime 核心与其他 Integration / Channel | 外部系统有自己的 durable state 和 retry / failed 隔离，不应成为全局 Harness liveness |
+
+这张表还揭示一个重要区别：`blocked` 表示已停止、可让无依赖工作继续；`intervention_required` 表示旧 writer 可能尚未释放，必须保持更大的安全 hold。二者不能为了“都需要人处理”而合并成同一种 Condition 后果。
+
+### Orientation 对 Condition 的反应合同
+
+后续 prompt / spec 至少要让 Orientation 依次判断：
+
+1. Condition 是否仍在正常自动恢复阶段；若是，通常输出 `none`。
+2. 哪项生活能力实际受影响，其他能力是否仍可用。
+3. 是否存在 Individual 已有权限内的安全私人动作；没有权限时不制造修复。
+4. 是否已需要用户行动；需要时说明故障、影响和请求，不暴露私人原始证据。
+5. 原权威状态是否已将 Condition 标为 resolved；未 resolved 不能宣称恢复。
+6. 同一 Condition 是否已被处理或告知；无状态变化时避免重复 Opportunity 和消息。
+
+Orientation 仍保留判断和沉默权。Condition 是新的真实证据来源，不是把 Proactivity 改成运维告警器。
 
 ## 建议进入 spec 的最小范围
 
@@ -244,7 +294,7 @@ Condition 是可见证据和去重边界，不是新的 job registry、告警平
 
 1. 明确 admission / scheduler / driver 的结果术语，删除 `busy` 的多义性；
 2. 定义故障分类、condition 的最小字段、去重 / resolved 规则及隐私边界；
-3. 定义 Condition 如何进入 `loom status` 与 Loom cognition，不增加第二条执行路径；
+3. 定义 Condition 如何进入 `loom status` 与 Orientation，以及 Orientation 的 `none` / Opportunity / 求助边界，不增加第二条执行路径；
 4. 列出首批允许的恢复 action、每项预算、验证事实和升级对象；
 5. 定义 Process Driver no-progress 与 systemd watchdog 各自检测什么、绝不检测什么。
 
