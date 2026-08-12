@@ -19,6 +19,7 @@ import {
 import type { OperationalEvent } from "../../src/operational-events.js";
 import { createTimePolicy } from "../../src/configuration/index.js";
 import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
+import { PiCognitiveOrganTurnLimitError } from "../../src/agents/session/index.js";
 
 function deferred<T>(): {
   promise: Promise<T>;
@@ -126,65 +127,6 @@ function readLedger(db: DatabaseSync): {
   >;
   return { work: work[0]!, attempts };
 }
-
-test("soft deadline only signals cancel; a released organ closes the work as cancelled", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-soft-deadline-"));
-  const now = new Date("2026-07-19T11:00:00.000Z");
-  const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
-  const started = deferred<void>();
-  const cancelReasons: string[] = [];
-  const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
-  const runtime = openRuntime({
-    root,
-    execution: completingExecution,
-    activityLifecycle: activityLifecycle(),
-    activityRecorder: {
-      record: async () => {
-        started.resolve();
-        return recording.promise;
-      },
-      cancel: async reason => {
-        cancelReasons.push(reason);
-        recording.reject(new Error("released"));
-      },
-    },
-    // Test-controlled soft deadline: the runtime registers a timer instead of
-    // waiting 10 real minutes.
-    organCancelTimer: (delayMs, callback) => {
-      timerCalls.push({ delayMs, callback });
-      return { clear: () => {} };
-    },
-    now: () => now,
-  });
-
-  await runtime.acceptInput({
-    source: "test",
-    sourceId: "pending-recording",
-    kind: "interaction",
-    payload: { text: "record me" },
-  });
-  const { organRun } = await startRecording(runtime, started.promise);
-  assert.equal(timerCalls.length, 1);
-  assert.equal(timerCalls[0]!.delayMs, COGNITIVE_ORGAN_POLICY.softDeadlineMs);
-
-  // The deadline fires without killing anything: the recorder gets a cancel
-  // signal only, and releases its own work.
-  now.setTime(now.getTime() + COGNITIVE_ORGAN_POLICY.softDeadlineMs);
-  timerCalls[0]!.callback();
-  assert.deepEqual(cancelReasons, ["soft_deadline"]);
-  assert.deepEqual(await organRun, { disposition: "busy" });
-  assert.equal(runtime.status().activities[0]?.status, "pending");
-
-  runtime.close();
-  const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
-  db.close();
-  assert.equal(ledger.work.status, "cancelled");
-  assert.equal(ledger.work.last_cancel_reason, "soft_deadline");
-  assert.equal(ledger.attempts.length, 1);
-  assert.equal(ledger.attempts[0]!.status, "cancelled");
-  assert.equal(ledger.attempts[0]!.cancel_reason, "soft_deadline");
-});
 
 test("a cancel that is not released persists intervention_required and blocks parallel organ starts", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-single-writer-"));
@@ -404,12 +346,10 @@ test("fixes the Model Runtime Revision per attempt and links transcript and resu
   now = new Date("2026-07-19T11:01:00.001Z");
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
 
-  // The operator status carries the completed attempt's per-attempt soft
-  // deadline and its transcript and result references.
+  // The operator status carries references once the attempt completes.
   const done = runtime.status().cognitiveOrganWork
     .find(entry => entry.organ === "life-recorder")!;
   assert.equal(done.status, "completed");
-  assert.ok(done.softDeadlineAt);
   assert.equal(done.transcriptRef, "organs/life-recorder/run-2.jsonl");
   assert.equal(done.resultRef, "daily/2026-07-19.md");
 
@@ -1020,10 +960,6 @@ test("intervention_required survives a restart; requeue runs the successor throu
       cancel: async () => {},
     },
     cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-    organCancelTimer: (delayMs, callback) => {
-      timerCalls.push({ delayMs, callback });
-      return { clear: () => {} };
-    },
     now: () => now,
   });
 
@@ -1057,13 +993,11 @@ test("intervention_required survives a restart; requeue runs the successor throu
   });
   await attentionStarted.promise;
 
-  // The soft deadline fires; the organ ignores the cancel, so the grace
-  // expiry persists intervention_required in the ledger. (The recording claim
-  // registered the first timer; the held attention claim registered the last.)
-  now = new Date("2026-07-19T12:10:01.000Z");
-  const attentionTimer = timerCalls[timerCalls.length - 1]!;
-  assert.equal(attentionTimer.delayMs, COGNITIVE_ORGAN_POLICY.softDeadlineMs);
-  attentionTimer.callback();
+  // Human preemption, not a normal execution deadline, starts the retained
+  // cancellation grace. This fake organ deliberately ignores cancellation.
+  await first.acceptInput({
+    source: "test", sourceId: "interrupt-held-attention", kind: "interaction", payload: { text: "interrupt" },
+  });
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(
     first.status().cognitiveOrganWork.find(entry => entry.organ === "attention-maintainer")?.status,
@@ -1112,11 +1046,15 @@ test("intervention_required survives a restart; requeue runs the successor throu
   assert.equal(successor.status, "running");
   assert.equal(successor.attemptCount, 1);
   assert.equal(successor.requeuedFrom, held.workId);
-  // A running attempt exposes its per-attempt soft deadline; transcript and
-  // result references are omitted until the attempt completes.
-  assert.ok(successor.softDeadlineAt);
+  // Transcript and result references are omitted until completion.
   assert.equal("transcriptRef" in successor, false);
   assert.equal("resultRef" in successor, false);
+
+  // The preempting human Input is durable across restart and keeps the organ
+  // scheduler human-first until its Activity has been closed.
+  await recovered.advance();
+  await recovered.closeActivity();
+  await recovered.advance();
 
   // The organ entry claims the successor through the normal path and runs its
   // first attempt; domain preconditions were checked before the claim.
@@ -1140,7 +1078,6 @@ test("intervention_required survives a restart; requeue runs the successor throu
   assert.equal(done.status, "completed");
   assert.equal(done.attemptCount, 1);
   assert.equal(done.requeuedFrom, held.workId);
-  assert.ok(done.softDeadlineAt);
   assert.equal(done.transcriptRef, "organs/attention-maintainer/attention-after-requeue.jsonl");
   assert.equal(done.resultRef, "attention/2026-07-20.md");
 
@@ -1184,10 +1121,6 @@ test("requeue refuses attention work whose window moved on; a successor whose do
       cancel: async () => {},
     },
     cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-    organCancelTimer: (delayMs, callback) => {
-      timerCalls.push({ delayMs, callback });
-      return { clear: () => {} };
-    },
     now: () => now,
   });
 
@@ -1220,8 +1153,9 @@ test("requeue refuses attention work whose window moved on; a successor whose do
     agentWork: "allow",
   });
   await attentionStarted.promise;
-  now = new Date("2026-07-19T12:10:01.000Z");
-  timerCalls[timerCalls.length - 1]!.callback();
+  await first.acceptInput({
+    source: "test", sourceId: "interrupt-held-attention-window", kind: "interaction", payload: { text: "interrupt" },
+  });
   await new Promise(resolve => setTimeout(resolve, 100));
   assert.equal(
     first.status().cognitiveOrganWork.find(entry => entry.organ === "attention-maintainer")?.status,
@@ -1328,10 +1262,6 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
         cancel: async () => {},
       },
       cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      organCancelTimer: (delayMs, callback) => {
-        timerCalls.push({ delayMs, callback });
-        return { clear: () => {} };
-      },
       now: () => now,
     });
     await first.acceptInput({
@@ -1344,8 +1274,9 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
     await first.closeActivity();
     const recordingRun = first.advance();
     await recordStarted.promise;
-    now = new Date("2026-07-19T12:10:01.000Z");
-    timerCalls[0]!.callback();
+    await first.acceptInput({
+      source: "test", sourceId: "interrupt-held-recording", kind: "interaction", payload: { text: "interrupt" },
+    });
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(
       first.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder")?.status,
@@ -1404,10 +1335,6 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
         cancel: async () => {},
       },
       cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      organCancelTimer: (delayMs, callback) => {
-        timerCalls.push({ delayMs, callback });
-        return { clear: () => {} };
-      },
       now: () => now,
     });
     await first.acceptInput({
@@ -1436,8 +1363,9 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
       agentWork: "allow",
     });
     await reflectStarted.promise;
-    now = new Date("2026-07-20T04:10:01.000Z");
-    timerCalls[timerCalls.length - 1]!.callback();
+    await first.acceptInput({
+      source: "test", sourceId: "interrupt-held-reflection", kind: "interaction", payload: { text: "interrupt" },
+    });
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(
       first.status().cognitiveOrganWork.find(entry => entry.organ === "memory-reflector")?.status,
@@ -1502,10 +1430,6 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
         cancel: async () => {},
       },
       cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      organCancelTimer: (delayMs, callback) => {
-        timerCalls.push({ delayMs, callback });
-        return { clear: () => {} };
-      },
       now: () => now,
     });
     await first.acceptInput({
@@ -1519,8 +1443,9 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
     await first.advance();
     const threadRun = first.advance();
     await threadStarted.promise;
-    now = new Date("2026-07-19T12:10:01.000Z");
-    timerCalls[timerCalls.length - 1]!.callback();
+    await first.acceptInput({
+      source: "test", sourceId: "interrupt-held-thread", kind: "interaction", payload: { text: "interrupt" },
+    });
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(
       first.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status,
@@ -1622,6 +1547,50 @@ test("emits agent.run.started/finished for a Cognitive Organ run", async t => {
   const startedAt = events.indexOf(started[0]);
   const finishedAt = events.indexOf(finished[0]);
   assert.ok(startedAt !== -1 && finishedAt !== -1 && startedAt < finishedAt);
+});
+
+test("records the stable turn_limit category when an organ exhausts its Pi turns", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-turn-limit-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, `record-${activity.segmentId}`),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => { throw new PiCognitiveOrganTurnLimitError(); },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "turn-limit", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+  await runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  now = new Date(now.getTime() + 1);
+  assert.equal((await runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  })).disposition, "failed");
+
+  const latest = runtime.operationalStatus().agents.find(agent => agent.name === "attention-maintainer")?.latest;
+  assert.equal(latest?.failureCategory, "turn_limit");
+  assert.equal(runtime.status().cognitiveOrganWork.find(work => work.organ === "attention-maintainer")?.lastFailureCategory, "turn_limit");
 });
 
 function threadObservation(activity: FrozenActivity) {

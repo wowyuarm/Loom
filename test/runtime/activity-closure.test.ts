@@ -46,7 +46,10 @@ test("closes interaction Activity while the successor continues and Recorder cat
       }, { id: "write-daily" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("Recorded the first activity."),
+    fauxAssistantMessage(
+      fauxToolCall("finish", {}, { id: "finish-recording" }),
+      { stopReason: "toolUse" },
+    ),
   ]);
 
   const transcriptDirectory = path.join(root, "transcripts", "main-agent");

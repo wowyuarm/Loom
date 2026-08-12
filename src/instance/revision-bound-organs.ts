@@ -170,6 +170,7 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "attention-maintainer"),
+      mutationDirectory: this.options.layout.workspaceMutationRoot,
       modelRuntime: selection.modelRuntime,
       model: selection.model,
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),

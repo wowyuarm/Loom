@@ -97,6 +97,58 @@ test("forms a grounded Opportunity through an isolated Orientation run", async (
   });
 });
 
+test("corrects an invalid terminal result in the same Orientation session", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-orientation-correction-"));
+  const workspaceRoot = await createWorkspace(root);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: path.join(root, "config", "auth.json"),
+    modelsPath: null,
+    modelsStorePath: path.join(root, "config", "models-store.json"),
+    allowModelNetwork: false,
+  });
+  const provider = registerFaux(modelRuntime, "orientation-correction");
+  provider.faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage("not a valid Orientation result"),
+    context => {
+      assert.match(JSON.stringify(context.messages), /run is incomplete/i);
+      return fauxAssistantMessage(JSON.stringify({
+        outcome: "none",
+        whyNow: "The current attention contains no live opening.",
+        evidence: ["attention.md says Current attention is open."],
+      }));
+    },
+  ]);
+
+  const orientation = await createPiOrientation({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "orientation-agent"),
+    transcriptDirectory: path.join(root, "transcripts", "orientation"),
+    modelRuntime,
+    model: provider.model,
+    loadActionSpace: async () => ({
+      skills: [],
+      mainAgentTools: [],
+      evidenceSources: [],
+    }),
+    nextRunId: () => "orientation-correction-run",
+  });
+
+  assert.deepEqual(await orientation.form({
+    observedAt: "2026-07-20T06:30:00.000Z",
+    localTime: "2026-07-20 14:30 +08:00",
+    recentActivities: [],
+  }), {
+    outcome: "none",
+    runId: "orientation-correction-run",
+    whyNow: "The current attention contains no live opening.",
+    evidence: ["attention.md says Current attention is open."],
+  });
+});
+
 function frozenActivity(): FrozenActivity {
   return {
     version: 1,

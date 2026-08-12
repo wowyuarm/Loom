@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -19,6 +19,10 @@ import type { FrozenActivity } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../../workspace/tools.js";
 import { beginWorkspaceTreeMutation } from "../../workspace/workspace-mutation.js";
+import {
+  createPiCognitiveOrganSession,
+  type PiCognitiveOrganSession,
+} from "../session/index.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 import {
@@ -120,7 +124,6 @@ export interface PiThreadMaintainerOptions {
 
 interface DurableThreadMaintenanceResult {
   result: ThreadMaintenanceResult;
-  moves: Array<{ source: string; destination: string }>;
 }
 
 class PiThreadMaintainer implements ThreadMaintainer {
@@ -131,27 +134,35 @@ class PiThreadMaintainer implements ThreadMaintainer {
 
   async maintain(request: ThreadMaintenanceRequest): Promise<ThreadMaintenanceResult> {
     validateRequest(request);
+    const instanceRoot = path.dirname(this.options.agentWorkspace.root);
+    const stateRelativePath = path.relative(instanceRoot, path.resolve(this.options.stateFile));
+    if (stateRelativePath === ".." || stateRelativePath.startsWith(`..${path.sep}`) || path.isAbsolute(stateRelativePath)) {
+      throw new Error("Thread evidence state must stay inside the Runtime Instance Root");
+    }
     const threadsRoot = path.join(this.options.agentWorkspace.root, THREADS_PATH);
-    await mkdir(threadsRoot, { recursive: true });
-    const [stableFacts, evidenceIndex] = await Promise.all([
-      this.options.agentWorkspace.loadStableFacts(),
-      ThreadEvidenceIndex.open(this.options.stateFile, this.options.nextThreadRef),
-    ]);
-    const currentReferences = await evidenceIndex.record(request.activity, request.observations);
     const opened = await beginWorkspaceTreeMutation<DurableThreadMaintenanceResult>({
-      workspaceRoot: this.options.agentWorkspace.root,
+      workspaceRoot: instanceRoot,
       journalRoot: this.options.mutationDirectory
         ?? path.join(this.options.transcriptDirectory, "workspace-mutations"),
       operationKey: `thread-maintainer:${request.activity.segmentId}`,
-      treePath: THREADS_PATH,
+      treePath: "workspace/threads",
+      protectedFiles: [stateRelativePath],
     });
     if (opened.state === "completed") {
-      await evidenceIndex.applyMoves(opened.result.moves);
       return opened.result.result;
     }
     const mutation = opened.mutation;
+    let stableFacts: string;
+    let evidenceIndex: ThreadEvidenceIndex;
+    let currentReferences: ThreadEvidenceReference[];
     let transaction: ThreadWorkspaceTransaction;
     try {
+      await mkdir(threadsRoot, { recursive: true });
+      [stableFacts, evidenceIndex] = await Promise.all([
+        this.options.agentWorkspace.loadStableFacts(),
+        ThreadEvidenceIndex.open(this.options.stateFile, this.options.nextThreadRef),
+      ]);
+      currentReferences = await evidenceIndex.record(request.activity, request.observations);
       transaction = await ThreadWorkspaceTransaction.begin(threadsRoot);
     } catch (error) {
       await mutation.rollback();
@@ -164,6 +175,33 @@ class PiThreadMaintainer implements ThreadMaintainer {
     const currentReadOffsets = new Map(currentReferences.map(reference => [reference.referenceId, 0]));
     const readPaths = new Set<string>();
     let indexRead = !(await exists(path.join(threadsRoot, "index.md")));
+    const organSession = createPiCognitiveOrganSession<ThreadMaintenanceResult>({
+      completion: "finish",
+      organ: "thread-maintainer",
+      finishReminder: "This maintenance run is not complete. Read any missing evidence, make any needed structural changes, then call finish to validate and commit them.",
+      validateAndCommit: async () => {
+        try {
+          assertGrounded(indexRead, requiredReads, readPaths);
+        } catch (error) {
+          return { state: "rejected", error: errorMessage(error) };
+        }
+        const changedPaths = transaction.mutated ? await transaction.changedPaths() : [];
+        if (transaction.mutated && changedPaths.length === 0) {
+          return {
+            state: "rejected",
+            error: "Thread Maintainer reported writes without a Workspace change",
+          };
+        }
+        const result: ThreadMaintenanceResult = {
+          outcome: changedPaths.length > 0 ? "updated" : "no_change",
+          runId,
+          changedPaths,
+        };
+        await evidenceIndex.applyMoves(transaction.moves);
+        await mutation.complete({ result });
+        return { state: "committed", result };
+      },
+    });
 
     const workspaceTools = createWorkspaceReadTools(threadsRoot).map(tool => observeRead(tool));
     const tools: ToolDefinition[] = [
@@ -274,7 +312,7 @@ class PiThreadMaintainer implements ThreadMaintainer {
         execute: async (_toolCallId, params) => {
           assertGrounded(indexRead, requiredReads, readPaths);
           const relative = normalizeRelativePath(params.path, "Thread write path");
-          await transaction.write(relative, params.content);
+          organSession.acceptWrite(await transaction.write(relative, params.content));
           return toolResult({ type: "loom.thread-file-written", version: 1, path: relative });
         },
       }),
@@ -301,32 +339,23 @@ class PiThreadMaintainer implements ThreadMaintainer {
           if (destination.startsWith(`${source}/`)) {
             throw new Error("A Thread path cannot be moved inside itself");
           }
-          await transaction.move(source, destination);
+          organSession.acceptWrite(await transaction.move(source, destination));
           return toolResult({ type: "loom.thread-path-moved", version: 1, source, destination });
         },
       }),
     ];
+    const guardedTools = organSession.bindTools(tools);
 
     try {
-      await this.#runSession(
+      const result = await this.#runSession(
         request,
         runId,
         stableFacts,
         evidenceIndex,
         currentReferences,
-        tools,
+        guardedTools,
+        organSession,
       );
-      assertGrounded(indexRead, requiredReads, readPaths);
-      if (!transaction.mutated) {
-        const result: ThreadMaintenanceResult = { outcome: "no_change", runId, changedPaths: [] };
-        await mutation.complete({ result, moves: [] });
-        return result;
-      }
-      const changedPaths = await transaction.changedPaths();
-      if (changedPaths.length === 0) throw new Error("Thread Maintainer reported writes without a Workspace change");
-      const result: ThreadMaintenanceResult = { outcome: "updated", runId, changedPaths };
-      await mutation.complete({ result, moves: [...transaction.moves] });
-      await evidenceIndex.applyMoves(transaction.moves);
       return result;
     } catch (error) {
       await mutation.rollback();
@@ -362,7 +391,8 @@ class PiThreadMaintainer implements ThreadMaintainer {
     evidenceIndex: ThreadEvidenceIndex,
     currentReferences: ThreadEvidenceReference[],
     tools: ToolDefinition[],
-  ): Promise<string> {
+    organSession: PiCognitiveOrganSession<ThreadMaintenanceResult>,
+  ): Promise<ThreadMaintenanceResult> {
     const transcriptFile = path.join(this.options.transcriptDirectory, `${runId}.jsonl`);
     const sessionManager = SessionManager.open(
       transcriptFile,
@@ -390,7 +420,9 @@ class PiThreadMaintainer implements ThreadMaintainer {
         stableFacts.trim(),
         "</stable_facts>",
       ].join("\n"),
-      appendSystemPromptOverride: () => [],
+      appendSystemPromptOverride: () => [
+        "When the maintenance run is ready, call finish; a plain final message does not commit it.",
+      ],
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -410,10 +442,9 @@ class PiThreadMaintainer implements ThreadMaintainer {
       if (this.#cancelReason) throw new Error(`Thread maintenance cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(buildRunPrompt(request, runId, evidenceIndex, currentReferences), {
-        expandPromptTemplates: false,
-      });
-      return finalAssistantText(session.messages);
+      const result = await organSession.run(session, buildRunPrompt(request, runId, evidenceIndex, currentReferences));
+      if (!result.result) throw new Error("Thread Maintainer did not finish");
+      return result.result;
     } finally {
       if (this.#activeSession === session) {
         this.#activeSession = undefined;
@@ -573,22 +604,15 @@ function normalizeReadPath(root: string, value: string): string {
   return normalizeRelativePath(relative, "read path");
 }
 
-function finalAssistantText(messages: AgentMessage[]): string {
-  const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
-  if (!message) throw new Error("Thread Maintainer did not return an assistant message");
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
-    throw new Error(message.errorMessage ?? `Thread Maintainer stopped with ${message.stopReason}`);
-  }
-  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
-  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
-  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
-}
-
 function toolResult(value: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     details: value,
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function validateIso(value: string, field: string): void {

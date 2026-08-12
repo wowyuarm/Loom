@@ -150,7 +150,7 @@ Local 已启用，Weixin 与 nmem 保持关闭。迁移使用了已核验的完�
 
 ## Source References
 
-- Current: [53 — Organ Workspace Write Limits (byte-level)](issues/53-workspace-write-limits.md). 防止 organ 维护文件失控膨胀（Xi index.md 1.16MB 案例）；src 常量上限表 + mutation.write 与各局部 atomicWrite 统一查表；recoverable error 只拒当前 write；未匹配路径默认放行。
+- Current: [53 — Unified Cognitive Organ Session and Workspace Write Limits](issues/53-workspace-write-limits.md). 六个 Pi organ 统一 50-turn Session，四个写入 organ 使用共同 `finish` 与 applied/rejected/uncertain 写入结果；10/45 分钟正常执行 deadline 已移除。字节上限由 src 常量统一查表，未匹配路径默认放行。
 
 - Xi [Harness Generalization Map](../../../Xi/.scratch/harness-generalization/map.md)
 - Xi [03 — Runtime Kernel Contract](../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)

@@ -12,7 +12,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
-import { enforceWorkspaceWriteLimit } from "./workspace-write-limits.js";
+import { enforceWorkspaceWriteLimit, isWorkspaceWriteLimitError } from "./workspace-write-limits.js";
 
 export interface WorkspaceMutationOptions {
   workspaceRoot: string;
@@ -25,10 +25,17 @@ export type OpenedWorkspaceMutation<Result> =
   | { state: "completed"; result: Result };
 
 export interface WorkspaceMutation<Result> {
-  write(relativePath: string, content: string | Buffer): Promise<void>;
+  write(relativePath: string, content: string | Buffer): Promise<WorkspaceWriteOutcome>;
   complete(result: Result): Promise<void>;
   rollback(): Promise<void>;
 }
+
+/** Proof status for one whole-file replacement. Callers must decide from this
+ * result, rather than guessing from an exception whether a retry is safe. */
+export type WorkspaceWriteOutcome =
+  | { state: "applied" }
+  | { state: "rejected"; error: string }
+  | { state: "uncertain"; error: string };
 
 export interface WorkspaceTreeMutation<Result> {
   complete(result: Result): Promise<void>;
@@ -66,6 +73,7 @@ interface PendingTreeManifest {
   treeExisted: boolean;
   treeMode?: number;
   entries: TreeEntrySnapshot[];
+  snapshots?: FileSnapshot[];
 }
 
 interface CompletedManifest {
@@ -91,20 +99,34 @@ class DurableWorkspaceMutation<Result> implements WorkspaceMutation<Result> {
     this.#manifest = manifest;
   }
 
-  async write(relativePath: string, content: string | Buffer): Promise<void> {
+  async write(relativePath: string, content: string | Buffer): Promise<WorkspaceWriteOutcome> {
     this.#assertActive();
-    const normalized = normalizeRelativePath(relativePath);
-    enforceWorkspaceWriteLimit(normalized, content);
-    const target = await resolveWorkspaceFile(this.workspaceRoot, normalized);
-    if (!this.#manifest.snapshots.some(snapshot => snapshot.path === normalized)) {
-      const snapshot = await captureFileSnapshot(target, normalized, this.journalDirectory);
-      this.#manifest = {
-        ...this.#manifest,
-        snapshots: [...this.#manifest.snapshots, snapshot],
-      };
-      await writeManifest(this.journalDirectory, this.#manifest);
+    let normalized: string;
+    try {
+      normalized = normalizeRelativePath(relativePath);
+      enforceWorkspaceWriteLimit(normalized, content);
+    } catch (error) {
+      if (isWorkspaceWriteLimitError(error)) return { state: "rejected", error: error.message };
+      return { state: "rejected", error: error instanceof Error ? error.message : String(error) };
     }
-    await replaceFromJournal(this.journalDirectory, target, Buffer.from(content), 0o600);
+    try {
+      const target = await resolveWorkspaceFile(this.workspaceRoot, normalized);
+      if (!this.#manifest.snapshots.some(snapshot => snapshot.path === normalized)) {
+        const snapshot = await captureFileSnapshot(target, normalized, this.journalDirectory);
+        this.#manifest = {
+          ...this.#manifest,
+          snapshots: [...this.#manifest.snapshots, snapshot],
+        };
+        await writeManifest(this.journalDirectory, this.#manifest);
+      }
+      await replaceFromJournal(this.journalDirectory, target, Buffer.from(content), 0o600);
+      return { state: "applied" };
+    } catch (error) {
+      // A failed rename, chmod, directory sync, or staged-file cleanup can
+      // leave the target changed even when the promise rejects. Never let an
+      // organ retry such a write inside the same mutation.
+      return { state: "uncertain", error: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   async complete(result: Result): Promise<void> {
@@ -201,7 +223,7 @@ export async function beginWorkspaceMutation<Result>(
 }
 
 export async function beginWorkspaceTreeMutation<Result>(
-  options: WorkspaceMutationOptions & { treePath: string },
+  options: WorkspaceMutationOptions & { treePath: string; protectedFiles?: string[] },
 ): Promise<
   | { state: "active"; mutation: WorkspaceTreeMutation<Result> }
   | { state: "completed"; result: Result }
@@ -210,6 +232,10 @@ export async function beginWorkspaceTreeMutation<Result>(
   const journalRoot = path.resolve(options.journalRoot);
   const operationKey = nonEmpty(options.operationKey, "Workspace Mutation operationKey");
   const treePath = normalizeRelativePath(options.treePath);
+  const protectedFiles = [...new Set((options.protectedFiles ?? []).map(normalizeRelativePath))];
+  if (protectedFiles.some(file => file === treePath || file.startsWith(`${treePath}/`))) {
+    throw new Error("Workspace Tree Mutation protected files must be outside the captured tree");
+  }
   await Promise.all([
     mkdir(workspaceRoot, { recursive: true }),
     mkdir(journalRoot, { recursive: true, mode: 0o700 }),
@@ -226,6 +252,14 @@ export async function beginWorkspaceTreeMutation<Result>(
 
   await mkdir(journalDirectory, { recursive: false, mode: 0o700 });
   const captured = await captureTreeSnapshot(workspaceRoot, treePath, journalDirectory);
+  const snapshots: FileSnapshot[] = [];
+  for (const relativePath of protectedFiles) {
+    snapshots.push(await captureFileSnapshot(
+      await resolveWorkspaceFile(workspaceRoot, relativePath),
+      relativePath,
+      journalDirectory,
+    ));
+  }
   const manifest: PendingTreeManifest = {
     version: 1,
     operationKey,
@@ -235,6 +269,7 @@ export async function beginWorkspaceTreeMutation<Result>(
     treeExisted: captured.existed,
     ...(captured.mode === undefined ? {} : { treeMode: captured.mode }),
     entries: captured.entries,
+    snapshots,
   };
   await writeManifest(journalDirectory, manifest);
   return {
@@ -297,11 +332,22 @@ async function restorePendingMutation(
 ): Promise<void> {
   if (manifest.kind === "tree") {
     await restoreTreeSnapshot(workspaceRoot, journalDirectory, manifest);
+    await restoreFileSnapshots(workspaceRoot, journalDirectory, manifest.snapshots ?? []);
     await rm(journalDirectory, { recursive: true, force: true });
     await syncDirectory(path.dirname(journalDirectory));
     return;
   }
-  for (const snapshot of [...manifest.snapshots].reverse()) {
+  await restoreFileSnapshots(workspaceRoot, journalDirectory, manifest.snapshots);
+  await rm(journalDirectory, { recursive: true, force: true });
+  await syncDirectory(path.dirname(journalDirectory));
+}
+
+async function restoreFileSnapshots(
+  workspaceRoot: string,
+  journalDirectory: string,
+  snapshots: FileSnapshot[],
+): Promise<void> {
+  for (const snapshot of [...snapshots].reverse()) {
     const target = await resolveWorkspaceFile(workspaceRoot, snapshot.path);
     if (snapshot.previous === "missing") {
       await rm(target, { force: true });
@@ -318,8 +364,6 @@ async function restorePendingMutation(
       snapshot.mode,
     );
   }
-  await rm(journalDirectory, { recursive: true, force: true });
-  await syncDirectory(path.dirname(journalDirectory));
 }
 
 async function captureTreeSnapshot(
@@ -482,7 +526,9 @@ async function readManifest(directory: string): Promise<MutationManifest | undef
       || (value.treeExisted && !isFileMode(value.treeMode))
       || (!value.treeExisted && value.treeMode !== undefined)
       || !Array.isArray(value.entries)
-      || !value.entries.every(isTreeEntrySnapshot)) {
+      || !value.entries.every(isTreeEntrySnapshot)
+      || (value.snapshots !== undefined
+        && (!Array.isArray(value.snapshots) || !value.snapshots.every(isFileSnapshot)))) {
       throw new Error(`Workspace Mutation tree snapshot is invalid: ${directory}`);
     }
     return value as unknown as PendingTreeManifest;

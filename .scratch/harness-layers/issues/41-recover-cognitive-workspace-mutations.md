@@ -25,7 +25,13 @@ That failure crosses Loom's continuity boundary: Runtime Store still says the wo
 - Memory Reflector replacements of Stable Facts, Identity, Memory, and Behavior.
 - Instance-open recovery before Agent Workspace materials are loaded.
 
-Attention Maintainer is excluded because one atomic rename leaves either the complete old file or the complete new file, never a partial multi-file revision. Main Agent Workspace actions remain Individual-owned ordinary activity and are not converted into a Harness transaction.
+Historical scope note: Attention Maintainer was initially excluded because its
+single-file atomic rename could not expose partial content. Task #37 supersedes
+that exclusion: post-rename failures can still make the call outcome uncertain,
+so Attention now uses the same durable Workspace Mutation and completed-result
+replay. Thread Maintainer also protects its external evidence index together
+with the `threads/` tree. Main Agent Workspace actions remain Individual-owned
+ordinary activity and are not converted into a Harness transaction.
 
 ## Test Seam
 
@@ -44,10 +50,13 @@ Tests do not inspect journal files, internal tables, or implementation-private s
 
 ## Resolution
 
-- `Workspace Mutation` now stores durable before-images under the Runtime Root before a Cognitive Organ can expose its first live write. File revisions cover Life Recorder and Memory Reflector; one bounded tree snapshot covers Thread Maintainer's intentionally flexible merge, archive, split, and move surface.
+- `Workspace Mutation` now stores durable before-images under the Runtime Root before a Cognitive Organ can expose its first live write. File revisions cover Life Recorder, Memory Reflector, and Attention Maintainer; one bounded tree snapshot covers Thread Maintainer's intentionally flexible merge, archive, split, and move surface together with its evidence index.
 - Instance opening restores every pending mutation before loading or validating Individual materials. Recovery rejects mismatched or malformed journal identities and paths rather than applying uncertain state.
 - A fully validated organ run durably replaces its pending record with a compact completed result. If the process exits before Runtime records its Receipt or maintenance result, the same operation replays that result and does not call the model again. Completed records remain as small idempotency evidence; this ticket does not add a second Runtime acknowledgement protocol merely to collect them.
-- Existing in-process rollback is now the same durable recovery path. Attention Maintainer remains outside the Module because its single-file atomic replacement already has the required crash behavior; Main Agent writes remain ordinary Individual-owned Workspace activity.
+- Existing in-process rollback is now the same durable recovery path. Task #37
+  later brought Attention Maintainer and Thread evidence state into that same
+  boundary; Main Agent writes remain ordinary Individual-owned Workspace
+  activity.
 
 Validated with `npm run typecheck`, a clean build, and the full 260-test suite. Coverage includes pending file recovery, completed-result replay, complete Thread tree restoration, normal organ rollback/retry, and recovery before Instance material validation.
 

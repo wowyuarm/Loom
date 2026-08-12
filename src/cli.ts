@@ -200,11 +200,10 @@ export function formatStatus(report: LoomStatusReport, since?: string): string {
     const requeued = work.requeuedFrom ? `, requeued from ${work.requeuedFrom}` : "";
     const next = work.nextAttemptAt ? `, next ${work.nextAttemptAt}` : "";
     const failure = work.lastFailureCategory ? `, last failure ${work.lastFailureCategory}` : "";
-    const softDeadline = work.softDeadlineAt ? `, soft deadline ${work.softDeadlineAt}` : "";
     const transcript = work.transcriptRef ? `, transcript ${work.transcriptRef}` : "";
     const result = work.resultRef ? `, result ${work.resultRef}` : "";
     lines.push(
-      `  ${work.workId}: ${work.status}, attempt ${work.attemptCount}${requeued}${next}${failure}${softDeadline}${transcript}${result}`,
+      `  ${work.workId}: ${work.status}, attempt ${work.attemptCount}${requeued}${next}${failure}${transcript}${result}`,
     );
   }
   lines.push("Channels:");

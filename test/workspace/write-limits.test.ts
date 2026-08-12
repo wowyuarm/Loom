@@ -49,6 +49,16 @@ test("a write exactly at the limit is allowed", () => {
   assert.doesNotThrow(() => enforceWorkspaceWriteLimit("threads/index.md", bytes(256 * kiB)));
 });
 
+test("counts UTF-8 bytes rather than JavaScript characters", () => {
+  const exact = `${"你".repeat(21_845)}a`; // 65,535 + 1 bytes
+  assert.equal(Buffer.byteLength(exact, "utf8"), 64 * kiB);
+  assert.doesNotThrow(() => enforceWorkspaceWriteLimit("attention.md", exact));
+  assert.throws(
+    () => enforceWorkspaceWriteLimit("attention.md", `${exact}你`),
+    /attempted 65539 bytes; limit 65536 bytes; reduce by at least 3 bytes/,
+  );
+});
+
 test("a write within the limit is allowed", () => {
   assert.doesNotThrow(() => enforceWorkspaceWriteLimit("attention.md", bytes(1024)));
   assert.doesNotThrow(() => enforceWorkspaceWriteLimit("memory.md", bytes(128 * kiB)));

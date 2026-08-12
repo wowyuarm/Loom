@@ -36,12 +36,10 @@ export interface LoomCognitiveOrganWorkStatus {
   status: string;
   attemptCount: number;
   createdAt: string;
-  totalDeadlineAt: string;
   nextAttemptAt?: string;
   requeuedFrom?: string;
   lastCancelReason?: string;
   lastFailureCategory?: string;
-  softDeadlineAt?: string;
   transcriptRef?: string;
   resultRef?: string;
 }

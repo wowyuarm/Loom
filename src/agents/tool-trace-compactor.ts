@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import type { JsonValue } from "../runtime/index.js";
+import { createPiCognitiveOrganSession } from "./session/index.js";
 
 const SYSTEM_PROMPT = `You compress completed tool interactions into factual replay records.
 
@@ -100,11 +101,24 @@ class PiToolTraceCompactor implements ToolTraceCompactor {
     try {
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(JSON.stringify({ inputs }), { expandPromptTemplates: false });
-      return parseCompactionResult(
-        lastAssistantText(session.messages),
-        inputs.map(input => input.toolCallId),
-      );
+      let result: ToolTraceCompactionDetail[] | undefined;
+      const organSession = createPiCognitiveOrganSession({
+        completion: "natural",
+        completeNaturally: () => {
+          try {
+            result = parseCompactionResult(
+              lastAssistantText(session.messages),
+              inputs.map(input => input.toolCallId),
+            );
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+      await organSession.run(session, JSON.stringify({ inputs }));
+      if (!result) throw new Error("Tool Trace Compactor did not return a complete result");
+      return result;
     } finally {
       session.dispose();
     }

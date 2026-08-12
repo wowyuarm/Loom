@@ -288,9 +288,9 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
     status.stdout,
     new RegExp(`attention-maintainer-\\d+: running, attempt 1, requeued from ${held.workId}`),
   );
-  // The running successor also shows its per-attempt soft deadline, but no
-  // transcript or result reference yet.
-  assert.match(status.stdout, /soft deadline \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  // Normal execution has no wall-clock deadline, and the running successor
+  // has no transcript or result reference yet.
+  assert.doesNotMatch(status.stdout, /soft deadline|total deadline/);
   assert.doesNotMatch(status.stdout, /transcript organs\/attention-maintainer/);
   assert.doesNotMatch(status.stdout, /lastError/);
 

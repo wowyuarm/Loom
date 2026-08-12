@@ -54,9 +54,10 @@ Host restart.
 The snapshot also lists each Cognitive Organ's current budget cycle under
 `Cognitive Organ Work`, addressed by a stable local work id (`organ-<rowid>`)
 so an operator never handles a raw work UUID or domain content. Each entry
-carries attempt count, the current attempt's soft deadline, the total
-deadline, next retry time when backing off, and the transcript and result
-references once the attempt completes. A work stuck in `intervention_required`
+carries attempt count, next retry time when backing off, and the transcript and
+result references once the attempt completes. Normal organ execution has no
+wall-clock deadline: one Pi session is bounded to 50 Pi turns, and an
+unfinished session consumes one of the logical work's three attempts. A work stuck in `intervention_required`
 (a cancel that was not released) or `blocked` (retries exhausted) appears
 there together with a bounded failure category; the raw error text is
 deliberately not exposed.

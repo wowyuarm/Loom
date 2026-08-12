@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -20,6 +20,10 @@ import type { FrozenActivity } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
+import {
+  createPiCognitiveOrganSession,
+  type PiCognitiveOrganSession,
+} from "./session/index.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
@@ -237,6 +241,29 @@ class PiMemoryReflector implements MemoryReflector {
     let supportingEvidenceRead = false;
     const workspaceRoot = this.options.agentWorkspace.root;
 
+    const organSession = createPiCognitiveOrganSession<MemoryReflectionResult>({
+      completion: "finish",
+      organ: "memory-reflector",
+      finishReminder: "This reflection is not complete. Read any missing evidence, make any needed replacements, then call finish to validate and commit it.",
+      validateAndCommit: async () => {
+        try {
+          assertGrounded(readBaselines, supportingEvidenceRead);
+        } catch (error) {
+          return { state: "rejected", error: errorMessage(error) };
+        }
+        if (changedMaterials.length > 0) {
+          await validateCurrentMaterials(this.options.agentWorkspace.root);
+        }
+        const result: MemoryReflectionResult = {
+          outcome: changedMaterials.length > 0 ? "updated" : "no_change",
+          runId,
+          changedMaterials: [...changedMaterials],
+        };
+        await mutation.complete(result);
+        return { state: "committed", result };
+      },
+    });
+
     const workspaceTools = createWorkspaceReadTools(workspaceRoot)
       .map(tool => observeWorkspaceTool(tool));
     const tools: ToolDefinition[] = [
@@ -315,7 +342,8 @@ class PiMemoryReflector implements MemoryReflector {
             throw new Error(`Core material ${params.material} was already replaced in this run`);
           }
           const content = validateReplacement(params.material, params.content);
-          await mutation.write(MATERIAL_PATHS[params.material], content);
+          const write = await mutation.write(MATERIAL_PATHS[params.material], content);
+          organSession.acceptWrite(write);
           changedMaterials.push(params.material);
           return toolResult({
             type: "loom.core-material-replaced",
@@ -326,18 +354,10 @@ class PiMemoryReflector implements MemoryReflector {
         },
       }),
     ];
+    const guardedTools = organSession.bindTools(tools);
 
     try {
-      await this.#runSession(request, runId, baseline.get("facts.json")!, tools);
-      assertGrounded(readBaselines, supportingEvidenceRead);
-      if (changedMaterials.length > 0) {
-        await validateCurrentMaterials(this.options.agentWorkspace.root);
-        const result: MemoryReflectionResult = { outcome: "updated", runId, changedMaterials };
-        await mutation.complete(result);
-        return result;
-      }
-      const result: MemoryReflectionResult = { outcome: "no_change", runId, changedMaterials: [] };
-      await mutation.complete(result);
+      const result = await this.#runSession(request, runId, baseline.get("facts.json")!, guardedTools, organSession);
       return result;
     } catch (error) {
       await mutation.rollback();
@@ -443,7 +463,8 @@ class PiMemoryReflector implements MemoryReflector {
     runId: string,
     stableFacts: string,
     tools: ToolDefinition[],
-  ): Promise<string> {
+    organSession: PiCognitiveOrganSession<MemoryReflectionResult>,
+  ): Promise<MemoryReflectionResult> {
     const transcriptFile = path.join(this.options.transcriptDirectory, `${runId}.jsonl`);
     const sessionManager = SessionManager.open(
       transcriptFile,
@@ -471,7 +492,9 @@ class PiMemoryReflector implements MemoryReflector {
         stableFacts.trim(),
         "</current_stable_facts>",
       ].join("\n"),
-      appendSystemPromptOverride: () => [],
+      appendSystemPromptOverride: () => [
+        "When the reflection is ready, call finish; a plain final message does not commit it.",
+      ],
     });
     await resourceLoader.reload();
     const { session } = await createAgentSession({
@@ -491,12 +514,13 @@ class PiMemoryReflector implements MemoryReflector {
       if (this.#cancelReason) throw new Error(`Memory reflection cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(buildRunPrompt(
+      const result = await organSession.run(session, buildRunPrompt(
         request,
         runId,
         Boolean(this.options.workingMemoryReader && this.options.nmemRecallTool),
-      ), { expandPromptTemplates: false });
-      return finalAssistantText(session.messages);
+      ));
+      if (!result.result) throw new Error("Memory Reflector did not finish");
+      return result.result;
     } finally {
       if (this.#activeSession === session) {
         this.#activeSession = undefined;
@@ -625,17 +649,6 @@ function assertGrounded(
   }
 }
 
-function finalAssistantText(messages: AgentMessage[]): string {
-  const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
-  if (!message) throw new Error("Memory Reflector did not return an assistant message");
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
-    throw new Error(message.errorMessage ?? `Memory Reflector stopped with ${message.stopReason}`);
-  }
-  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
-  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
-  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
-}
-
 function validateRequest(request: MemoryReflectionRequest): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(request.reflectionDay)) {
     throw new Error("Memory reflection day must be a logical date in YYYY-MM-DD form");
@@ -679,6 +692,10 @@ function toolResult(value: unknown) {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     details: value,
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function atomicWrite(file: string, content: string): Promise<void> {

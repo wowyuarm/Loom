@@ -11,6 +11,8 @@ import { createPiAttentionMaintainer } from "../../src/agents/attention-maintain
 import type { FrozenActivity } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
+const OPERATION_KEY = "window:test";
+
 test("updates Current Attention from indexed Workspace and Activity evidence", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-attention-maintainer-"));
   const workspaceRoot = await createWorkspace(root);
@@ -63,6 +65,7 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
   });
 
   const result = await maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [frozenActivity()],
@@ -76,6 +79,104 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
   assert.equal(
     await readFile(path.join(workspaceRoot, "attention.md"), "utf8"),
     "The current line has moved. Disagreement with Alex still feels safe.\n",
+  );
+});
+
+test("commits a mixed finish batch once and blocks every sibling tool without another provider call", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-finish-batch-"));
+  const workspaceRoot = await createWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "attention-finish-batch");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(
+      fauxToolCall("read", { path: "memory.md" }, { id: "read-memory" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage([
+      fauxToolCall("replace_attention", {
+        content: "This sibling write before finish must not run.",
+      }, { id: "replace-before-finish" }),
+      fauxToolCall("finish", {}, { id: "finish-batched" }),
+      fauxToolCall("replace_attention", {
+        content: "This sibling write after finish must not run.",
+      }, { id: "replace-after-finish" }),
+    ], { stopReason: "toolUse" }),
+  ]);
+  const maintainer = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+    nextRunId: () => "attention-finish-batch",
+  });
+
+  assert.deepEqual(await maintainer.maintain({
+    operationKey: OPERATION_KEY,
+    observedAt: "2026-07-20T08:00:00.000Z",
+    localTime: "2026-07-20 16:00 +08:00",
+    recentActivities: [],
+  }), {
+    outcome: "no_change",
+    runId: "attention-finish-batch",
+    path: "attention.md",
+  });
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "attention.md"), "utf8"),
+    "old attention body\n",
+  );
+  assert.equal(faux.state.callCount, 3);
+});
+
+test("replays a durably completed Attention result without calling the provider again", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-replay-"));
+  const workspaceRoot = await createWorkspace(root);
+  const mutationDirectory = path.join(root, "runtime", "workspace-mutations");
+  const firstPi = await createTestPi(root, "attention-replay-first");
+  firstPi.faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read", { path: "memory.md" }, { id: "read-memory" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("replace_attention", {
+      content: "The durable attention result is ready.",
+    }, { id: "replace-attention" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
+  ]);
+  const first = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-first"),
+    transcriptDirectory: path.join(root, "transcripts-first"),
+    mutationDirectory,
+    modelRuntime: firstPi.modelRuntime,
+    model: firstPi.model,
+    nextRunId: () => "attention-replay-result",
+  });
+  const request = {
+    operationKey: "window:durable-replay",
+    observedAt: "2026-07-20T08:00:00.000Z",
+    localTime: "2026-07-20 16:00 +08:00",
+    recentActivities: [] as FrozenActivity[],
+  };
+
+  const firstResult = await first.maintain(request);
+  const secondPi = await createTestPi(root, "attention-replay-second");
+  const second = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent-second"),
+    transcriptDirectory: path.join(root, "transcripts-second"),
+    mutationDirectory,
+    modelRuntime: secondPi.modelRuntime,
+    model: secondPi.model,
+    nextRunId: () => "must-not-run",
+  });
+
+  assert.deepEqual(await second.maintain(request), firstResult);
+  assert.equal(secondPi.faux.state.callCount, 0);
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "attention.md"), "utf8"),
+    "The durable attention result is ready.\n",
   );
 });
 
@@ -104,6 +205,7 @@ test("keeps Current Attention unchanged after grounded inspection", async () => 
   });
 
   assert.deepEqual(await maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [],
@@ -140,6 +242,7 @@ test("counts a Workspace-internal absolute path as the Current Attention baselin
   });
 
   assert.equal((await maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [],
@@ -171,13 +274,14 @@ test("derives no change from the absence of a replacement", async () => {
   });
 
   assert.equal((await maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [],
   })).outcome, "no_change");
 });
 
-test("refuses a decision made without supporting evidence", async () => {
+test("rejects an early finish and accepts the corrected decision in the same session", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-attention-ungrounded-"));
   const workspaceRoot = await createWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "attention-ungrounded");
@@ -186,7 +290,15 @@ test("refuses a decision made without supporting evidence", async () => {
       fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-too-early" }), { stopReason: "toolUse" }),
+    context => {
+      assert.match(JSON.stringify(context.messages), /inspect supporting evidence/i);
+      return fauxAssistantMessage(
+        fauxToolCall("read", { path: "memory.md" }, { id: "read-supporting-memory" }),
+        { stopReason: "toolUse" },
+      );
+    },
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-corrected" }), { stopReason: "toolUse" }),
   ]);
   const maintainer = await createPiAttentionMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -196,12 +308,55 @@ test("refuses a decision made without supporting evidence", async () => {
     model,
   });
 
-  await assert.rejects(maintainer.maintain({
+  assert.equal((await maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [],
-  }), /inspect supporting evidence/i);
+  })).outcome, "no_change");
   assert.equal(await readFile(path.join(workspaceRoot, "attention.md"), "utf8"), "old attention body\n");
+});
+
+test("rejects an oversized replacement and accepts a smaller retry in the same session", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-attention-size-retry-"));
+  const workspaceRoot = await createWorkspace(root);
+  const { faux, model, modelRuntime } = await createTestPi(root, "attention-size-retry");
+  faux.setResponses([
+    fauxAssistantMessage(fauxToolCall("read", { path: "attention.md" }, { id: "read-attention" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("read", { path: "memory.md" }, { id: "read-memory" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(
+      fauxToolCall("replace_attention", { content: "x".repeat(64 * 1024 + 1) }, { id: "replace-oversized" }),
+      { stopReason: "toolUse" },
+    ),
+    context => {
+      const lastResult = [...context.messages].reverse().find(message => message.role === "toolResult");
+      assert.match(JSON.stringify(lastResult), /attention\.md.*reduce by at least 2 bytes/i);
+      return fauxAssistantMessage(
+        fauxToolCall("replace_attention", { content: "A smaller grounded attention.\n" }, { id: "replace-smaller" }),
+        { stopReason: "toolUse" },
+      );
+    },
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
+  ]);
+  const maintainer = await createPiAttentionMaintainer({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+    nextRunId: () => "attention-size-retry",
+  });
+
+  assert.equal((await maintainer.maintain({
+    operationKey: OPERATION_KEY,
+    observedAt: "2026-07-20T08:00:00.000Z",
+    localTime: "2026-07-20 16:00 +08:00",
+    recentActivities: [],
+  })).outcome, "updated");
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "attention.md"), "utf8"),
+    "A smaller grounded attention.\n",
+  );
 });
 
 test("restores Current Attention when the provider fails after replacement", async () => {
@@ -237,6 +392,7 @@ test("restores Current Attention when the provider fails after replacement", asy
   });
 
   await assert.rejects(maintainer.maintain({
+    operationKey: OPERATION_KEY,
     observedAt: "2026-07-20T08:00:00.000Z",
     localTime: "2026-07-20 16:00 +08:00",
     recentActivities: [frozenActivity()],

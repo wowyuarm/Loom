@@ -27,7 +27,11 @@ test("keeps Thread history as references and expands an earlier Turn only on req
 
   const firstPi = await createTestPi(root, "thread-history-first");
   firstPi.faux.setResponses([
-    fauxAssistantMessage(fauxToolCall("read", { path: "index.md" }, { id: "read-index-1" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-too-early-1" }), { stopReason: "toolUse" }),
+    context => {
+      assert.match(JSON.stringify(context.messages), /Thread Maintainer must read/i);
+      return fauxAssistantMessage(fauxToolCall("read", { path: "index.md" }, { id: "read-index-1" }), { stopReason: "toolUse" });
+    },
     fauxAssistantMessage(fauxToolCall("read", { path: "garden/thread.md" }, { id: "read-thread-1" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("read_thread_activity", { referenceId: "evidence-activity-1-turn-1-thread-garden", offset: 0 }, { id: "read-current-1" }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-1" }), { stopReason: "toolUse" }),
@@ -52,6 +56,7 @@ test("keeps Thread history as references and expands an earlier Turn only on req
   secondPi.faux.setResponses([
     context => {
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "list_thread_activity",
         "ls",
@@ -172,6 +177,7 @@ test("preserves a substantive movement as a note and rewrites the Thread entranc
   faux.setResponses([
     context => {
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
+        "finish",
         "grep",
         "list_thread_activity",
         "ls",
@@ -259,11 +265,12 @@ test("restores the complete Thread Workspace when the provider fails after write
       errorMessage: "provider failed after structural changes",
     }),
   ]);
+  const stateFile = path.join(root, "state", "thread-evidence.json");
   const maintainer = await createPiThreadMaintainer({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
     agentDir: path.join(root, "agent"),
     transcriptDirectory: path.join(root, "transcripts"),
-    stateFile: path.join(root, "state", "thread-evidence.json"),
+    stateFile,
     modelRuntime,
     model,
     loadActivity: async activityId => activityId === current.segmentId ? current : undefined,
@@ -278,6 +285,7 @@ test("restores the complete Thread Workspace when the provider fails after write
   assert.equal(await readFile(path.join(workspaceRoot, "threads", "garden", "thread.md"), "utf8"), originalEntry);
   await assert.rejects(access(path.join(workspaceRoot, "threads", "garden", "temporary.md")));
   await assert.rejects(access(path.join(workspaceRoot, "threads", "archive", "garden")));
+  await assert.rejects(access(stateFile));
 });
 
 test("keeps the same Thread reference after archive and later activity", async () => {
@@ -586,17 +594,21 @@ test("ThreadWorkspaceTransaction enforces the byte limit and stays usable after 
   const transaction = await ThreadWorkspaceTransaction.begin(threadsRoot);
 
   const overIndex = "x".repeat(256 * 1024 + 1);
-  await assert.rejects(transaction.write("index.md", overIndex), /WorkspaceWriteLimitExceeded/);
+  const rejectedIndex = await transaction.write("index.md", overIndex);
+  assert.equal(rejectedIndex.state, "rejected");
+  if (rejectedIndex.state === "rejected") assert.match(rejectedIndex.error, /threads\/index\.md.*reduce by at least 1 byte/i);
 
   const overLine = "y".repeat(256 * 1024 + 1);
-  await assert.rejects(transaction.write("garden/thread.md", overLine), /WorkspaceWriteLimitExceeded/);
+  const rejectedLine = await transaction.write("garden/thread.md", overLine);
+  assert.equal(rejectedLine.state, "rejected");
+  if (rejectedLine.state === "rejected") assert.match(rejectedLine.error, /threads\/garden\/thread\.md.*reduce by at least 1 byte/i);
 
   // A note under threads/<line>/notes/ is not limited by default.
   const bigNote = "z".repeat(1024 * 1024);
-  await transaction.write("garden/notes/2026-08-11.md", bigNote);
+  assert.deepEqual(await transaction.write("garden/notes/2026-08-11.md", bigNote), { state: "applied" });
   assert.equal((await readFile(path.join(threadsRoot, "garden", "notes", "2026-08-11.md"), "utf8")).length, 1024 * 1024);
 
   // The transaction remains usable after a rejected write.
-  await transaction.write("index.md", "small index\n");
+  assert.deepEqual(await transaction.write("index.md", "small index\n"), { state: "applied" });
   assert.equal(await readFile(path.join(threadsRoot, "index.md"), "utf8"), "small index\n");
 });

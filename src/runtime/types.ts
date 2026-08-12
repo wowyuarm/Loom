@@ -205,6 +205,7 @@ export interface ThreadMaintenance {
 }
 
 export interface AttentionMaintenanceRequest {
+  operationKey: string;
   observedAt: string;
   localTime: string;
   recentActivities: FrozenActivity[];
@@ -557,13 +558,10 @@ export interface RuntimeCognitiveOrganWorkStatus {
   status: "running" | "retry_wait" | "blocked" | "cancelled" | "completed" | "intervention_required";
   attemptCount: number;
   createdAt: string;
-  totalDeadlineAt: string;
   nextAttemptAt?: string;
   requeuedFrom?: string;
   lastCancelReason?: string;
   lastFailureCategory?: string;
-  /** Soft deadline of the work's current (latest) attempt. */
-  softDeadlineAt?: string;
   /** Transcript reference produced by the current attempt, when completed. */
   transcriptRef?: string;
   /** Result reference produced by the current attempt, when completed. */
@@ -620,11 +618,6 @@ export interface RuntimeOptions {
   revisions?: { current(): { id: string } };
   /** Cognitive Organ execution policy; defaults to the module constant. */
   cognitiveOrganPolicy?: import("./cognitive-organ-execution.js").CognitiveOrganPolicy;
-  /** Injectable soft-deadline timer factory (testing); defaults to setTimeout/clearTimeout. */
-  organCancelTimer?: (
-    delayMs: number,
-    callback: () => void,
-  ) => { clear(): void };
 }
 
 export interface AdvanceOptions {

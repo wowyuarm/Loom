@@ -303,13 +303,18 @@ test("commits grounded replacements regardless of final model wording", async ()
   assert.equal(await readFile(path.join(workspaceRoot, "facts.json"), "utf8"), originalFacts);
 });
 
-test("refuses a no-change decision made without supporting evidence", async () => {
+test("rejects an early finish and gathers supporting evidence in the same session", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-ungrounded-"));
   const workspaceRoot = await createReflectorWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-ungrounded");
   faux.setResponses([
     ...baselineReadResponses(),
-    fauxAssistantMessage("NO_CHANGE"),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-too-early" }), { stopReason: "toolUse" }),
+    context => {
+      assert.match(JSON.stringify(context.messages), /supporting evidence/);
+      return fauxAssistantMessage(fauxToolCall("ls", { path: "." }, { id: "list-supporting" }), { stopReason: "toolUse" });
+    },
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-corrected" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -322,15 +327,12 @@ test("refuses a no-change decision made without supporting evidence", async () =
     nmemRecallTool: createNmemRecallTool({}),
   });
 
-  await assert.rejects(
-    reflector.reflect({
+  assert.equal((await reflector.reflect({
       reflectionDay: "2026-07-21",
       observedAt: "2026-07-21T12:05:00.000Z",
       localTime: "2026-07-21 20:05 UTC+08:00",
       activities: [],
-    }),
-    /supporting evidence/,
-  );
+    })).outcome, "no_change");
 });
 
 test("treats missing optional Workspace evidence as an explicit absence", async () => {
@@ -376,7 +378,7 @@ test("treats missing optional Workspace evidence as an explicit absence", async 
   });
 });
 
-test("does not treat a truncated core material as completely read", async () => {
+test("rejects a write after a truncated baseline and accepts it after the remaining page", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-memory-reflector-truncated-"));
   const workspaceRoot = await createReflectorWorkspace(root);
   await writeFile(path.join(workspaceRoot, "memory.md"), longMemory(), "utf8");
@@ -397,7 +399,21 @@ test("does not treat a truncated core material as completely read", async () => 
       }, { id: "replace-memory" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("UPDATED"),
+    context => {
+      assert.match(JSON.stringify(context.messages), /must read every core baseline: memory\.md/);
+      return fauxAssistantMessage(
+        fauxToolCall("read", { path: "memory.md", offset: 2001 }, { id: "read-memory-tail-after-rejection" }),
+        { stopReason: "toolUse" },
+      );
+    },
+    fauxAssistantMessage(
+      fauxToolCall("replace_core_material", {
+        material: "long_term_memory",
+        content: "This replacement is now grounded in the complete old material.\n",
+      }, { id: "replace-memory-corrected" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-corrected" }), { stopReason: "toolUse" }),
   ]);
   const reflector = await createPiMemoryReflector({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -410,16 +426,16 @@ test("does not treat a truncated core material as completely read", async () => 
     nmemRecallTool: createNmemRecallTool({}),
   });
 
-  await assert.rejects(
-    reflector.reflect({
+  assert.equal((await reflector.reflect({
       reflectionDay: "2026-07-21",
       observedAt: "2026-07-21T12:05:00.000Z",
       localTime: "2026-07-21 20:05 UTC+08:00",
       activities: [activity()],
-    }),
-    /must read every core baseline: memory\.md/,
+    })).outcome, "updated");
+  assert.equal(
+    await readFile(path.join(workspaceRoot, "memory.md"), "utf8"),
+    "This replacement is now grounded in the complete old material.\n",
   );
-  assert.equal(await readFile(path.join(workspaceRoot, "memory.md"), "utf8"), longMemory());
 });
 
 test("accepts a long core material after every consecutive page is read", async () => {

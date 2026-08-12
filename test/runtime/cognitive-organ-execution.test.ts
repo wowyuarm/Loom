@@ -7,10 +7,8 @@ import test from "node:test";
 
 import { CognitiveOrganExecution } from "../../src/runtime/cognitive-organ-execution.js";
 
-const SOFT = 10 * 60_000;
 const BACKOFF_1 = 60_000;
 const BACKOFF_2 = 5 * 60_000;
-const TOTAL = 45 * 60_000;
 
 function openLedger(now: () => Date): { ledger: CognitiveOrganExecution; db: DatabaseSync } {
   const dir = mkdtempSync(path.join(tmpdir(), "cog-organ-test-"));
@@ -24,19 +22,78 @@ function openLedger(now: () => Date): { ledger: CognitiveOrganExecution; db: Dat
   return { ledger, db };
 }
 
-test("begin creates running work with first attempt and fixed deadlines", () => {
+test("begin creates running work with first attempt and no wall-clock deadline", () => {
   let now = new Date("2026-08-07T10:00:00.000Z");
   const { ledger } = openLedger(() => now);
   const { work, attempt } = ledger.begin("life-recorder", "activity:abc", "rev-1");
 
   assert.equal(work.status, "running");
   assert.equal(work.attemptCount, 1);
-  assert.equal(work.totalDeadlineAt, "2026-08-07T10:45:00.000Z");
   assert.equal(attempt.status, "running");
   assert.equal(attempt.attemptNumber, 1);
   assert.equal(attempt.modelRevision, "rev-1");
-  assert.equal(attempt.softDeadlineAt, "2026-08-07T10:10:00.000Z");
   assert.equal(ledger.attempts(work.id).length, 1);
+});
+
+test("reopens a legacy deadline ledger into the final attempt-only budget", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE cognitive_work (
+      id TEXT PRIMARY KEY,
+      organ TEXT NOT NULL,
+      domain_ref TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      total_deadline_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      requeued_from TEXT,
+      last_cancel_reason TEXT,
+      last_failure_category TEXT,
+      last_error TEXT
+    ) STRICT;
+    CREATE TABLE cognitive_attempts (
+      id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES cognitive_work(id),
+      attempt_number INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      soft_deadline_at TEXT NOT NULL,
+      ended_at TEXT,
+      model_revision TEXT NOT NULL,
+      cancel_reason TEXT,
+      failure_category TEXT,
+      transcript_ref TEXT,
+      result_ref TEXT,
+      UNIQUE (work_id, attempt_number)
+    ) STRICT;
+    INSERT INTO cognitive_work (
+      id, organ, domain_ref, status, created_at, total_deadline_at, attempt_count
+    ) VALUES (
+      'legacy-work', 'life-recorder', 'activity:legacy', 'running',
+      '2026-08-07T10:00:00.000Z', '2026-08-07T10:45:00.000Z', 1
+    );
+    INSERT INTO cognitive_attempts (
+      id, work_id, attempt_number, status, started_at, soft_deadline_at, model_revision
+    ) VALUES (
+      'legacy-attempt', 'legacy-work', 1, 'running',
+      '2026-08-07T10:00:00.000Z', '2026-08-07T10:10:00.000Z', 'rev-legacy'
+    );
+  `);
+  let now = new Date("2026-08-07T11:00:00.000Z");
+  let seq = 0;
+  const ledger = new CognitiveOrganExecution({
+    database: db,
+    now: () => now,
+    nextId: () => `new-${++seq}`,
+  });
+
+  assert.equal(ledger.work("legacy-work")?.attemptCount, 1);
+  assert.equal(ledger.attempts("legacy-work")[0]?.modelRevision, "rev-legacy");
+  const retry = ledger.failAttempt("legacy-work", { failureCategory: "provider" });
+  assert.equal(retry?.workStatus, "retry_wait");
+  now = new Date("2026-08-07T11:01:00.000Z");
+  assert.equal(ledger.beginNextAttempt("legacy-work", "rev-new")?.attemptNumber, 2);
 });
 
 test("complete attempt records refs and completes the work", () => {
@@ -91,31 +148,19 @@ test("first failure backs off 1 minute, second failure backs off 5 minutes", () 
   assert.deepEqual(ledger.attempts(work.id).map(a => a.status), ["failed", "failed", "failed"]);
 });
 
-test("total deadline is fixed at begin and blocks late retries", () => {
+test("late retries retain the same logical work and retry budget", () => {
   let now = new Date("2026-08-07T10:00:00.000Z");
   const { ledger } = openLedger(() => now);
   const { work } = ledger.begin("orientation", "pulse:1", "rev-1");
 
-  // After one failure the backoff is 1 minute; advance past the total deadline (never reset by queueing).
+  // A long outage does not consume a separate wall-clock budget.
   const first = ledger.failAttempt(work.id, { failureCategory: "provider" })!;
   assert.equal(first.nextAttemptAt, "2026-08-07T10:01:00.000Z");
 
-  now = new Date("2026-08-07T10:50:00.000Z"); // past the 10:45 total deadline
+  now = new Date("2026-08-07T10:50:00.000Z");
   const attempt = ledger.beginNextAttempt(work.id, "rev-2");
-  assert.equal(attempt, undefined);
-  assert.equal(ledger.work(work.id)!.status, "blocked");
-  assert.equal(ledger.work(work.id)!.lastFailureCategory, "provider");
-});
-
-test("failure exactly at total deadline is blocked with reason total_deadline", () => {
-  let now = new Date("2026-08-07T10:00:00.000Z");
-  const { ledger } = openLedger(() => now);
-  const { work } = ledger.begin("thread-maintainer", "thread:t", "rev-1");
-
-  now = new Date("2026-08-07T10:45:00.000Z");
-  const decision = ledger.failAttempt(work.id, { failureCategory: "provider" })!;
-  assert.equal(decision.workStatus, "blocked");
-  assert.equal(decision.reason, "total_deadline");
+  assert.equal(attempt?.attemptNumber, 2);
+  assert.equal(ledger.work(work.id)!.status, "running");
 });
 
 test("cancel marks the attempt, work stays in grace window until released", () => {
@@ -267,7 +312,6 @@ test("requeue creates successor budget cycle referencing the same domain object"
   assert.equal(next.work.domainRef, "activity:abc");
   assert.equal(next.work.organ, "life-recorder");
   assert.equal(next.work.attemptCount, 1);
-  assert.equal(next.work.totalDeadlineAt, "2026-08-07T11:45:00.000Z");
   assert.equal(next.attempt.attemptNumber, 1);
   assert.equal(next.attempt.modelRevision, "rev-4");
   // Old attempt history is preserved (append-only).

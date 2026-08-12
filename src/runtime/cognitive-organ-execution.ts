@@ -5,15 +5,16 @@ import { DatabaseSync } from "node:sqlite";
 //
 // Persistent ledger covering one "execution budget cycle" (cognitive_work) and
 // append-only attempts (cognitive_attempts), plus a fixed execution policy
-// (soft deadline, cancel grace, failure backoff, total logical deadline). It
-// does not take over any organ's domain state: pending, ordering, lease,
+// (maximum attempts, failure backoff, and cancel grace). The Pi-native 50-turn
+// session bound belongs to the Agent session module, not this ledger. It does
+// not take over any organ's domain state: pending, ordering, lease,
 // FIFO/Receipt, the Workspace Mutation journal, and official results stay in
 // each organ's own tables. The shared layer records only budget, attempts,
 // cancellation, failure category, and result references.
 //
-// Final schema only: this module initializes its own tables with
-// CREATE TABLE IF NOT EXISTS and does not join the runtime schema version
-// migration chain, nor does it write schema probing / legacy branches.
+// This module owns its small schema outside the Runtime schema-version chain.
+// It creates the final tables directly and performs one bounded rebuild when
+// reopening the historical deadline columns; no dual read/write path remains.
 //
 // Append-only semantics: an attempt row allows exactly one running -> terminal
 // update after it starts (ended_at/status/failure category are unknown at
@@ -21,11 +22,9 @@ import { DatabaseSync } from "node:sqlite";
 // cancel) against a terminal attempt is a no-op and never rewrites history.
 
 export const COGNITIVE_ORGAN_POLICY: CognitiveOrganPolicy = Object.freeze({
-  softDeadlineMs: 10 * 60_000,
   cancelGraceMs: 10_000,
   maxAttempts: 3,
   retryBackoffMs: [60_000, 5 * 60_000],
-  totalDeadlineMs: 45 * 60_000,
 });
 
 export type CognitiveOrganName =
@@ -51,19 +50,15 @@ export type CognitiveWorkStatus =
   | "blocked"
   | "intervention_required";
 
-export type CognitiveRetryReason = "backoff" | "attempts_exhausted" | "total_deadline";
+export type CognitiveRetryReason = "backoff" | "attempts_exhausted";
 
 export interface CognitiveOrganPolicy {
-  /** Soft deadline for a single attempt; expiry only signals cancel, never hard-kills. */
-  readonly softDeadlineMs: number;
   /** Grace window after cancel; if still not released, persist as intervention_required. */
   readonly cancelGraceMs: number;
   /** Total attempts allowed for the same logical work (including first run and automatic retries). */
   readonly maxAttempts: number;
   /** Backoff duration after the Nth failure; index 0 = first failure. */
   readonly retryBackoffMs: readonly number[];
-  /** Total logical deadline; fixed when the budget cycle is created, never reset by preemption or queueing. */
-  readonly totalDeadlineMs: number;
 }
 
 export interface CognitiveAttemptRecord {
@@ -72,7 +67,6 @@ export interface CognitiveAttemptRecord {
   attemptNumber: number;
   status: CognitiveAttemptStatus;
   startedAt: string;
-  softDeadlineAt: string;
   endedAt?: string;
   modelRevision: string;
   cancelReason?: string;
@@ -87,7 +81,6 @@ export interface CognitiveWorkRecord {
   domainRef: string;
   status: CognitiveWorkStatus;
   createdAt: string;
-  totalDeadlineAt: string;
   attemptCount: number;
   nextAttemptAt?: string;
   requeuedFrom?: string;
@@ -133,7 +126,6 @@ function initializeCognitiveOrganExecutionSchema(database: DatabaseSync): void {
         'running', 'retry_wait', 'completed', 'cancelled', 'blocked', 'intervention_required'
       )),
       created_at TEXT NOT NULL,
-      total_deadline_at TEXT NOT NULL,
       attempt_count INTEGER NOT NULL DEFAULT 0,
       next_attempt_at TEXT,
       requeued_from TEXT,
@@ -149,7 +141,6 @@ function initializeCognitiveOrganExecutionSchema(database: DatabaseSync): void {
         'running', 'completed', 'failed', 'cancelled', 'intervention_required'
       )),
       started_at TEXT NOT NULL,
-      soft_deadline_at TEXT NOT NULL,
       ended_at TEXT,
       model_revision TEXT NOT NULL,
       cancel_reason TEXT,
@@ -158,6 +149,54 @@ function initializeCognitiveOrganExecutionSchema(database: DatabaseSync): void {
       result_ref TEXT,
       UNIQUE (work_id, attempt_number)
     ) STRICT;
+  `);
+  // Older databases stored normal-execution wall-clock deadlines in these
+  // tables. Rebuild once so reopening an Instance cannot retain a hidden
+  // deadline path. The ledger is small and wholly owned by this module.
+  const columns = (table: string) => new Set(
+    (database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name),
+  );
+  const workColumns = columns("cognitive_work");
+  const attemptColumns = columns("cognitive_attempts");
+  if (!workColumns.has("total_deadline_at") && !attemptColumns.has("soft_deadline_at")) return;
+  database.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE cognitive_attempts RENAME TO cognitive_attempts_legacy;
+    ALTER TABLE cognitive_work RENAME TO cognitive_work_legacy;
+    CREATE TABLE cognitive_work (
+      id TEXT PRIMARY KEY,
+      organ TEXT NOT NULL CHECK (organ IN ('orientation', 'life-recorder', 'attention-maintainer', 'memory-reflector', 'thread-maintainer', 'tool-trace-compactor')),
+      domain_ref TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'retry_wait', 'completed', 'cancelled', 'blocked', 'intervention_required')),
+      created_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at TEXT,
+      requeued_from TEXT,
+      last_cancel_reason TEXT,
+      last_failure_category TEXT,
+      last_error TEXT
+    ) STRICT;
+    CREATE TABLE cognitive_attempts (
+      id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES cognitive_work(id),
+      attempt_number INTEGER NOT NULL CHECK (attempt_number >= 1),
+      status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled', 'intervention_required')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      model_revision TEXT NOT NULL,
+      cancel_reason TEXT,
+      failure_category TEXT,
+      transcript_ref TEXT,
+      result_ref TEXT,
+      UNIQUE (work_id, attempt_number)
+    ) STRICT;
+    INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, attempt_count, next_attempt_at, requeued_from, last_cancel_reason, last_failure_category, last_error)
+      SELECT id, organ, domain_ref, status, created_at, attempt_count, next_attempt_at, requeued_from, last_cancel_reason, last_failure_category, last_error FROM cognitive_work_legacy;
+    INSERT INTO cognitive_attempts (id, work_id, attempt_number, status, started_at, ended_at, model_revision, cancel_reason, failure_category, transcript_ref, result_ref)
+      SELECT id, work_id, attempt_number, status, started_at, ended_at, model_revision, cancel_reason, failure_category, transcript_ref, result_ref FROM cognitive_attempts_legacy;
+    DROP TABLE cognitive_attempts_legacy;
+    DROP TABLE cognitive_work_legacy;
+    COMMIT;
   `);
 }
 
@@ -186,9 +225,9 @@ export class CognitiveOrganExecution {
     const attemptId = this.#nextId();
     this.#transaction(() => {
       this.#database.prepare(`
-        INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, total_deadline_at, attempt_count)
-        VALUES (?, ?, ?, 'running', ?, ?, 1)
-      `).run(workId, organ, domainRef, now.toISOString(), this.#after(now, this.#policy.totalDeadlineMs).toISOString());
+        INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, attempt_count)
+        VALUES (?, ?, ?, 'running', ?, 1)
+      `).run(workId, organ, domainRef, now.toISOString());
       this.#insertAttempt(attemptId, workId, 1, now, modelRevision);
     });
     return {
@@ -242,14 +281,9 @@ export class CognitiveOrganExecution {
       `).run(now.toISOString(), failure.failureCategory, workId);
       if (changed.changes === 0) return undefined;
       const work = this.#workRecord(workId)!;
-      const deadlineHit = now.getTime() >= Date.parse(work.totalDeadlineAt);
       if (work.attemptCount >= this.#policy.maxAttempts) {
         this.#markBlocked(workId, failure, now);
         return { workStatus: "blocked", reason: "attempts_exhausted" } as const;
-      }
-      if (deadlineHit) {
-        this.#markBlocked(workId, failure, now);
-        return { workStatus: "blocked", reason: "total_deadline" } as const;
       }
       const nextAttemptAt = this.#after(now, this.#backoffMs(work.attemptCount));
       this.#database.prepare(`
@@ -268,7 +302,7 @@ export class CognitiveOrganExecution {
   }
 
   /**
-   * Cancel the current attempt (soft deadline / human preemption). The attempt
+   * Cancel the current attempt (human preemption, Host stop, or explicit cancel). The attempt
    * is marked cancelled while the work stays running in the grace window: once
    * the organ releases within the window, the Runtime calls finishCancelled to
    * terminate; if it does not release, markInterventionRequired persists it as
@@ -331,12 +365,6 @@ export class CognitiveOrganExecution {
         `).run(workId);
         return undefined;
       }
-      if (now.getTime() >= Date.parse(work.totalDeadlineAt)) {
-        this.#database.prepare(`
-          UPDATE cognitive_work SET status = 'blocked' WHERE id = ?
-        `).run(workId);
-        return undefined;
-      }
       const attemptNumber = work.attemptCount + 1;
       const attemptId = this.#nextId();
       this.#insertAttempt(attemptId, workId, attemptNumber, now, modelRevision);
@@ -369,14 +397,13 @@ export class CognitiveOrganExecution {
     const attemptId = this.#nextId();
     this.#transaction(() => {
       this.#database.prepare(`
-        INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, total_deadline_at, attempt_count, requeued_from)
-        VALUES (?, ?, ?, 'running', ?, ?, 1, ?)
+        INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, attempt_count, requeued_from)
+        VALUES (?, ?, ?, 'running', ?, 1, ?)
       `).run(
         newWorkId,
         previous.organ,
         previous.domainRef,
         now.toISOString(),
-        this.#after(now, this.#policy.totalDeadlineMs).toISOString(),
         workId,
       );
       this.#insertAttempt(attemptId, newWorkId, 1, now, modelRevision);
@@ -400,7 +427,7 @@ export class CognitiveOrganExecution {
   /** Latest budget cycle of the organ (running / retry_wait / held / terminal). */
   currentWork(organ: CognitiveOrganName): CognitiveWorkRecord | undefined {
     const row = this.#database.prepare(`
-      SELECT id, organ, domain_ref, status, created_at, total_deadline_at, attempt_count,
+      SELECT id, organ, domain_ref, status, created_at, attempt_count,
              next_attempt_at, requeued_from, last_cancel_reason, last_failure_category, last_error
       FROM cognitive_work WHERE organ = ?
       ORDER BY created_at DESC, rowid DESC LIMIT 1
@@ -412,7 +439,6 @@ export class CognitiveOrganExecution {
       domainRef: row.domain_ref as string,
       status: row.status as CognitiveWorkStatus,
       createdAt: row.created_at as string,
-      totalDeadlineAt: row.total_deadline_at as string,
       attemptCount: row.attempt_count as number,
       ...optionalStringField(row, "next_attempt_at", "nextAttemptAt"),
       ...optionalStringField(row, "requeued_from", "requeuedFrom"),
@@ -483,7 +509,7 @@ export class CognitiveOrganExecution {
 
   attempts(workId: string): CognitiveAttemptRecord[] {
     const rows = this.#database.prepare(`
-      SELECT id, work_id, attempt_number, status, started_at, soft_deadline_at, ended_at,
+      SELECT id, work_id, attempt_number, status, started_at, ended_at,
              model_revision, cancel_reason, failure_category, transcript_ref, result_ref
       FROM cognitive_attempts WHERE work_id = ? ORDER BY attempt_number
     `).all(workId) as unknown as Array<Record<string, unknown>>;
@@ -492,16 +518,9 @@ export class CognitiveOrganExecution {
 
   #insertAttempt(id: string, workId: string, attemptNumber: number, startedAt: Date, modelRevision: string): void {
     this.#database.prepare(`
-      INSERT INTO cognitive_attempts (id, work_id, attempt_number, status, started_at, soft_deadline_at, model_revision)
-      VALUES (?, ?, ?, 'running', ?, ?, ?)
-    `).run(
-      id,
-      workId,
-      attemptNumber,
-      startedAt.toISOString(),
-      this.#after(startedAt, this.#policy.softDeadlineMs).toISOString(),
-      modelRevision,
-    );
+      INSERT INTO cognitive_attempts (id, work_id, attempt_number, status, started_at, model_revision)
+      VALUES (?, ?, ?, 'running', ?, ?)
+    `).run(id, workId, attemptNumber, startedAt.toISOString(), modelRevision);
   }
 
   #markBlocked(workId: string, failure: { failureCategory: string; error?: string }, now: Date): void {
@@ -525,7 +544,7 @@ export class CognitiveOrganExecution {
 
   #workRecord(workId: string): CognitiveWorkRecord | undefined {
     const row = this.#database.prepare(`
-      SELECT id, organ, domain_ref, status, created_at, total_deadline_at, attempt_count,
+      SELECT id, organ, domain_ref, status, created_at, attempt_count,
              next_attempt_at, requeued_from, last_cancel_reason, last_failure_category, last_error
       FROM cognitive_work WHERE id = ?
     `).get(workId) as Record<string, unknown> | undefined;
@@ -536,7 +555,6 @@ export class CognitiveOrganExecution {
       domainRef: row.domain_ref as string,
       status: row.status as CognitiveWorkStatus,
       createdAt: row.created_at as string,
-      totalDeadlineAt: row.total_deadline_at as string,
       attemptCount: row.attempt_count as number,
       ...optionalStringField(row, "next_attempt_at", "nextAttemptAt"),
       ...optionalStringField(row, "requeued_from", "requeuedFrom"),
@@ -548,7 +566,7 @@ export class CognitiveOrganExecution {
 
   #attemptRecord(attemptId: string): CognitiveAttemptRecord {
     const row = this.#database.prepare(`
-      SELECT id, work_id, attempt_number, status, started_at, soft_deadline_at, ended_at,
+      SELECT id, work_id, attempt_number, status, started_at, ended_at,
              model_revision, cancel_reason, failure_category, transcript_ref, result_ref
       FROM cognitive_attempts WHERE id = ?
     `).get(attemptId) as Record<string, unknown>;
@@ -562,7 +580,6 @@ export class CognitiveOrganExecution {
       attemptNumber: row.attempt_number as number,
       status: row.status as CognitiveAttemptStatus,
       startedAt: row.started_at as string,
-      softDeadlineAt: row.soft_deadline_at as string,
       modelRevision: row.model_revision as string,
       ...optionalStringField(row, "ended_at", "endedAt"),
       ...optionalStringField(row, "cancel_reason", "cancelReason"),

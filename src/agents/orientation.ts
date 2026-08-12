@@ -24,6 +24,7 @@ import type {
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import type { ExternalAttentionEvidence } from "../channels/surface.js";
+import { createPiCognitiveOrganSession } from "./session/index.js";
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 20;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
@@ -223,16 +224,26 @@ class PiOrientation implements Orientation {
     try {
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(buildRunPrompt(
+      let result: OrientationResult | undefined;
+      const organSession = createPiCognitiveOrganSession({
+        completion: "natural",
+        completeNaturally: () => {
+          try {
+            result = parseResult(session.messages, runId);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+      });
+      await organSession.run(session, buildRunPrompt(
         request,
         runId,
         actionSpace,
         this.options.externalAttentionEvidence,
-      ), {
-        expandPromptTemplates: false,
-      });
-      const result = parseResult(session.messages, runId);
+      ));
       if (!explored) throw new Error("Orientation returned without exploring indexed evidence");
+      if (!result) throw new Error("Orientation did not return a valid JSON result object");
       return result;
     } finally {
       session.dispose();

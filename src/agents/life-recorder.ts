@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -25,6 +25,10 @@ import type {
 import { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
+import {
+  createPiCognitiveOrganSession,
+  type PiCognitiveOrganSession,
+} from "./session/index.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
@@ -163,6 +167,29 @@ class PiLifeRecorder implements LifeRecorder {
     const recordedOrdinals = new Set<number>();
     const episodes: LifeRecorderReceipt["episodes"] = [];
     let dailyUpdated = false;
+    const organSession = createPiCognitiveOrganSession<LifeRecorderReceipt>({
+      completion: "finish",
+      organ: "life-recorder",
+      finishReminder: "This recording is not complete. Read any missing evidence, make any needed writes, then call finish to validate and commit the recording.",
+      validateAndCommit: async () => {
+        if (readEventIndexes.size !== activity.events.length) {
+          return {
+            state: "rejected",
+            error: "Life Recorder must read every frozen activity event before finish",
+          };
+        }
+        const receipt: LifeRecorderReceipt = {
+          version: 1,
+          segmentId: activity.segmentId,
+          runId,
+          recordedAt,
+          daily: { status: dailyUpdated ? "updated" : "no_change", path: dailyPath },
+          episodes: [...episodes],
+        };
+        await mutation.complete(receipt);
+        return { state: "committed", result: receipt };
+      },
+    });
 
     const tools: ToolDefinition[] = [
       ...createWorkspaceReadTools(this.options.agentWorkspace.root),
@@ -205,7 +232,8 @@ class PiLifeRecorder implements LifeRecorder {
           if (readEventIndexes.size !== activity.events.length) {
             throw new Error("All frozen activity events must be read before writing the Daily Narrative");
           }
-          await mutation.write(dailyPath, requireNonBlank(params.content, "Daily Narrative"));
+          const write = await mutation.write(dailyPath, requireNonBlank(params.content, "Daily Narrative"));
+          organSession.acceptWrite(write);
           dailyUpdated = true;
           return toolResult({ type: "loom.daily-written", version: 1, path: dailyPath });
         },
@@ -262,7 +290,7 @@ class PiLifeRecorder implements LifeRecorder {
           validateIsoTimestamp(params.occurredAt, "episode occurredAt");
           const id = episodeId(activity.segmentId, params.ordinal);
           const episodePath = `episodes/${activity.recordingDay}/${id}.md`;
-          await mutation.write(episodePath, formatEpisode({
+          const write = await mutation.write(episodePath, formatEpisode({
             id,
             segmentId: activity.segmentId,
             ordinal: params.ordinal,
@@ -273,35 +301,26 @@ class PiLifeRecorder implements LifeRecorder {
             scene: requireNonBlank(params.scene, "Episode scene"),
             evidenceEventIds,
           }));
+          organSession.acceptWrite(write);
           recordedOrdinals.add(params.ordinal);
           episodes.push({ id, path: episodePath });
           return toolResult({ type: "loom.episode-recorded", version: 1, id, path: episodePath });
         },
       }),
     ];
+    const guardedTools = organSession.bindTools(tools);
 
     try {
-      await this.#runSession(
+      const receipt = await this.#runSession(
         activity,
         runId,
         dailyPath,
         dailyNarratives.current !== undefined,
         identity,
         stableFacts,
-        tools,
+        guardedTools,
+        organSession,
       );
-      if (readEventIndexes.size !== activity.events.length) {
-        throw new Error("Life Recorder did not read all frozen activity events");
-      }
-      const receipt: LifeRecorderReceipt = {
-        version: 1,
-        segmentId: activity.segmentId,
-        runId,
-        recordedAt,
-        daily: { status: dailyUpdated ? "updated" : "no_change", path: dailyPath },
-        episodes,
-      };
-      await mutation.complete(receipt);
       return receipt;
     } catch (error) {
       await mutation.rollback();
@@ -322,7 +341,8 @@ class PiLifeRecorder implements LifeRecorder {
     identity: string,
     stableFacts: string,
     tools: ToolDefinition[],
-  ): Promise<void> {
+    organSession: PiCognitiveOrganSession<LifeRecorderReceipt>,
+  ): Promise<LifeRecorderReceipt> {
     const transcriptFile = path.join(this.options.transcriptDirectory, `${runId}.jsonl`);
     const sessionManager = SessionManager.open(
       transcriptFile,
@@ -374,11 +394,9 @@ class PiLifeRecorder implements LifeRecorder {
       if (this.#cancelReason) throw new Error(`Life recording cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(
-        buildRunPrompt(activity, runId, dailyPath, dailyExists),
-        { expandPromptTemplates: false },
-      );
-      assertSuccessfulCompletion(session.messages);
+      const result = await organSession.run(session, buildRunPrompt(activity, runId, dailyPath, dailyExists));
+      if (!result.result) throw new Error("Life Recorder did not finish");
+      return result.result;
     } finally {
       if (this.#activeSession === session) {
         this.#activeSession = undefined;
@@ -395,24 +413,6 @@ export async function createPiLifeRecorder(options: PiLifeRecorderOptions): Prom
     mkdir(options.transcriptDirectory, { recursive: true }),
   ]);
   return new PiLifeRecorder(options);
-}
-
-function assertSuccessfulCompletion(messages: AgentMessage[]): void {
-  const failedToolResult = messages.find(message => message.role === "toolResult" && message.isError);
-  if (failedToolResult && failedToolResult.role === "toolResult") {
-    const detail = failedToolResult.content
-      .flatMap(block => block.type === "text" ? [block.text] : [])
-      .join("\n")
-      .trim();
-    throw new Error(
-      `Life Recorder tool ${failedToolResult.toolName} failed${detail ? `: ${detail}` : ""}`,
-    );
-  }
-  const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
-  if (!message) throw new Error("Life Recorder did not return an assistant message");
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
-    throw new Error(message.errorMessage ?? `Life Recorder stopped with ${message.stopReason}`);
-  }
 }
 
 function buildRunPrompt(
@@ -443,7 +443,7 @@ function buildRunPrompt(
     "- Paths mentioned by activity tool events are entry points to work performed during the activity. Read only those needed to understand what actually changed.",
     "- Long-term Memory and existing episodes are not evidence for this recording run; do not seek them out.",
     "",
-    "Read the evidence, inspect indexed Workspace material only when needed, then update the Daily and record episodes only when warranted.",
+    "Read the evidence, inspect indexed Workspace material only when needed, then update the Daily and record episodes only when warranted. When the recording is ready, call finish; a plain final message does not commit it.",
   ].join("\n");
 }
 

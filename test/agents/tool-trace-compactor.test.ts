@@ -88,7 +88,7 @@ test("compacts tool evidence in an isolated factual Pi run", async () => {
   }]);
 });
 
-test("rejects a compaction result with fields outside the factual contract", async () => {
+test("corrects a compaction result with fields outside the factual contract", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-tool-trace-invalid-"));
   const modelRuntime = await ModelRuntime.create({
     authPath: path.join(root, "config", "auth.json"),
@@ -127,6 +127,10 @@ test("rejects a compaction result with fields outside the factual contract", asy
         recommendation: "Act on the result.",
       }],
     })),
+    context => {
+      assert.match(JSON.stringify(context.messages), /required terminal result/i);
+      return fauxAssistantMessage(validCompactionResult());
+    },
   ]);
   const compactor = await createPiToolTraceCompactor({
     agentDir: path.join(root, "agent"),
@@ -135,10 +139,95 @@ test("rejects a compaction result with fields outside the factual contract", asy
     model,
   });
 
-  await assert.rejects(compactor.compact([{
+  assert.equal((await compactor.compact([{
     toolCallId: "call-1",
     toolName: "read",
     callArguments: { path: "notes.md" },
     toolResult: { isError: false, content: [{ type: "text", text: "source statement" }] },
-  }]), /unexpected fields/i);
+  }]))[0]?.toolCallId, "call-1");
 });
+
+test("allows the 50th Pi turn to complete without requesting a 51st", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-tool-trace-turn-50-"));
+  const { faux, compactor } = await createTestCompactor(root, "loom-compactor-turn-50");
+  let providerCalls = 0;
+  faux.setResponses(Array.from({ length: 50 }, (_, index) => () => {
+    providerCalls += 1;
+    return index === 49
+      ? fauxAssistantMessage(validCompactionResult())
+      : fauxAssistantMessage("not valid JSON yet");
+  }));
+
+  assert.equal((await compactor.compact(compactionInput()))[0]?.toolCallId, "call-1");
+  assert.equal(providerCalls, 50);
+});
+
+test("stops before requesting a 51st Pi turn when the organ is incomplete", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-tool-trace-turn-limit-"));
+  const { faux, compactor } = await createTestCompactor(root, "loom-compactor-turn-limit");
+  let providerCalls = 0;
+  faux.setResponses([
+    ...Array.from({ length: 50 }, () => () => {
+      providerCalls += 1;
+      return fauxAssistantMessage("still incomplete");
+    }),
+    () => {
+      providerCalls += 1;
+      return fauxAssistantMessage(validCompactionResult());
+    },
+  ]);
+
+  await assert.rejects(compactor.compact(compactionInput()), /50-turn Pi limit/);
+  assert.equal(providerCalls, 50);
+});
+
+async function createTestCompactor(root: string, provider: string) {
+  const modelRuntime = await ModelRuntime.create({
+    authPath: path.join(root, "config", "auth.json"),
+    modelsPath: null,
+    modelsStorePath: path.join(root, "config", "models-store.json"),
+    allowModelNetwork: false,
+  });
+  const faux = createFauxCore({ provider, api: provider });
+  modelRuntime.registerProvider(provider, {
+    name: provider,
+    api: faux.api,
+    apiKey: "test-key",
+    baseUrl: "http://localhost:0",
+    streamSimple: faux.streamSimple,
+    models: faux.models,
+  });
+  const model = modelRuntime.getModel(provider, faux.getModel().id);
+  assert.ok(model);
+  return {
+    faux,
+    compactor: await createPiToolTraceCompactor({
+      agentDir: path.join(root, "agent"),
+      transcriptDirectory: path.join(root, "transcripts"),
+      modelRuntime,
+      model,
+    }),
+  };
+}
+
+function compactionInput() {
+  return [{
+    toolCallId: "call-1",
+    toolName: "read",
+    callArguments: { path: "notes.md" },
+    toolResult: { isError: false, content: [{ type: "text" as const, text: "source statement" }] },
+  }];
+}
+
+function validCompactionResult(): string {
+  return JSON.stringify({
+    results: [{
+      toolCallId: "call-1",
+      callSummary: "Read notes.md.",
+      resultSummary: "Read text.",
+      confirmedFacts: [],
+      sourceClaims: [],
+      limitations: [],
+    }],
+  });
+}

@@ -144,7 +144,7 @@ test("requires stable facts before calling the recorder model", async () => {
   });
 });
 
-test("confines recorder file reads to the Agent Workspace", async () => {
+test("recovers from a rejected outside read in the same session", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-read-boundary-"));
   const workspaceRoot = await createRecorderWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-read-boundary");
@@ -157,7 +157,10 @@ test("confines recorder file reads to the Agent Workspace", async () => {
       fauxToolCall("read", { path: "/etc/hosts" }, { id: "read-outside" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("The outside read was refused."),
+    context => {
+      assert.match(JSON.stringify(context.messages), /Agent Workspace/i);
+      return fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-after-rejection" }), { stopReason: "toolUse" });
+    },
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -167,13 +170,10 @@ test("confines recorder file reads to the Agent Workspace", async () => {
     model,
   });
 
-  await assert.rejects(
-    recorder.record(activity()),
-    /Life Recorder tool read failed:.*Agent Workspace/i,
-  );
+  assert.equal((await recorder.record(activity())).daily.status, "no_change");
 });
 
-test("refuses a receipt when the recorder did not read every frozen event", async () => {
+test("rejects an early finish and reads the remaining frozen events in the same session", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-partial-"));
   const workspaceRoot = await createRecorderWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-partial");
@@ -182,7 +182,15 @@ test("refuses a receipt when the recorder did not read every frozen event", asyn
       fauxToolCall("read_activity", { offset: 0, limit: 1 }, { id: "read-first-page" }),
       { stopReason: "toolUse" },
     ),
-    fauxAssistantMessage("Stopped before reading the next page."),
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-too-early" }), { stopReason: "toolUse" }),
+    context => {
+      assert.match(JSON.stringify(context.messages), /read every frozen activity event/i);
+      return fauxAssistantMessage(
+        fauxToolCall("read_activity", { offset: 1 }, { id: "read-second-page" }),
+        { stopReason: "toolUse" },
+      );
+    },
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-corrected" }), { stopReason: "toolUse" }),
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -201,7 +209,7 @@ test("refuses a receipt when the recorder did not read every frozen event", asyn
     content: { text: "kept the distinction explicit" },
   });
 
-  await assert.rejects(recorder.record(frozen), /did not read all frozen activity events/i);
+  assert.equal((await recorder.record(frozen)).daily.status, "no_change");
 });
 
 test("rejects an event with an unsupported actor reference before calling the model", async () => {
@@ -247,7 +255,7 @@ test("accepts a namespaced external actor as attributed evidence", async () => {
   assert.equal(receipt.daily.status, "no_change");
 });
 
-test("rolls back earlier writes when an episode cites evidence outside the frozen activity", async () => {
+test("keeps earlier writes and recovers when an episode cites unsupported evidence", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-evidence-"));
   const workspaceRoot = await createRecorderWorkspace(root);
   const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-evidence");
@@ -277,7 +285,10 @@ test("rolls back earlier writes when an episode cites evidence outside the froze
       scene: "This scene cites evidence that was not part of the activity.",
       evidenceEventIds: ["event-from-another-segment"],
     }, { id: "record-episode" }), { stopReason: "toolUse" }),
-    fauxAssistantMessage("Could not record the unsupported scene."),
+    context => {
+      assert.match(JSON.stringify(context.messages), /eventId outside the frozen evidence.*event-from-another-segment/i);
+      return fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish-after-rejection" }), { stopReason: "toolUse" });
+    },
   ]);
   const recorder = await createPiLifeRecorder({
     agentWorkspace: new AgentWorkspace(workspaceRoot),
@@ -287,12 +298,11 @@ test("rolls back earlier writes when an episode cites evidence outside the froze
     model,
   });
 
-  await assert.rejects(
-    recorder.record(activity()),
-    /eventId outside the frozen evidence.*event-from-another-segment/i,
-  );
-  await assert.rejects(access(path.join(workspaceRoot, "daily", "2026-07-19.md")));
-  assert.deepEqual(await readdir(path.join(workspaceRoot, "episodes", "2026-07-19")), []);
+  const receipt = await recorder.record(activity());
+  assert.equal(receipt.daily.status, "updated");
+  assert.equal(receipt.episodes.length, 1);
+  await access(path.join(workspaceRoot, "daily", "2026-07-19.md"));
+  assert.equal((await readdir(path.join(workspaceRoot, "episodes", "2026-07-19"))).length, 1);
 });
 
 test("restores all Workspace files when the provider fails after writes", async () => {

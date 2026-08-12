@@ -6,7 +6,7 @@
  * keyed by file responsibility and applied uniformly to every Instance; they
  * do not impose any structure on md content. Matching is by workspace-relative
  * path. A write that exceeds its file's limit is rejected with a recoverable
- * error so the organ can trim and retry in the same turn (no whole mutation
+ * error so the organ can trim and retry in the same Pi session (no whole mutation
  * rollback). Paths with no rule are not limited.
  */
 
@@ -51,7 +51,7 @@ const threadLike = (limitBytes: number) => ({
 
 /**
  * A recoverable rejection for a single over-limit write. It rejects only the
- * current write (the organ can trim and retry in the same turn); it never
+ * current write (the organ can trim and retry in the same Pi session); it never
  * triggers a whole-mutation rollback on its own.
  */
 export class WorkspaceWriteLimitExceededError extends Error {
@@ -64,7 +64,7 @@ export class WorkspaceWriteLimitExceededError extends Error {
   constructor(relativePath: string, actualBytes: number, limitBytes: number) {
     const excessBytes = actualBytes - limitBytes;
     super(
-      `${relativePath} exceeds its ${actualBytes} bytes maximum (${limitBytes} bytes; excess ${excessBytes}). `
+      `${relativePath} attempted ${actualBytes} bytes; limit ${limitBytes} bytes; reduce by at least ${excessBytes} bytes. `
       + `Delete duplicated or stale entries, archive / split into dedicated files, then retry the same write with reduced content.`,
     );
     this.name = "WorkspaceWriteLimitExceeded";
@@ -108,7 +108,7 @@ export const WORKSPACE_WRITE_LIMITS: ReadonlyArray<{
  * Reject a write whose content exceeds the calibrated limit for the file at
  * `relativePath` (workspace-relative). Paths without a rule pass. The thrown
  * error is recoverable: it names the file, the limit, the attempted size and
- * the excess, so the organ can trim and retry in the same turn.
+ * the excess, so the organ can trim and retry in the same Pi session.
  */
 export function enforceWorkspaceWriteLimit(relativePath: string, content: string | Buffer): void {
   if (!relativePath) return;
@@ -116,13 +116,7 @@ export function enforceWorkspaceWriteLimit(relativePath: string, content: string
   for (const rule of WORKSPACE_WRITE_LIMITS) {
     if (rule.matches(relativePath)) {
       if (actual > rule.limitBytes) {
-        const excess = actual - rule.limitBytes;
-        const error = new Error(
-          `${relativePath} exceeds its ${actual} bytes maximum (${rule.limitBytes} bytes; excess ${excess}). `
-          + `Delete duplicated or stale entries, archive / split into dedicated files, then retry the same write with reduced content.`,
-        );
-        error.name = "WorkspaceWriteLimitExceeded";
-        throw error;
+        throw new WorkspaceWriteLimitExceededError(relativePath, actual, rule.limitBytes);
       }
       return;
     }

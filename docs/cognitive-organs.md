@@ -109,9 +109,19 @@ Cognitive Organs 通过运行专门、有界的维护任务解决这些问题，
 
 重启时 Runtime 从持久状态重建所有 pending organ 工作。器官不依赖外部服务；nmem 不可用时，Memory Reflector 仍基于 Workspace 和 Frozen Activity 证据运行。
 
+## 统一 Session 与写入语义
+
+所有 Cognitive Organs 通过共享的 **Organ Session**（`src/agents/session/`）执行，而不是各自拼装 Pi 调用：
+
+- **50 Pi turn 上限**：一次 organ 运行被 Pi 原生 turn 计数限定为 50 个 turn。第 50 个 turn 完整结束、Pi 准备进入第 51 个时仍未完成，该次运行返回 `turn_limit`，消耗一次逻辑重试。正常执行不再有 10/45 分钟墙钟 deadline。
+- **显式 `finish`**：写入型 organ（Life Recorder、Memory Reflector、Attention Maintainer、Thread Maintainer）必须以显式 `finish` 工具调用结束运行；自然语言结尾不再算完成。`finish` 由共享 Session 唯一提供，只在**持久提交成功后**才发布 organ 结果；提交失败时运行保持 open（或转入 fatal，取决于失败类型），不会留下“提交失败但标记完成”的状态。
+- **同批工具**：一个 Pi message 同时包含 `finish` 和普通工具时，`finish` 是唯一提交请求；同批普通工具全部跳过且不会产生副作用，完成后也不会再请求模型。
+- **写入三态**：Workspace 写入返回 `applied`（已写入）/ `rejected`（本次写入被拒，未改文件，模型可在同一 Session 内修正后重试）/ `uncertain`（结果不确定，视为 fatal，由外层回滚）。超限写入（见下）属于 `rejected`。
+- **字节上限**：Harness 按文件职责维护字节上限（如 `attention.md` 64 KiB、`memory.md` 256 KiB、`threads/index.md` 256 KiB、`daily/<day>.md` 128 KiB、`episodes/<day>/<id>.md` 32 KiB，详见 `src/workspace/workspace-write-limits.ts`）。超过上限的写入被拒（`rejected`），模型删除重复/过期内容或拆到专门文件后重试；未列入上限表的路径默认放行。上限表是 src 常量，不是实例配置，所有实例统一适用。
+
 ## Workspace Mutation 恢复
 
-Life Recorder、Thread Maintainer 和 Memory Reflector 可以在一次运行中写多个 Workspace 文件。这些多文件 revision 由 **Workspace Mutations** 保护：Runtime 持有的 before-image 快照，允许原子恢复。进程在写入中途退出时，下次启动要么恢复旧 revision，要么重放已完成的结果——不会留下半套认知材料。
+四个写入型 organ 都由 **Workspace Mutations** 保护：Runtime 持有的 before-image 快照，允许原子恢复。Life Recorder、Memory Reflector 和 Attention Maintainer 保护各自文件；Thread Maintainer 在记录本轮 Activity reference 之前，先把 `threads/` 和 Thread evidence index 放入同一个恢复边界。进程在写入中途退出时，下次启动要么恢复旧 revision，要么重放已完成的结果——不会留下半套认知材料。
 
 ## 版本化
 

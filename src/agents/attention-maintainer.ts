@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
@@ -18,7 +18,12 @@ import { Type } from "typebox";
 import type { FrozenActivity } from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
+import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 import { enforceWorkspaceWriteLimit } from "../workspace/workspace-write-limits.js";
+import {
+  createPiCognitiveOrganSession,
+  type PiCognitiveOrganSession,
+} from "./session/index.js";
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
@@ -108,6 +113,7 @@ Not Current Attention:
 Do not modify any other file. A stable Current Attention is better left untouched than cosmetically rewritten.`;
 
 export interface AttentionMaintenanceRequest {
+  operationKey: string;
   observedAt: string;
   localTime: string;
   recentActivities: FrozenActivity[];
@@ -132,6 +138,7 @@ export interface PiAttentionMaintainerOptions {
   model: Model<any>;
   thinkingLevel?: ThinkingLevel;
   nextRunId?: () => string;
+  mutationDirectory?: string;
 }
 
 class PiAttentionMaintainer implements AttentionMaintainer {
@@ -143,17 +150,50 @@ class PiAttentionMaintainer implements AttentionMaintainer {
   async maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult> {
     validateRequest(request);
     const runId = this.options.nextRunId?.() ?? randomUUID();
+    const opened = await beginWorkspaceMutation<AttentionMaintenanceResult>({
+      workspaceRoot: this.options.agentWorkspace.root,
+      journalRoot: this.options.mutationDirectory
+        ?? path.join(this.options.transcriptDirectory, "workspace-mutations"),
+      operationKey: `attention-maintainer:${request.operationKey}`,
+    });
+    if (opened.state === "completed") return opened.result;
+    const mutation = opened.mutation;
     const [identity, stableFacts, previousAttention] = await Promise.all([
       this.options.agentWorkspace.loadIdentity(),
       this.options.agentWorkspace.loadStableFacts(),
       this.options.agentWorkspace.loadCurrentAttention(),
     ]);
-    const attentionFile = path.join(this.options.agentWorkspace.root, ATTENTION_PATH);
     const activities = new Map(request.recentActivities.map(activity => [activity.segmentId, activity]));
     let attentionRead = false;
     let supportingEvidenceRead = false;
     let replaced = false;
+    let replacement: string | undefined;
     const workspaceRoot = this.options.agentWorkspace.root;
+
+    const organSession = createPiCognitiveOrganSession<AttentionMaintenanceResult>({
+      completion: "finish",
+      organ: "attention-maintainer",
+      finishReminder: "This maintenance run is not complete. Read any missing evidence, stage any needed replacement, then call finish to validate and commit it.",
+      validateAndCommit: async () => {
+        try {
+          assertGrounded(attentionRead, supportingEvidenceRead);
+        } catch (error) {
+          return { state: "rejected", error: errorMessage(error) };
+        }
+        const result: AttentionMaintenanceResult = {
+          outcome: replacement === undefined ? "no_change" : "updated",
+          runId,
+          path: ATTENTION_PATH,
+        };
+        if (replacement !== undefined) {
+          const write = await mutation.write(ATTENTION_PATH, replacement);
+          if (write.state === "rejected") return write;
+          if (write.state === "uncertain") throw new Error(write.error);
+        }
+        await mutation.complete(result);
+        return { state: "committed", result };
+      },
+    });
 
     const workspaceTools = createWorkspaceReadTools(workspaceRoot)
       .map(tool => observeWorkspaceRead(tool));
@@ -211,22 +251,20 @@ class PiAttentionMaintainer implements AttentionMaintainer {
             throw new Error("Replacement is identical to the existing Current Attention; return NO_CHANGE instead");
           }
           enforceWorkspaceWriteLimit(ATTENTION_PATH, content);
-          await atomicWrite(attentionFile, content);
+          replacement = content;
           replaced = true;
           return toolResult({ type: "loom.current-attention-replaced", version: 1, path: ATTENTION_PATH });
         },
       }),
     ];
+    const guardedTools = organSession.bindTools(tools);
 
     try {
-      await this.#runSession(request, runId, identity, stableFacts, tools);
-      assertGrounded(attentionRead, supportingEvidenceRead);
-      if (replaced) {
-        return { outcome: "updated", runId, path: ATTENTION_PATH };
-      }
-      return { outcome: "no_change", runId, path: ATTENTION_PATH };
+      const result = await this.#runSession(request, runId, identity, stableFacts, guardedTools, organSession);
+      if (!result) throw new Error("Attention Maintainer did not finish");
+      return result;
     } catch (error) {
-      if (replaced) await atomicWrite(attentionFile, previousAttention);
+      await mutation.rollback();
       throw error;
     }
 
@@ -258,7 +296,8 @@ class PiAttentionMaintainer implements AttentionMaintainer {
     identity: string,
     stableFacts: string,
     tools: ToolDefinition[],
-  ): Promise<string> {
+    organSession: PiCognitiveOrganSession<AttentionMaintenanceResult>,
+  ): Promise<AttentionMaintenanceResult | undefined> {
     const transcriptFile = path.join(this.options.transcriptDirectory, `${runId}.jsonl`);
     const sessionManager = SessionManager.open(
       transcriptFile,
@@ -310,8 +349,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
       if (this.#cancelReason) throw new Error(`Attention maintenance cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
-      await session.prompt(buildRunPrompt(request, runId), { expandPromptTemplates: false });
-      return finalAssistantText(session.messages);
+      return (await organSession.run(session, buildRunPrompt(request, runId))).result;
     } finally {
       if (this.#activeSession === session) {
         this.#activeSession = undefined;
@@ -362,22 +400,12 @@ function buildRunPrompt(request: AttentionMaintenanceRequest, runId: string): st
     "- other entries: inspect with ls only when relevant.",
     "Missing optional material is not a failure. Do not invent content for it.",
     "",
-    "Read attention.md and at least one additional relevant source. Replace the complete file only when the carried awareness has genuinely changed.",
+    "Read attention.md and at least one additional relevant source. Replace the complete file only when the carried awareness has genuinely changed. When ready, call finish; a plain final message does not commit this run.",
   ].join("\n");
 }
 
-function finalAssistantText(messages: AgentMessage[]): string {
-  const message = [...messages].reverse().find(candidate => candidate.role === "assistant");
-  if (!message) throw new Error("Attention Maintainer did not return an assistant message");
-  if (message.stopReason === "error" || message.stopReason === "aborted") {
-    throw new Error(message.errorMessage ?? `Attention Maintainer stopped with ${message.stopReason}`);
-  }
-  const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
-  const terminalLine = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean).at(-1);
-  return terminalLine === "UPDATED" || terminalLine === "NO_CHANGE" ? terminalLine : text;
-}
-
 function validateRequest(request: AttentionMaintenanceRequest): void {
+  if (!request.operationKey.trim()) throw new Error("Current Attention operationKey cannot be blank");
   if (!request.observedAt || Number.isNaN(Date.parse(request.observedAt))) {
     throw new Error("Current Attention observedAt must be an ISO timestamp");
   }
@@ -410,19 +438,13 @@ function normalizeAttention(content: string): string {
   return `${normalized}\n`;
 }
 
-async function atomicWrite(file: string, content: string): Promise<void> {
-  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, content, { encoding: "utf8", flag: "wx" });
-    await rename(temporary, file);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 function toolResult(value: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     details: value,
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

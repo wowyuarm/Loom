@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { WorkspaceWriteOutcome } from "../../workspace/workspace-mutation.js";
 import { enforceWorkspaceWriteLimit } from "../../workspace/workspace-write-limits.js";
 
 interface WorkspaceFileSnapshot {
@@ -31,10 +32,14 @@ export class ThreadWorkspaceTransaction {
     return this.#mutated;
   }
 
-  async write(relativePath: string, content: string): Promise<void> {
+  async write(relativePath: string, content: string): Promise<WorkspaceWriteOutcome> {
     // Entries are relative to the threads/ root; enforce against the
     // workspace-relative path so the shared byte-limit table applies.
-    enforceWorkspaceWriteLimit(`threads/${relativePath}`, content);
+    try {
+      enforceWorkspaceWriteLimit(`threads/${relativePath}`, content);
+    } catch (error) {
+      return { state: "rejected", error: errorMessage(error) };
+    }
     const target = path.join(this.root, relativePath);
     let previous: Buffer | undefined;
     let mode = 0o600;
@@ -44,25 +49,44 @@ export class ThreadWorkspaceTransaction {
         stat(target).then(value => value.mode & 0o777),
       ]);
     } catch (error) {
-      if (!isMissing(error)) throw error;
+      if (!isMissing(error)) return { state: "rejected", error: errorMessage(error) };
     }
     const next = Buffer.from(content, "utf8");
     if (previous?.equals(next)) {
-      throw new Error(`Thread file ${relativePath} is unchanged; return NO_CHANGE instead of rewriting it`);
+      return {
+        state: "rejected",
+        error: `Thread file ${relativePath} is unchanged; return NO_CHANGE instead of rewriting it`,
+      };
     }
-    await atomicWrite(target, next, mode);
+    try {
+      await atomicWrite(target, next, mode);
+    } catch (error) {
+      return { state: "uncertain", error: errorMessage(error) };
+    }
     this.#mutated = true;
+    return { state: "applied" };
   }
 
-  async move(source: string, destination: string): Promise<void> {
+  async move(source: string, destination: string): Promise<WorkspaceWriteOutcome> {
     const sourcePath = path.join(this.root, source);
     const destinationPath = path.join(this.root, destination);
-    await stat(sourcePath);
-    if (await exists(destinationPath)) throw new Error(`Thread move destination ${destination} already exists`);
-    await mkdir(path.dirname(destinationPath), { recursive: true });
-    await rename(sourcePath, destinationPath);
+    try {
+      await stat(sourcePath);
+      if (await exists(destinationPath)) {
+        return { state: "rejected", error: `Thread move destination ${destination} already exists` };
+      }
+    } catch (error) {
+      return { state: "rejected", error: errorMessage(error) };
+    }
+    try {
+      await mkdir(path.dirname(destinationPath), { recursive: true });
+      await rename(sourcePath, destinationPath);
+    } catch (error) {
+      return { state: "uncertain", error: errorMessage(error) };
+    }
     this.moves.push({ source, destination });
     this.#mutated = true;
+    return { state: "applied" };
   }
 
   async changedPaths(): Promise<string[]> {
@@ -129,4 +153,8 @@ async function exists(target: string): Promise<boolean> {
 
 function isMissing(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

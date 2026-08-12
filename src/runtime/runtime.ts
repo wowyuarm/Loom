@@ -342,11 +342,6 @@ class SqliteRuntime implements Runtime {
   readonly #cognitiveOrganPolicy: CognitiveOrganPolicy;
   readonly #cognitiveOrgan: CognitiveOrganExecution;
   readonly #statusReader: RuntimeStatusReader;
-  readonly #organCancelTimer: (
-    delayMs: number,
-    callback: () => void,
-  ) => { clear(): void };
-  readonly #organSoftDeadlineTimers = new Map<string, { clear(): void }>();
   #pendingOperationalEvents: OperationalEvent[] | undefined;
   #active: ActiveExecution | undefined;
   #activeDeliveryId: string | undefined;
@@ -381,7 +376,6 @@ class SqliteRuntime implements Runtime {
     this.#observe = options.observe;
     this.#revisions = options.revisions;
     this.#cognitiveOrganPolicy = options.cognitiveOrganPolicy ?? COGNITIVE_ORGAN_POLICY;
-    this.#organCancelTimer = options.organCancelTimer ?? defaultOrganCancelTimer;
     initializeRuntimeSchema(this.#database);
     this.#cognitiveOrgan = new CognitiveOrganExecution({
       database: this.#database,
@@ -1052,6 +1046,7 @@ class SqliteRuntime implements Runtime {
       const outcome = await this.#runCognitiveOrgan(claim, {
         cancel: reason => this.#attentionMaintenance!.cancel?.(reason) ?? Promise.resolve(),
         run: () => this.#attentionMaintenance!.maintain({
+          operationKey: `window:${windowEnd}`,
           observedAt: options.observedAt.toISOString(),
           localTime: this.#timePolicy.formatLocalTime(options.observedAt),
           recentActivities: activities,
@@ -1614,7 +1609,7 @@ class SqliteRuntime implements Runtime {
       if (previous.status === "retry_wait") {
         // Retries continue the same immutable domain input only: a newer
         // domainRef must start a fresh budget cycle instead of consuming the
-        // old work's retry quota and total deadline with different input.
+        // old work's retry quota with different input.
         if (previous.domainRef === domainRef) {
           if (previous.nextAttemptAt && Date.parse(previous.nextAttemptAt) > now.getTime()) {
             return { nextAttemptAt: previous.nextAttemptAt };
@@ -1694,19 +1689,11 @@ class SqliteRuntime implements Runtime {
       run: runPromise,
     };
     this.#activeCognitiveOrgan = active;
-    const softDeadlineAt = Date.parse(claim.attempt.softDeadlineAt);
-    const remaining = softDeadlineAt - this.#now().getTime();
-    if (remaining > 0) {
-      const timer = this.#organCancelTimer(remaining, () => this.#softDeadlineExpired(claim.workId));
-      this.#organSoftDeadlineTimers.set(claim.workId, timer);
-    }
     try {
       await runPromise;
     } catch {
       // The attempt is already failed in the ledger; outcome reflects its state.
     } finally {
-      this.#organSoftDeadlineTimers.get(claim.workId)?.clear();
-      this.#organSoftDeadlineTimers.delete(claim.workId);
       if (this.#activeCognitiveOrgan === active) this.#activeCognitiveOrgan = undefined;
     }
     // A cancel may be settling in parallel (same event loop tick): its
@@ -1806,16 +1793,6 @@ class SqliteRuntime implements Runtime {
     } finally {
       if (this.#cancelSettling === settling) this.#cancelSettling = undefined;
     }
-  }
-
-  /** Soft deadline expired: signal cancel only; the grace window decides the rest. */
-  #softDeadlineExpired(workId: string): void {
-    const active = this.#activeCognitiveOrgan;
-    if (!active || active.workId !== workId) return;
-    const work = this.#cognitiveOrgan.work(workId);
-    if (!work || work.status !== "running") return;
-    if (Date.parse(active.attempt.softDeadlineAt) > this.#now().getTime()) return;
-    void this.#cancelActiveCognitiveOrgan("soft_deadline");
   }
 
   #hasHeldCognitiveOrganWork(): boolean {
@@ -4863,6 +4840,9 @@ function agentState(summary: RuntimeAgentRunSummary): "running" | "succeeded" | 
 
 function agentFailureCategory(error: unknown): string {
   const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/PiCognitiveOrganTurnLimitError|Cognitive Organ exceeded the \d+-turn Pi limit/i.test(message)) {
+    return "turn_limit";
+  }
   if (/consecutive tool errors/i.test(message)) return "tool_error";
   if (/timeout|timed out/i.test(message)) return "timeout";
   if (/abort|interrupt/i.test(message)) return "interrupted";
@@ -4877,14 +4857,6 @@ function organTranscriptRef(organ: CognitiveOrganName, runId: string): string {
   return `organs/${organ}/${runId}.jsonl`;
 }
 
-function defaultOrganCancelTimer(
-  delayMs: number,
-  callback: () => void,
-): { clear(): void } {
-  const timeout = setTimeout(callback, delayMs);
-  timeout.unref();
-  return { clear: () => clearTimeout(timeout) };
-}
 
 function isIsoTimestamp(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(value)

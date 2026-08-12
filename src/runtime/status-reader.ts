@@ -517,12 +517,10 @@ export class RuntimeStatusReader {
       status: work.status,
       attemptCount: work.attemptCount,
       createdAt: work.createdAt,
-      totalDeadlineAt: work.totalDeadlineAt,
       ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
       ...(requeuedFrom ? { requeuedFrom } : {}),
       ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
       ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
-      ...(attempt ? { softDeadlineAt: attempt.softDeadlineAt } : {}),
       ...(attempt?.transcriptRef ? { transcriptRef: attempt.transcriptRef } : {}),
       ...(attempt?.resultRef ? { resultRef: attempt.resultRef } : {}),
     };

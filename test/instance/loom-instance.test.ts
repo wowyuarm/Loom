@@ -447,7 +447,7 @@ test("freezes idle Activity but defers Life Recorder work while models are block
   const provider = await startOpenAiProvider(
     { text: "A private response" },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
   );
@@ -504,7 +504,7 @@ test("records a closed Activity through a revision-bound Life Recorder", async t
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -538,7 +538,7 @@ test("reflects a completed logical day through the assembled Instance", async t 
   const provider = await startOpenAiProvider(
     { text: "A day worth carrying." },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
     { tool: { name: "read", arguments: { path: "facts.json" } } },
     { tool: { name: "read", arguments: { path: "identity.md" } } },
     { tool: { name: "read", arguments: { path: "memory.md" } } },
@@ -546,7 +546,7 @@ test("reflects a completed logical day through the assembled Instance", async t 
     { tool: { name: "read", arguments: { path: "behavior/proactivity.md" } } },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { tool: { name: "read", arguments: { path: "daily/2026-07-22.md" } } },
-    { text: "NO_CHANGE" },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
@@ -591,7 +591,7 @@ test("maintains changed Thread material through the assembled Instance", async t
     } } },
     { text: "The private line has a place now." },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
     { tool: { name: "read", arguments: { path: "index.md" } } },
     { tool: { name: "read", arguments: { path: "garden/thread.md" } } },
     body => {
@@ -603,7 +603,7 @@ test("maintains changed Thread material through the assembled Instance", async t
         limit: 200,
       } } };
     },
-    { text: "NO_CHANGE" },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl, undefined, "medium", {
@@ -656,7 +656,7 @@ test("reconciles nmem Thread and Episode projections after local Activity work",
         evidenceEventIds: [eventId],
       } } };
     },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   const nmem = await startNmemProjectionServer();
@@ -711,7 +711,7 @@ test("keeps nmem projection failure-soft and resumes it after restart backoff", 
   const provider = await startOpenAiProvider(
     { text: "A local response remains available." },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   const nmem = await startNmemProjectionServer({ failThreadRequests: 1 });
@@ -839,7 +839,7 @@ test("uses the quiet-hours cadence from the Instance time policy", async t => {
     { text: JSON.stringify({ outcome: "none", whyNow: "Quiet.", evidence: ["attention read"] }) },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { tool: { name: "read", arguments: { path: "memory.md" } } },
-    { text: "NO_CHANGE" },
+    { tool: { name: "finish", arguments: {} } },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Morning.", evidence: ["attention read"] }) },
   );
@@ -959,7 +959,7 @@ test("retries a failed Orientation Pulse from its persisted due time", async t =
   await writeIndividualMaterials(root);
   const provider = await startOpenAiProvider(
     { tool: { name: "read", arguments: { path: "attention.md" } } },
-    { text: "not a valid Orientation result" },
+    { error: "forced Orientation provider failure" },
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Recovered.", evidence: ["attention read"] }) },
   );
@@ -998,7 +998,7 @@ test("Fair-splits an open Activity at Pulse expiry so Orientation gets its chanc
     { tool: { name: "read", arguments: { path: "attention.md" } } },
     { text: JSON.stringify({ outcome: "none", whyNow: "Activity is settled.", evidence: ["attention read"] }) },
     { tool: { name: "read_activity", arguments: { offset: 0, limit: 200 } } },
-    { text: "Recorded." },
+    { tool: { name: "finish", arguments: {} } },
   );
   t.after(() => provider.close());
   await writeModelConfiguration(root, provider.baseUrl);
@@ -1181,6 +1181,7 @@ async function writeModelConfiguration(
 type ProviderResponse =
   | { text: string }
   | { tool: { name: string; arguments: Record<string, unknown> } }
+  | { error: string }
   | ((body: Record<string, unknown>) => Exclude<ProviderResponse, Function>);
 
 async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Promise<{
@@ -1202,6 +1203,16 @@ async function startOpenAiProvider(...providerResponses: ProviderResponse[]): Pr
         ? configuredResponse(requestBodies.at(-1)!)
         : configuredResponse;
       requestCount += 1;
+      if ("error" in providerResponse) {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({
+          error: {
+            message: providerResponse.error,
+            type: "invalid_request_error",
+          },
+        }));
+        return;
+      }
       response.writeHead(200, {
         "content-type": "text/event-stream",
         connection: "keep-alive",
