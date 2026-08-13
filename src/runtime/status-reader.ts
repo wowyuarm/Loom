@@ -521,6 +521,12 @@ export class RuntimeStatusReader {
       ...(requeuedFrom ? { requeuedFrom } : {}),
       ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
       ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
+      // When the last attempt failed (blocked/retry_wait), its ended_at is the
+      // provable time the degradation entered: the attempt failed at that
+      // moment. Never the work creation time.
+      ...(attempt?.status === "failed" && attempt.endedAt
+        ? { lastFailureAt: attempt.endedAt }
+        : {}),
       ...(attempt?.transcriptRef ? { transcriptRef: attempt.transcriptRef } : {}),
       ...(attempt?.resultRef ? { resultRef: attempt.resultRef } : {}),
     };

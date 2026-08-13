@@ -1383,3 +1383,94 @@ function toolNames(body: Record<string, unknown>): string[] {
     return String((definition as { name: unknown }).name);
   }).sort();
 }
+
+test("includes Harness Conditions evidence in Orientation when enabled", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  let channelStatusCalls = 0;
+  let providerCalls = 0;
+  const provider = await startOpenAiProvider(body => {
+    providerCalls += 1;
+    const request = JSON.stringify(body);
+    assert.match(request, /Harness Conditions Evidence/);
+    assert.match(request, /raft message ingress/);
+    assert.match(request, /2 inbound item\(s\) permanently failed/);
+    assert.doesNotMatch(request, /channel-ingress-failed/);
+    if (providerCalls > 1) {
+      return { text: JSON.stringify({
+        outcome: "none",
+        whyNow: "Nothing currently warrants an opening.",
+        evidence: ["attention.md contains one quiet curiosity"],
+      }) };
+    }
+    return { tool: { name: "read", arguments: { path: "attention.md" } } };
+  });
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  await enableHarnessConditions(root);
+  const now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    channelStatuses: () => {
+      channelStatusCalls += 1;
+      return {
+        raft: {
+          state: "connected",
+          ingress: { pending: 0, retrying: 0, failed: 2, spooled: 0, oldestOutstandingAt: "2026-07-21T08:00:00.000Z" },
+        },
+      };
+    },
+  });
+  t.after(() => instance.close());
+
+  const result = await instance.formOpportunity();
+
+  assert.equal(result.disposition, "none");
+  assert.ok(channelStatusCalls > 0);
+});
+
+test("does not collect Harness Conditions when disabled", async t => {
+  const root = await createInstanceRoot();
+  await writeIndividualMaterials(root);
+  let channelStatusCalls = 0;
+  let providerCalls = 0;
+  const provider = await startOpenAiProvider(body => {
+    providerCalls += 1;
+    const request = JSON.stringify(body);
+    assert.doesNotMatch(request, /Harness Conditions Evidence/);
+    if (providerCalls > 1) {
+      return { text: JSON.stringify({
+        outcome: "none",
+        whyNow: "Nothing currently warrants an opening.",
+        evidence: ["attention.md contains one quiet curiosity"],
+      }) };
+    }
+    return { tool: { name: "read", arguments: { path: "attention.md" } } };
+  });
+  t.after(() => provider.close());
+  await writeModelConfiguration(root, provider.baseUrl);
+  const now = new Date("2026-07-22T10:00:00.000Z");
+  const instance = await openLoomInstance({
+    root,
+    machineTimeZone: "UTC",
+    now: () => now,
+    channelStatuses: () => {
+      channelStatusCalls += 1;
+      return {};
+    },
+  });
+  t.after(() => instance.close());
+
+  const result = await instance.formOpportunity();
+
+  assert.equal(result.disposition, "none");
+  assert.equal(channelStatusCalls, 0);
+});
+
+async function enableHarnessConditions(root: string): Promise<void> {
+  const file = path.join(root, "configuration", "instance.yaml");
+  const current = await readFile(file, "utf8");
+  await writeFile(file, current + "orientation:\n  harnessConditions:\n    enabled: true\n", "utf8");
+}

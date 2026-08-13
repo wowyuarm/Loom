@@ -364,12 +364,13 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
     // The collection owns every Channel from here on: start, rollback, stop,
     // delivery routing and surface composition. The Host never touches an
     // individual Channel again.
-    channels = openLoomInteractionChannels({
+    const openedChannels = openLoomInteractionChannels({
       channels: interactionChannels,
       ...(configuration.defaultInteractionRoute
         ? { defaultInteractionRoute: configuration.defaultInteractionRoute }
         : {}),
     });
+    channels = openedChannels;
     const instance = await openLoomInstance({
       ...instanceOptions,
       ...(observeChain || options.observe ? { observe: observeChain ?? options.observe } : {}),
@@ -378,6 +379,7 @@ export async function openLoomHost(options: OpenLoomHostOptions): Promise<LoomHo
       interactionEnabled: true,
       outboundDelivery: channels,
       ...(channels.agentSurface() ? { channelAgentSurface: channels.agentSurface()! } : {}),
+      ...(openedChannels ? { channelStatuses: () => openedChannels.status() } : {}),
       ...(web ? { webAccess: web } : {}),
       ...(nmem ? { nmem } : {}),
     });

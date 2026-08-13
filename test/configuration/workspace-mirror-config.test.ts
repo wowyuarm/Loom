@@ -82,3 +82,40 @@ test("workspaceMirror rejects unknown keys and bad values", async () => {
     await assert.rejects(loadInstanceConfiguration({ file }), /intervalMinutes/);
   });
 });
+
+test("orientation is undefined when not configured", async () => {
+  await withConfig(BASE, async file => {
+    const config = await loadInstanceConfiguration({ file });
+    assert.equal(config.orientation, undefined);
+  });
+});
+
+test("orientation.harnessConditions defaults to disabled", async () => {
+  const yaml = BASE + "orientation:\n  harnessConditions:\n    enabled: true\n";
+  await withConfig(yaml, async file => {
+    const config = await loadInstanceConfiguration({ file });
+    assert.deepEqual(config.orientation, { harnessConditions: { enabled: true } });
+  });
+});
+
+test("orientation.harnessConditions accepts explicit false", async () => {
+  const yaml = BASE + "orientation:\n  harnessConditions:\n    enabled: false\n";
+  await withConfig(yaml, async file => {
+    const config = await loadInstanceConfiguration({ file });
+    assert.deepEqual(config.orientation, { harnessConditions: { enabled: false } });
+  });
+});
+
+test("orientation with unknown keys fails closed", async () => {
+  const yaml = BASE + "orientation:\n  harnessConditions:\n    enabled: true\n    intervalMinutes: 5\n";
+  await assert.rejects(withConfig(yaml, async file => {
+    await loadInstanceConfiguration({ file });
+  }), /unknown fields/);
+});
+
+test("orientation with invalid harnessConditions fails closed", async () => {
+  const yaml = BASE + "orientation:\n  harnessConditions:\n    enabled: \"yes\"\n";
+  await assert.rejects(withConfig(yaml, async file => {
+    await loadInstanceConfiguration({ file });
+  }), /must be a boolean/);
+});

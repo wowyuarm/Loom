@@ -213,3 +213,71 @@ function registerFaux(modelRuntime: ModelRuntime, provider: string) {
   assert.ok(model);
   return { faux, model };
 }
+
+test("renders Harness Conditions evidence as facts without new tools and keeps none-only output", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-orientation-harness-"));
+  const workspaceRoot = await createWorkspace(root);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: path.join(root, "config", "auth.json"),
+    modelsPath: null,
+    modelsStorePath: path.join(root, "config", "models-store.json"),
+    allowModelNetwork: false,
+  });
+  const provider = registerFaux(modelRuntime, "orientation-harness");
+  provider.faux.setResponses([
+    context => {
+      assert.deepEqual(context.tools?.map(tool => tool.name).sort(), ["grep", "ls", "read", "read_recent_activity"]);
+      const messages = JSON.stringify(context.messages);
+      assert.match(messages, /Harness Conditions Evidence/);
+      assert.match(messages, /current capability-degradation facts/);
+      assert.match(messages, /grant no recovery authority/);
+
+      assert.match(messages, /Thread maintenance/);
+      assert.match(messages, /blocked after retries exhausted/);
+      assert.doesNotMatch(messages, /model service unavailable/);
+      assert.match(messages, /2026-08-11T09:40:28.288Z/);
+      assert.doesNotMatch(messages, /organ-blocked:/);
+      return fauxAssistantMessage(JSON.stringify({
+        outcome: "none",
+        whyNow: "The blocked organ has no lived impact right now.",
+        evidence: ["harness conditions evidence was considered"],
+      }));
+    },
+  ]);
+
+  const orientation = await createPiOrientation({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "orientation-agent"),
+    transcriptDirectory: path.join(root, "transcripts", "orientation"),
+    modelRuntime,
+    model: provider.model,
+    loadActionSpace: async () => ({
+      skills: [],
+      mainAgentTools: ["read", "edit", "write", "bash", "grep", "find", "ls", "expand_tool_result", "attachment"],
+      evidenceSources: [],
+    }),
+    harnessConditionsEvidence: {
+      revision: "organ-blocked:thread-maintainer:activity:stable-activity-1:turn_limit",
+      observedAt: "2026-08-11T10:00:00.000Z",
+      conditions: [{
+        ref: "organ-blocked:thread-maintainer:activity:stable-activity-1:turn_limit",
+        capability: "Thread maintenance",
+        impact: "blocked after retries exhausted",
+        since: "2026-08-11T09:40:28.288Z",
+      }],
+    },
+    nextRunId: () => "orientation-run-harness",
+  });
+
+  assert.deepEqual(await orientation.form({
+    observedAt: "2026-08-11T10:01:00.000Z",
+    localTime: "2026-08-11 18:01 +08:00",
+    lastHumanInputAt: "2026-08-11T08:00:00.000Z",
+    recentActivities: [],
+  }), {
+    outcome: "none",
+    runId: "orientation-run-harness",
+    whyNow: "The blocked organ has no lived impact right now.",
+    evidence: ["harness conditions evidence was considered"],
+  });
+});

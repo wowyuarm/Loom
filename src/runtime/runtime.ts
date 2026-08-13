@@ -1521,6 +1521,41 @@ class SqliteRuntime implements Runtime {
     return { state: "completed", outcome: turn.outcome };
   }
 
+  presentedOrientationConditionRefs(): string[] {
+    const rows = this.#database.prepare(`
+      SELECT name FROM runtime_counters
+      WHERE name LIKE 'orientation_cond_presented:%'
+      ORDER BY name
+    `).all() as unknown as Array<{ name: string }>;
+    return rows.map(row => row.name.slice("orientation_cond_presented:".length));
+  }
+
+  markOrientationConditionPresented(refs: string[], at: Date): void {
+    const atMs = at.getTime();
+    const upsert = this.#database.prepare(`
+      INSERT INTO runtime_counters (name, value) VALUES (?, ?)
+      ON CONFLICT(name) DO UPDATE SET value = excluded.value
+    `);
+    for (const ref of refs) {
+      if (!ref.trim()) continue;
+      upsert.run(`orientation_cond_presented:${ref}`, atMs);
+    }
+  }
+
+  trimOrientationConditionPresented(keep: number): void {
+    if (keep < 0) throw new Error("Runtime presented ref retention must be non-negative");
+    this.#database.prepare(`
+      DELETE FROM runtime_counters
+      WHERE name LIKE 'orientation_cond_presented:%'
+        AND rowid NOT IN (
+          SELECT rowid FROM runtime_counters
+          WHERE name LIKE 'orientation_cond_presented:%'
+          ORDER BY value DESC, rowid DESC
+          LIMIT ?
+        )
+    `).run(keep);
+  }
+
   status(): RuntimeStatus {
     return this.#statusReader.readStatus();
   }

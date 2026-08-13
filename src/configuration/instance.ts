@@ -14,7 +14,18 @@ export interface InstanceConfiguration {
   modelPolicy?: ModelPolicy;
   defaultInteractionRoute?: string;
   workspaceMirror?: WorkspaceMirrorConfiguration;
+  orientation?: OrientationConfiguration;
 }
+
+export interface OrientationConfiguration {
+  harnessConditions: {
+    enabled: boolean;
+  };
+}
+
+export const DEFAULT_ORIENTATION: OrientationConfiguration = Object.freeze({
+  harnessConditions: Object.freeze({ enabled: false }),
+});
 
 export interface WorkspaceMirrorConfiguration {
   enabled: boolean;
@@ -110,7 +121,7 @@ export async function loadInstanceConfiguration(
   }
 
   if (!isObject(document)) throw new Error("Instance Configuration must be a YAML object");
-  assertOnlyKeys(document, ["version", "time", "models", "interaction", "channels", "integrations", "schedule", "workspaceMirror"], "Instance Configuration");
+  assertOnlyKeys(document, ["version", "time", "models", "interaction", "channels", "integrations", "schedule", "workspaceMirror", "orientation"], "Instance Configuration");
   if (document.version !== 1) throw new Error("Instance Configuration requires version: 1");
 
   const time = document.time ?? {};
@@ -133,6 +144,9 @@ export async function loadInstanceConfiguration(
   const workspaceMirror = document.workspaceMirror === undefined
     ? undefined
     : parseWorkspaceMirror(document.workspaceMirror);
+  const orientation = document.orientation === undefined
+    ? undefined
+    : parseOrientation(document.orientation);
   return {
     version: 1,
     timePolicy: createTimePolicy({
@@ -145,6 +159,25 @@ export async function loadInstanceConfiguration(
     ...(modelPolicy ? { modelPolicy } : {}),
     ...(defaultInteractionRoute ? { defaultInteractionRoute } : {}),
     ...(workspaceMirror ? { workspaceMirror } : {}),
+    ...(orientation ? { orientation } : {}),
+  };
+}
+
+function parseOrientation(value: unknown): OrientationConfiguration {
+  if (!isObject(value)) throw new Error("Instance Configuration orientation must be an object");
+  assertOnlyKeys(value, ["harnessConditions"], "Instance Configuration orientation");
+  const harnessConditions = value.harnessConditions ?? {};
+  if (!isObject(harnessConditions)) {
+    throw new Error("Instance Configuration orientation.harnessConditions must be an object");
+  }
+  assertOnlyKeys(harnessConditions, ["enabled"], "Instance Configuration orientation.harnessConditions");
+  if (harnessConditions.enabled !== undefined && typeof harnessConditions.enabled !== "boolean") {
+    throw new Error("Instance Configuration orientation.harnessConditions.enabled must be a boolean");
+  }
+  return {
+    harnessConditions: {
+      enabled: harnessConditions.enabled ?? false,
+    },
   };
 }
 

@@ -46,9 +46,11 @@ import {
   type AttachmentStore,
 } from "../attachments/index.js";
 import { createRevisionBoundMainAgent } from "./revision-bound-main-agent.js";
+import type { InteractionChannelStatus } from "../channels/channel.js";
 import type { InteractionChannelAgentSurface } from "../channels/surface.js";
 import type { WebAccessIntegration } from "../integrations/web/index.js";
 import type { OperationalEventObserver } from "../operational-events.js";
+import { createHarnessConditionSource } from "./harness-conditions.js";
 import {
   createRevisionBoundLifeRecorder,
   createRevisionBoundAttentionMaintenance,
@@ -112,6 +114,8 @@ export interface OpenLoomInstanceOptions {
   /** Whether at least one Interaction Channel is enabled; gates the message tool. */
   interactionEnabled?: boolean;
   channelAgentSurface?: InteractionChannelAgentSurface;
+  /** Live status of every enabled Channel; used by the Harness Condition source. */
+  channelStatuses?: () => Record<string, InteractionChannelStatus>;
   webAccess?: WebAccessIntegration;
   nmem?: NmemRecallToolOptions;
   attachmentStore?: AttachmentStore;
@@ -303,12 +307,25 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       ...(options.webAccess?.tools() ?? []),
     ] } : {}),
   });
+  const harnessConditionsEnabled = configuration.orientation?.harnessConditions?.enabled ?? false;
   const orientation = createRevisionBoundOrientation({
     revisions,
     layout,
     agentWorkspace,
     ...(options.channelAgentSurface?.attentionSource
       ? { externalAttentionSource: options.channelAgentSurface.attentionSource }
+      : {}),
+    ...(harnessConditionsEnabled
+      ? { harnessConditionSource: createHarnessConditionSource({
+          runtimeStatus: () => runtime.status(),
+          channelStatuses: options.channelStatuses ?? (() => ({})),
+          store: {
+            presentedRefs: () => runtime.presentedOrientationConditionRefs(),
+            markPresented: (ref, at) => runtime.markOrientationConditionPresented([ref], at),
+            trimPresented: keep => runtime.trimOrientationConditionPresented(keep),
+          },
+          ...(options.now ? { now: options.now } : {}),
+        }) }
       : {}),
     loadOrientationActionSpace: async () => ({
       skills: await loadWorkspaceSkillIndex(layout.workspaceRoot),

@@ -35,6 +35,7 @@ import type {
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import type { InstanceLayout } from "./layout.js";
 import type { InteractionChannelAttentionSource } from "../channels/surface.js";
+import type { HarnessConditionSource, HarnessConditionsEvidence } from "./harness-conditions.js";
 
 export interface RevisionBoundOrganOptions {
   revisions: ModelRuntimeRevisions;
@@ -43,6 +44,7 @@ export interface RevisionBoundOrganOptions {
   now?: () => Date;
   loadOrientationActionSpace?: () => Promise<OrientationActionSpace>;
   externalAttentionSource?: InteractionChannelAttentionSource;
+  harnessConditionSource?: HarnessConditionSource;
 }
 
 interface CancellableOrgan {
@@ -75,6 +77,7 @@ class RevisionBoundOrientation implements Orientation {
 
   async form(request: OrientationRequest): Promise<OrientationResult> {
     const externalAttentionEvidence = await this.options.externalAttentionSource?.capture();
+    const harnessConditionsEvidence = await this.options.harnessConditionSource?.capture();
     const selection = firstCandidate(this.options.revisions.current(), "orientation");
     const orientation = await createPiOrientation({
       agentWorkspace: this.options.agentWorkspace,
@@ -89,14 +92,22 @@ class RevisionBoundOrientation implements Orientation {
         evidenceSources: [],
       })),
       ...(externalAttentionEvidence ? { externalAttentionEvidence } : {}),
+      ...(harnessConditionsEvidence ? { harnessConditionsEvidence } : {}),
     });
     const result = await orientation.form(request);
+    const presentedRevision = harnessConditionsEvidence?.revision;
+    const externalRevision = externalAttentionEvidence?.revision;
     return {
       ...result,
-      ...(externalAttentionEvidence ? {
-        acknowledgeExternalEvidence: () => this.options.externalAttentionSource!.markPresented(
-          externalAttentionEvidence.revision,
-        ),
+      ...(externalRevision || presentedRevision ? {
+        acknowledgeExternalEvidence: async () => {
+          if (externalRevision) {
+            await this.options.externalAttentionSource!.markPresented(externalRevision);
+          }
+          if (presentedRevision) {
+            await this.options.harnessConditionSource!.markPresented(presentedRevision);
+          }
+        },
       } : {}),
     };
   }

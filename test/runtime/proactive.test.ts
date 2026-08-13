@@ -806,3 +806,93 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+
+test("persists presented Harness Condition refs across Runtime instances", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-harness-conditions-runtime-"));
+  const execution: AgentExecution = {
+    start(request, control) {
+      control.includeInput(request.inputs[0]!.id);
+      return {
+        result: Promise.resolve(executionResult(request, { branch: "complete" })),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const orientation = {
+    async form(): Promise<never> {
+      throw new Error("unused");
+    },
+  };
+  const first = openRuntime({
+    root,
+    execution,
+    orientation,
+    now: () => new Date("2026-08-11T10:00:00.000Z"),
+  });
+  assert.deepEqual(first.presentedOrientationConditionRefs(), []);
+  first.markOrientationConditionPresented(
+    ["organ-blocked:thread-maintainer:activity:stable-1", "channel-ingress-failed:raft"],
+    new Date("2026-08-11T10:00:00.000Z"),
+  );
+  first.markOrientationConditionPresented(
+    ["organ-blocked:thread-maintainer:activity:stable-1"],
+    new Date("2026-08-11T11:00:00.000Z"),
+  );
+  first.close();
+
+  const second = openRuntime({
+    root,
+    execution,
+    orientation,
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+  });
+  t.after(() => second.close());
+  assert.deepEqual(second.presentedOrientationConditionRefs(), [
+    "channel-ingress-failed:raft",
+    "organ-blocked:thread-maintainer:activity:stable-1",
+  ]);
+});
+
+test("trims oldest presented Harness Condition refs beyond the retention bound", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-harness-conditions-trim-"));
+  const execution: AgentExecution = {
+    start(request, control) {
+      control.includeInput(request.inputs[0]!.id);
+      return {
+        result: Promise.resolve(executionResult(request, { branch: "complete" })),
+        steer: async () => {},
+        abort: async () => {},
+      };
+    },
+  };
+  const orientation = {
+    async form(): Promise<never> {
+      throw new Error("unused");
+    },
+  };
+  const runtime = openRuntime({
+    root,
+    execution,
+    orientation,
+    now: () => new Date("2026-08-11T12:00:00.000Z"),
+  });
+  t.after(() => runtime.close());
+  const base = new Date("2026-08-11T09:00:00.000Z");
+  runtime.markOrientationConditionPresented([
+    "organ-blocked:life-recorder:activity:a:provider",
+    "organ-blocked:life-recorder:activity:b:provider",
+    "organ-blocked:life-recorder:activity:c:provider",
+    "organ-blocked:life-recorder:activity:d:provider",
+  ], base);
+  runtime.markOrientationConditionPresented(
+    ["organ-blocked:life-recorder:activity:e:provider"],
+    new Date("2026-08-11T11:00:00.000Z"),
+  );
+  runtime.trimOrientationConditionPresented(3);
+  assert.deepEqual(runtime.presentedOrientationConditionRefs(), [
+    "organ-blocked:life-recorder:activity:c:provider",
+    "organ-blocked:life-recorder:activity:d:provider",
+    "organ-blocked:life-recorder:activity:e:provider",
+  ]);
+});

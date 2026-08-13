@@ -562,6 +562,8 @@ export interface RuntimeCognitiveOrganWorkStatus {
   requeuedFrom?: string;
   lastCancelReason?: string;
   lastFailureCategory?: string;
+  /** Provable time the current degradation entered: last failed attempt ended. */
+  lastFailureAt?: string;
   /** Transcript reference produced by the current attempt, when completed. */
   transcriptRef?: string;
   /** Result reference produced by the current attempt, when completed. */
@@ -758,6 +760,12 @@ export interface Runtime {
   frozenActivity(activityId: string): FrozenActivity | undefined;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   inputOutcome(inputId: string): RuntimeInputOutcome;
+  /** Stable refs of Harness Conditions already presented by Orientation. */
+  presentedOrientationConditionRefs(): string[];
+  /** Persist that Orientation successfully presented the given condition refs. */
+  markOrientationConditionPresented(refs: string[], at: Date): void;
+  /** Drop the oldest persisted presented refs beyond the retention bound. */
+  trimOrientationConditionPresented(keep: number): void;
   status(): RuntimeStatus;
   operationalStatus(options?: { since?: string }): RuntimeOperationalStatus;
   close(): void;
