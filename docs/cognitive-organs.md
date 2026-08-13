@@ -22,11 +22,13 @@ Cognitive Organs 通过运行专门、有界的维护任务解决这些问题，
 
 **触发**：Proactive Pulse（Runtime 在 Instance 空闲时按可配置节奏调度）。人类 Input 立即取代正在运行的 Orientation。
 
-**读取**：Identity、Stable Facts、Current Attention、Daily Narratives、Episodes、Frozen Activities（分页）、Workspace 文件（只读）、外部注意力证据（如 Raft ambient activity）。
+**读取**：Identity、Stable Facts、Current Attention、Daily Narratives、Episodes、Frozen Activities（分页）、Workspace 文件（只读）、外部注意力证据（如 Raft ambient activity）、可选 Harness Conditions 退化证据（见下）。
 
 **写入**：无。Orientation 产出 Opportunity（给 Main Agent 的叙述框架）或 `none`（没有值得接的开口）。Main Agent 决定是否行动。
 
 **关键边界**：Orientation 是读者和框架者，不是将要活出下一个 Turn 的主体。它不向人类说话、不分配任务、不完成 Individual 的解读。它指出什么可能相遇；Main Agent 决定是否相遇。
+
+**可选退化证据源（Harness Conditions）**：默认关闭（`orientation.harnessConditions.enabled: true` 启用，见 [Configuration And Credentials](operations/reference/configuration-and-credentials.md)）。启用后，每次正常 Pulse 时 Orientation 会看到一小段当前持续退化摘要——只有两类事实：某个 Cognitive Organ 工作已 `blocked`（自动重试用完）、或某条已启用 Channel 有永久失败的入站项。摘要只含能力名、影响、开始时间（若有权威时间）；不含错误码、内部 id、路径或原始错误。这是事实而非指令：不授予恢复权限，不新增工具、唤醒或模型调用，Orientation 仍只输出 `opportunity / none`。同一故障只呈现一次，Orientation 成功完成后才确认；恢复仍完全由 Harness 自身机制承担。
 
 ### Life Recorder
 

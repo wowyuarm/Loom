@@ -20,12 +20,83 @@ Keep assembly choices, credentials and runtime state separate:
 | Runtime state | `runtime/` | Loom-owned recovery, Channel and Integration state; never edit it as configuration. |
 
 `instance.yaml` accepts only `version`, `time`, `models`, `interaction`,
-`channels`, `integrations`, `schedule` and `workspaceMirror`. Unknown fields are
-rejected. A Channel or Integration is assembled only when its `enabled` value is
-true. At least one Interaction Channel must be enabled: a configuration with zero
-enabled Channels is rejected when the Host opens. `workspaceMirror` 是可选段：
-enabled/remote/branch/intervalMinutes，配置了才启用镜像（详见
-[Workspace Mirror Integration](../../integrations/workspace-mirror.md)）。
+`channels`, `integrations`, `schedule`, `workspaceMirror` and `orientation`. Unknown fields are
+rejected. `version` must be `1`. A Channel or Integration is assembled only when its `enabled` value is
+true (all channels and integrations are off by default). At least one Interaction Channel must be enabled: a configuration with zero
+enabled Channels is rejected when the Host opens. `workspaceMirror` is an
+optional block (enabled/remote/branch/intervalMinutes); the mirror is only
+assembled when configured (see
+[Workspace Mirror Integration](../../integrations/workspace-mirror.md)).
+
+## Time
+
+The `time` block controls the Instance clock; every field is optional:
+
+```yaml
+time:
+  timeZone: "Asia/Shanghai"   # optional; defaults to the machine time zone
+  logicalDayStart: "03:00"    # optional; defaults to 03:00
+```
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `time.timeZone` | IANA time zone name | machine time zone | Time zone used for all logical-day and schedule arithmetic. |
+| `time.logicalDayStart` | `HH:MM` | `03:00` | Clock time at which the logical day starts (daily/episode files and Memory Reflector cycles follow it). |
+
+## Schedule
+
+The `schedule` block controls three built-in cycles; every field is optional
+and falls back to its default:
+
+```yaml
+schedule:
+  proactivePulse:
+    intervalMinutes: 30          # default 30
+    quietHours:
+      start: "01:00"             # default 01:00
+      end: "07:00"               # default 07:00
+      intervalMinutes: 90        # default 90 (Pulse interval inside quiet hours)
+  attentionMaintenance:
+    intervalMinutes: 360         # default 360 (6 hours)
+  memoryReflection:
+    delayMinutes: 15             # default 15 (delay after logical day close)
+```
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `schedule.proactivePulse.intervalMinutes` | positive integer | `30` | Pulse interval in minutes while idle. |
+| `schedule.proactivePulse.quietHours.start` / `.end` | `HH:MM` | `01:00` / `07:00` | Quiet hours window (24-hour clock; start and end must differ). |
+| `schedule.proactivePulse.quietHours.intervalMinutes` | positive integer | `90` | Pulse interval in minutes inside quiet hours. |
+| `schedule.attentionMaintenance.intervalMinutes` | positive integer | `360` | Attention Maintainer interval in minutes. |
+| `schedule.memoryReflection.delayMinutes` | non-negative integer | `15` | Memory Reflector delay after logical day close, in minutes. |
+
+## Interaction
+
+The `interaction` block controls proactive routing; optional:
+
+```yaml
+interaction:
+  defaultRoute: raft          # optional; must name an enabled Channel when set
+```
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `interaction.defaultRoute` | non-empty string | unset | Default Channel for proactive (Orientation-driven) messages; when set it must name an enabled Channel. |
+
+## Orientation
+
+The `orientation` block controls optional Orientation inputs, all off by
+default:
+
+```yaml
+orientation:
+  harnessConditions:
+    enabled: false              # default false
+```
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `orientation.harnessConditions.enabled` | boolean | `false` | When enabled, each normal Pulse shows Orientation a short summary of sustained degradation (an organ `blocked`, or a Channel with permanently failed ingress). It only adds evidence input: no new tools, wakeups or model calls. Effect and boundaries: [Cognitive Organs](../../cognitive-organs.md). |
 
 ## Models
 
