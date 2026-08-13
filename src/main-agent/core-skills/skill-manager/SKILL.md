@@ -1,6 +1,6 @@
 ---
 name: skill-manager
-description: Create, install, revise, or retire Workspace skills. Use when a human asks to manage a skill, or when repeated or fragile work has produced a reusable method worth preserving.
+description: Create, install, revise, or retire Workspace skills, including how a skill manages its configuration and credentials. Use when a human asks to manage a skill, or when repeated or fragile work has produced a reusable method worth preserving. Read this skill before creating, installing, revising, or retiring any skill or its configuration/credential files.
 ---
 
 # Skill Manager
@@ -37,3 +37,7 @@ Use clear completion checks for fragile work. For a substantial new or revised s
 Read the finished skill once. Check that its name, description, directory, and method agree, and that no existing Workspace skill already owns the same method or name.
 
 Writing or changing a skill does not add tools, credentials, permissions, or external services. The current Turn keeps its existing skill list; a later Turn discovers the change.
+
+## Configuration and credentials
+
+A skill that needs an API key, token, or other secret keeps it in its own `auth.json` (JSON, one file per skill) and reads it from there at run time; it does not put the secret in `SKILL.md`, scripts, messages, or other persisted text. Non-secret settings live in `config.json` beside it. Document the exact read/use convention in the skill's `SKILL.md` (file names, expected JSON shape, and how scripts consume them). When installing or creating a skill, follow the same layout and reference it in the skill's `SKILL.md`. See [Configuration and Credentials for Skills](references/auth-and-config.md) for the operating convention.

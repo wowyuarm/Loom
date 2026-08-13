@@ -243,6 +243,8 @@ test("provides the built-in skill manager and Workspace cwd guidance to the Main
     assert.match(request, /<name>skill-manager<\/name>/);
     assert.match(request, /Your current working directory is the root of your Agent Workspace/);
     assert.match(request, /read the built-in skill-manager before changing anything under skills\//);
+    assert.match(request, /Skill lifecycle work.*follows the built-in skill-manager/);
+    assert.match(request, /<description>Create, install, revise, or retire Workspace skills, including how a skill manages its configuration and credentials/);
     return { text: "A private response" };
   });
   t.after(() => provider.close());
