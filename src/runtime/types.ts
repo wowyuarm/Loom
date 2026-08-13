@@ -233,6 +233,8 @@ export interface MemoryReflectionResult {
   outcome: "updated" | "no_change";
   runId: string;
   changedMaterials: string[];
+  /** Layered memory/ files written or deleted in this run, when any. */
+  changedMemoryFiles?: string[];
 }
 
 export interface MemoryReflection {

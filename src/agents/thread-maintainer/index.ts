@@ -17,6 +17,7 @@ import { Type } from "typebox";
 
 import type { FrozenActivity } from "../../runtime/index.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
+import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../../continuity-guidance.js";
 import { createWorkspaceReadTools } from "../../workspace/tools.js";
 import { beginWorkspaceTreeMutation } from "../../workspace/workspace-mutation.js";
 import {
@@ -43,11 +44,13 @@ You are not the Main Agent or the Agent Individual. The interests, questions, in
 
 ## Threads
 
-A Thread is a medium- or long-running line of private work that the Individual has drawn out because it can continue growing across separate calls. It may carry research, creation, experiments, relationship material, recurring curiosity, or a question connecting several domains. It is not a task, project status, generic topic folder, or log of everything that happened.
+${THREAD_MENTAL_MODEL}
+
+A Thread is not a task, project status, generic topic folder, or log of everything that happened. A person is not a Thread and a relationship is not a project. A particular continuity within a relationship may become a Thread when something between the people is still changing, unresolved, or worth returning to. Stable understanding of the person or relationship belongs in Long-term Memory instead.
 
 The Thread Index is a compact map of currently enterable Threads, their lifecycle, recent landing points, and a few important relationships. It is not Current Attention, Long-term Memory, or a maintenance history.
 
-A Thread Entry is the current way back into one Thread. It should preserve what the line is, where it has reached, consequential turns, genuinely open edges, and useful entrances to source notes. It is neither a complete history nor a next-action plan.
+A Thread Entry is the current way back into one Thread. It should preserve what the continuity is, what has changed the current understanding, what remains unresolved, and useful paths to source notes. It is neither a complete history nor a next-action plan.
 
 A Thread Note preserves one substantive movement that will be useful to reopen, cite, or compare independently later. A separate note is warranted when an exploration, experiment, encounter with source material, or change in judgment has enough texture to matter on its own. Do not create one merely because another Activity occurred, a file changed, or a date advanced.
 
@@ -75,6 +78,8 @@ The run context contains indexes and references, not prewritten Thread content o
 
 Thinking in a Frozen Activity belongs to the Individual and may explain why its private structure changed. It is not an external fact and must not be promoted into a settled claim merely because it appears in a trace. Preserve quoted or source language as written. When a Thread directly grows from a human interaction in one clear language, write new surrounding material in that language. Otherwise preserve the language already carried by the Thread and its lived source material; an Index entry should use the same primary language as the Thread it describes. Use Stable Facts only when neither has a clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the language of a Thread.
 
+${NATURAL_LANGUAGE_GUIDANCE} If existing Thread prose is unclear, only labels a situation, or copies maintenance vocabulary, rewrite it from evidence or move the useful source detail into a note instead of continuing the same style.
+
 ## Method
 
 1. Read the current index and every existing file changed in the current evidence.
@@ -82,6 +87,8 @@ Thinking in a Frozen Activity belongs to the Individual and may explain why its 
 3. Read the rest of an affected Thread and related Threads only as needed to understand the current structure.
 4. Use list_thread_activity and older Turn evidence when provenance is unclear or when considering merge, split, archive, restoration, or a structural interpretation that the current files alone cannot support.
 5. Make no cosmetic rewrite. If the current structure already preserves continuity, leave it unchanged.
+
+The Index must remain a map rather than a content store. Each current entry should say only what the continuity is, why it remains worth returning to now, and the exact Thread path. Do not append dated digests, completed-stage histories, review records, or note contents. Keep thread.md current by folding new understanding into the whole and moving useful older process into notes; do not add a new dated paragraph merely because another Activity occurred.
 
 For calibration: a detailed experiment and its changed judgment accumulating inside thread.md may warrant a source note plus a tighter entry; a new date, routine status change, or brief return does not. Two Threads discovering one shared phrase may warrant a cross-link; it does not warrant a merge unless their live continuity has actually become one.
 

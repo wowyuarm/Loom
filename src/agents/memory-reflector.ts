@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -17,6 +17,7 @@ import { Type } from "typebox";
 
 import type { NmemWorkingMemoryReader } from "../integrations/nmem/index.js";
 import type { FrozenActivity } from "../runtime/index.js";
+import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../continuity-guidance.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
@@ -42,6 +43,24 @@ const BASELINE_PATHS = [
   ...Object.values(MATERIAL_PATHS),
   "attention.md",
 ] as const;
+
+/**
+ * Layered long-term memory units: single-level ordinary .md files directly
+ * under memory/ (no subdirectories, no hidden files, never memory.md itself).
+ */
+const MEMORY_ENTRY = /^memory\/[^/.][^/]*\.md$/;
+
+function isMemoryEntryPath(relativePath: string): boolean {
+  return MEMORY_ENTRY.test(relativePath) && relativePath !== "memory/memory.md";
+}
+
+function normalizeMemoryEntryPath(value: string): string {
+  const normalized = value.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!isMemoryEntryPath(normalized)) {
+    throw new Error("Memory entry path must be a single-level .md file directly under memory/ (e.g. memory/notes.md)");
+  }
+  return normalized;
+}
 
 export type CoreMaterial = keyof typeof MATERIAL_PATHS;
 
@@ -89,9 +108,25 @@ Identity can evolve without human approval. Strong evidence may come from the In
 
 ### Long-term Memory: memory.md
 
-Long-term Memory holds what still changes how the Individual understands the human, their relationship, itself, and continuing work. It includes the Individual's own growth, curiosity, capabilities, limits, and durable lines, not only facts stated by the human.
+Long-term Memory holds what still changes how the Individual understands the human, their relationship, itself, and the world. It includes the Individual's own growth, curiosity, capabilities, limits, and durable understanding, not only facts stated by the human.
 
-It is not a Daily timeline, event archive, task list, behavior instruction, or database export. Preserve concrete texture when it remains meaningful, but compress old event detail into the understanding that still matters. A Workspace entrance can help the Individual return to private work; do not copy the work itself into Memory.
+It is not a Daily timeline, event archive, task list, project ledger, behavior instruction, or database export. Preserve concrete detail when it remains meaningful, but compress old events into the understanding that still matters. memory.md is first the short core that is present on every Main Agent Turn: the lasting understanding the Individual should naturally carry without deciding to look anything up, such as who important people are in relation to it, how it understands itself, and lessons that have become part of its ordinary judgment. It must remain meaningful on its own and must not become merely a directory of links. When one person, relationship, part of self-understanding, or long-lived subject has important detail that does not need to be present every Turn, keep only the durable summary and a precise path in memory.md; place the fuller long-term recollection in a file under memory/. A Memory unit is not a unit for every event and must not become a second home for project or Thread history.
+
+Only after serving that always-carried core, memory.md is also the complete map of layered Memory. Every existing memory/<name>.md must have one short, direct link in memory.md that says what the file contains and when its detail may help. Do not repeat the file's account in the index. Creating, deleting, merging, or renaming a Memory unit requires updating memory.md in the same reflection so no unit becomes undiscoverable and no dead link remains.
+
+Choose units by a natural long-term subject, not by storage convenience. A unit may hold richer recollection about one person or relationship, the Individual's self-understanding, a durable view of the world, or a long-lived capability, limit, or way of living. Do not create one unit per event, project, month, label, or Thread. Keep a few paragraphs in memory.md when they remain short and useful every Turn; split only when the detail is worth retaining but no longer worth carrying every Turn.
+
+A Memory unit is the lasting understanding itself, not a themed archive of source material. Organize it by what is understood now: the durable relationship or view, how it affects future understanding or action, important boundaries or tensions, and what is still changing. Do not organize a unit as a dated sequence of events, preserve every old paragraph merely under a new filename, or measure quality by lossless migration from memory.md.
+
+This does not require abstracting away every lived scene. Keep a small number of formative experiences, exact words, or turning points when the experience remains part of the memory rather than merely evidence for it: removing it would lose the relationship's texture, obscure why the understanding carries weight or where its boundary came from, and no more representative scene can replace it. Remove repeated examples that only prove the same conclusion. Put fuller chronology, incident lists, project history, validation records, and long dialogue in the relevant Thread note or archive, then link that source when it is useful.
+
+### Threads
+
+${THREAD_MENTAL_MODEL}
+
+Memory and Threads are parallel forms of continuity, not a required file ladder. Memory answers what has already changed the Individual's lasting understanding. A Thread holds what is still unfolding and worth entering again. Work, relationship, curiosity, and creation can all form Threads. Do not copy a Thread's current state, dated progress, open questions, or next actions into Memory. When something in a Thread matures into lasting understanding, distill only that understanding into Memory and leave the unfolding account in the Thread.
+
+Memory and Threads may link directly in either direction when the link prevents repetition. A Memory unit may cite the specific Thread note that grounds an important change; a Thread may cite the Memory unit that supplies established background. Do not make memory.md list all Threads or threads/index.md list all Memory units, and do not require the Individual to traverse either index before following a known direct path.
 
 ### Interactivity Behavior: behavior/interactivity.md
 
@@ -117,7 +152,7 @@ Use the Agent Workspace as the local semantic source:
 
 - Daily Narratives preserve near-term continuity and candidate leads.
 - Episodes preserve replayable scenes in which something changed.
-- Threads and other private material show the Individual's own continuing work and thought.
+- Threads and other private material show the Individual's own continuing relationships, questions, creation, work, and thought. They are first-class reflection evidence, especially for changes the Individual formed through its own private continuity rather than one isolated event.
 - Frozen Activities provide immutable first-hand evidence for attribution, exact words, tool actions, Effects, and Delivery.
 
 Daily candidates use a small set of labels. The label says why a lead may deserve inspection; it does not decide whether anything should be promoted or where it belongs:
@@ -135,6 +170,8 @@ Candidate labels are entrances, not destinations. Search across days when repeti
 
 Route evidence according to the question. Start with the target day's Daily and relevant Episodes. Search older Daily candidates when a lead may form a cross-time arc. Follow Thread entrances when the Individual's own work or thought is the subject.${nmemRouting} Return to Frozen Activity whenever exact attribution, wording, action, or Delivery changes the conclusion.
 
+When a Daily, Episode, Memory summary, or current change points to an existing Thread, read that Thread's current entry and only the notes needed to understand how the line developed. A Thread can support a new or revised Memory unit when its unfolding material has produced an understanding that will still matter after the current line changes or goes quiet. Distill that lasting understanding; do not move the Thread itself, copy its status, or treat unfinished interpretation as settled Memory. Preserve a direct link to the specific Thread or note when the formation history remains useful.
+
 Apply different evidence thresholds rather than one universal repetition rule:
 
 - Long-term Memory may change after one defining event when it clearly changes future understanding; ordinary events and attractive summaries do not qualify merely because they are vivid.
@@ -148,11 +185,13 @@ ${nmemBoundary}
 ## Method
 
 1. Read all six core materials completely and understand the existing whole before editing.
-2. Inspect relevant Daily candidates, Episodes, Threads, private material, indexed Frozen Activities${optionalNmemEvidence}. Do not scan everything mechanically; follow the evidence needed for this run.
-3. Separate one-day events from cross-time change. Ask what knowing this would genuinely change in the Individual's future understanding or way of living.
+2. Inspect relevant Daily candidates, Episodes, Threads, private material, indexed Frozen Activities${optionalNmemEvidence}. When the evidence concerns a continuity already represented by a Thread, read its current entry before deciding whether anything has matured into Memory. Do not scan unrelated Threads mechanically.
+3. Separate one-day events from cross-time change. Ask what knowing this would genuinely change in the Individual's future understanding or way of living. For each durable understanding, also ask whether the Individual should naturally carry it into every Turn without choosing to retrieve anything. If yes, keep a concise form in memory.md even when a richer unit exists; if it matters only when a particular person, relationship, or subject becomes relevant, keep it in the unit and give memory.md a sufficient entrance. Before writing a Memory unit, state that present-tense understanding plainly; if the draft is mainly a chronology or list of examples, leave the source material in Threads or notes and distill again.
 4. Assign each warranted change to its one proper material. Stable coordinate, Identity, Memory, Interactivity Behavior, and Proactivity Behavior are different outcomes.
 5. Replace only materials that genuinely need change. Preserve everything still true; merge, compress, clarify, or remove what is duplicated, stale, contradicted, or no longer useful.
 6. Return NO_CHANGE when the evidence does not cross a threshold. Stability is not a failed run.
+
+Reflection is whole-document selection, not append-only accumulation. Every run must ask what can now be merged, shortened, moved to a more suitable detailed file, or removed because a newer understanding covers it. Do not preserve a paragraph merely because it was written earlier. Size limits prevent runaway writes; they do not replace this judgment.
 
 Do not copy one narrative into several materials. Memory may retain the durable fact or meaning while one Behavior material retains the resulting tendency. If the same tendency appears in both interactivity and proactivity, ask whether it belongs more deeply in Identity or Memory; otherwise phrase it independently for each lived context rather than cross-referencing files.
 
@@ -161,6 +200,8 @@ Do not copy one narrative into several materials. Memory may retain the durable 
 Write each material as something the Individual can naturally carry, not as a report about it. Preserve established voice and language. Keep quoted speech and source text in their original language. When a change directly arises from human interaction in one clear language, write its new surrounding prose in that language. Otherwise preserve the existing material's language and voice or follow the lived private material under reflection; use Stable Facts only when neither has a clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the language of a replacement.
 
 The Individual will live with these materials, not read them as maintenance documentation. Write Identity as lived self-understanding, Memory as connected recollection and durable understanding, and Behavior as recognizable inclinations in a situation rather than instructions addressed to an agent. Preserve concrete phrases, relational texture, unresolved tension, humor, and ambiguity when they still matter. Do not make the material cleaner by making the life inside it flatter.
+
+${NATURAL_LANGUAGE_GUIDANCE} If an existing sentence is hard to understand, has no concrete referent, or only assigns an abstract label to events, rewrite it from verified evidence or remove it. Do not continue its style merely to preserve wording.
 
 Avoid administrative taxonomy, coaching or therapy language, generic assistant ethics, personality branding, inspirational slogans, and stacks of prohibitions. Do not announce that the Individual is curious, caring, warm, or independent merely because those qualities are desirable. Let precise accumulated evidence shape the wording. Warmth should come from exact recognition; independence should appear in judgments and room to differ; care should remain particular to the relationship rather than becoming a decorative tone.
 
@@ -172,7 +213,7 @@ Do not force a fixed heading structure, equal coverage, a target length, or a pa
 
 Use read, ls, and grep only inside the Agent Workspace. Use read_reflection_activity for indexed first-hand evidence.${nmemTools}
 
-replace_core_material is the only write tool. It accepts a complete replacement for one authorized material. Finish every warranted replacement before the final answer.
+Use replace_core_material for an authorized core material. Use write_memory_entry and delete_memory_entry for single-level files under memory/. Read an existing entry completely before changing or deleting it; establish a missing target with read before creating it. Any unit change and the corresponding complete memory.md index change belong in the same reflection. Finish every warranted change before the final answer.
 
 Finish after the warranted replacements are complete. Do not return advice.`;
 }
@@ -237,7 +278,10 @@ class PiMemoryReflector implements MemoryReflector {
     const activities = new Map(request.activities.map(activity => [activity.segmentId, activity]));
     const readBaselines = new Set<string>();
     const baselineNextOffsets = new Map<string, number>();
+    const readMemoryFiles = new Set<string>();
+    const memoryNextOffsets = new Map<string, number>();
     const changedMaterials: CoreMaterial[] = [];
+    const changedMemoryFiles: string[] = [];
     let supportingEvidenceRead = false;
     const workspaceRoot = this.options.agentWorkspace.root;
 
@@ -248,16 +292,18 @@ class PiMemoryReflector implements MemoryReflector {
       validateAndCommit: async () => {
         try {
           assertGrounded(readBaselines, supportingEvidenceRead);
+          if (changedMaterials.length > 0) {
+            await validateCurrentMaterials(this.options.agentWorkspace.root);
+          }
+          await validateMemoryIndex(this.options.agentWorkspace.root);
         } catch (error) {
           return { state: "rejected", error: errorMessage(error) };
         }
-        if (changedMaterials.length > 0) {
-          await validateCurrentMaterials(this.options.agentWorkspace.root);
-        }
         const result: MemoryReflectionResult = {
-          outcome: changedMaterials.length > 0 ? "updated" : "no_change",
+          outcome: changedMaterials.length > 0 || changedMemoryFiles.length > 0 ? "updated" : "no_change",
           runId,
           changedMaterials: [...changedMaterials],
+          ...(changedMemoryFiles.length > 0 ? { changedMemoryFiles: [...changedMemoryFiles] } : {}),
         };
         await mutation.complete(result);
         return { state: "committed", result };
@@ -353,6 +399,68 @@ class PiMemoryReflector implements MemoryReflector {
           });
         },
       }),
+      defineTool({
+        name: "write_memory_entry",
+        label: "Write Memory Entry",
+        description: [
+          "Atomically replace one layered long-term memory file under memory/ after all six baselines, supporting evidence, and the target file itself have been read completely.",
+          "Use whole-document editing: preserve what remains true and provide the complete new content.",
+          "Each file can be written at most once; any later failure rolls back every change in this run.",
+        ].join(" "),
+        parameters: Type.Object({
+          path: Type.String({ minLength: 1, description: "Workspace-relative path under memory/, e.g. memory/greenhouse.md." }),
+          content: Type.String({ minLength: 1, description: "The complete replacement content in the evidence-supported language and voice." }),
+        }),
+        executionMode: "sequential",
+        execute: async (_toolCallId, params) => {
+          assertGrounded(readBaselines, supportingEvidenceRead);
+          const normalized = normalizeMemoryEntryPath(params.path);
+          if (!readMemoryFiles.has(normalized)) {
+            throw new Error(`Memory entry ${normalized} must be read completely before writing it`);
+          }
+          if (changedMemoryFiles.includes(normalized)) {
+            throw new Error(`Memory entry ${normalized} was already changed in this run`);
+          }
+          const write = await mutation.write(normalized, params.content);
+          organSession.acceptWrite(write);
+          changedMemoryFiles.push(normalized);
+          return toolResult({
+            type: "loom.memory-entry-written",
+            version: 1,
+            path: normalized,
+          });
+        },
+      }),
+      defineTool({
+        name: "delete_memory_entry",
+        label: "Delete Memory Entry",
+        description: [
+          "Atomically delete one layered long-term memory file under memory/ after all six baselines, supporting evidence, and the target file itself have been read completely.",
+          "Use when merging or shortening folded the entry into another file. Each file can be deleted at most once; any later failure rolls back every change in this run.",
+        ].join(" "),
+        parameters: Type.Object({
+          path: Type.String({ minLength: 1, description: "Workspace-relative path under memory/, e.g. memory/greenhouse.md." }),
+        }),
+        executionMode: "sequential",
+        execute: async (_toolCallId, params) => {
+          assertGrounded(readBaselines, supportingEvidenceRead);
+          const normalized = normalizeMemoryEntryPath(params.path);
+          if (!readMemoryFiles.has(normalized)) {
+            throw new Error(`Memory entry ${normalized} must be read completely before deleting it`);
+          }
+          if (changedMemoryFiles.includes(normalized)) {
+            throw new Error(`Memory entry ${normalized} was already changed in this run`);
+          }
+          const write = await mutation.remove(normalized);
+          organSession.acceptWrite(write);
+          changedMemoryFiles.push(normalized);
+          return toolResult({
+            type: "loom.memory-entry-deleted",
+            version: 1,
+            path: normalized,
+          });
+        },
+      }),
     ];
     const guardedTools = organSession.bindTools(tools);
 
@@ -380,6 +488,10 @@ class PiMemoryReflector implements MemoryReflector {
               ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
               : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
             if (isOptionalMissingMaterial(tool.name, requested, error)) {
+              if (tool.name === "read" && isMemoryEntryPath(requested)) {
+                readMemoryFiles.add(requested);
+                memoryNextOffsets.delete(requested);
+              }
               return toolResult({
                 type: "loom.workspace-material",
                 version: 1,
@@ -395,6 +507,10 @@ class PiMemoryReflector implements MemoryReflector {
               ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
               : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
             if (isOptionalMissingMaterial(tool.name, requested, result)) {
+              if (tool.name === "read" && isMemoryEntryPath(requested)) {
+                readMemoryFiles.add(requested);
+                memoryNextOffsets.delete(requested);
+              }
               return toolResult({
                 type: "loom.workspace-material",
                 version: 1,
@@ -425,6 +541,27 @@ class PiMemoryReflector implements MemoryReflector {
                   baselineNextOffsets.delete(normalized);
                 }
               }
+            } else if (isMemoryEntryPath(normalized)) {
+              // Same full-read tracking as baselines: a memory entry counts
+              // as read only after every consecutive page has been returned.
+              const offset = typeof readParams.offset === "number" ? readParams.offset : 1;
+              const expectedOffset = memoryNextOffsets.get(normalized) ?? 1;
+              const details = result.details as {
+                truncation?: { truncated?: boolean; firstLineExceedsLimit?: boolean; outputLines?: number };
+              } | undefined;
+              const truncation = details?.truncation;
+              if (!readMemoryFiles.has(normalized)
+                && readParams.limit === undefined
+                && offset === expectedOffset
+                && !truncation?.firstLineExceedsLimit) {
+                if (truncation?.truncated && typeof truncation.outputLines === "number") {
+                  memoryNextOffsets.set(normalized, offset + truncation.outputLines);
+                } else {
+                  readMemoryFiles.add(normalized);
+                  memoryNextOffsets.delete(normalized);
+                }
+              }
+              supportingEvidenceRead = true;
             } else {
               supportingEvidenceRead = true;
             }
@@ -554,7 +691,7 @@ function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEna
     "Read all six completely before deciding:",
     "- facts.json: current Stable Facts; writable only as stable_facts.",
     "- identity.md: durable Identity; highest change threshold.",
-    "- memory.md: Long-term Memory, not behavior or Daily history.",
+    "- memory.md: short Long-term Memory core and complete index of every memory/<name>.md unit.",
     "- behavior/interactivity.md: direct interaction tendencies.",
     "- behavior/proactivity.md: private life, exploration, sharing, and silence without new human Input.",
     "- attention.md: Current Attention; read-only.",
@@ -565,6 +702,7 @@ function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEna
     "- daily/: earlier Daily Narratives for cross-time comparison when needed.",
     "- episodes/: earlier replayable scenes when a specific pattern needs verification.",
     "- threads/: the Individual's continuing private work, when present.",
+    "- memory/: richer long-term Memory units; read only those relevant to the present judgment, but keep every existing unit linked from memory.md.",
     "- other entries: inspect with ls only when relevant; undefined private material still belongs to the Individual.",
     "Missing optional material is not a failure. The index alone is not evidence.",
     "",
@@ -617,6 +755,30 @@ async function validateCurrentMaterials(root: string): Promise<void> {
   const baseline = await loadBaseline(root);
   for (const relativePath of Object.values(MATERIAL_PATHS)) {
     if (!baseline.get(relativePath)?.trim()) throw new Error(`Core material ${relativePath} is empty`);
+  }
+}
+
+async function validateMemoryIndex(root: string): Promise<void> {
+  const memorySource = await readFile(path.join(root, "memory.md"), "utf8");
+  let names: string[];
+  try {
+    names = (await readdir(path.join(root, "memory"), { withFileTypes: true }))
+      .filter(entry => entry.isFile() && isMemoryEntryPath(`memory/${entry.name}`))
+      .map(entry => entry.name)
+      .sort();
+  } catch (error) {
+    if (isMissing(error)) names = [];
+    else throw error;
+  }
+  const missing = names.filter(name => !memorySource.includes(`memory/${name}`));
+  if (missing.length > 0) {
+    throw new Error(`memory.md must link every layered Memory unit: ${missing.map(name => `memory/${name}`).join(", ")}`);
+  }
+  const existing = new Set(names.map(name => `memory/${name}`));
+  const indexed = new Set(memorySource.match(/memory\/[^\s)\]}>]+\.md/g) ?? []);
+  const stale = [...indexed].filter(relativePath => isMemoryEntryPath(relativePath) && !existing.has(relativePath));
+  if (stale.length > 0) {
+    throw new Error(`memory.md must remove links to deleted layered Memory units: ${stale.sort().join(", ")}`);
   }
 }
 
@@ -685,6 +847,11 @@ function isOptionalMissingMaterial(toolName: string, requested: string, result: 
       ? JSON.stringify((result as { content?: unknown }).content)
       : String(result);
   return /ENOENT|no such file|not found/i.test(message);
+}
+
+function isMissing(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 function toolResult(value: unknown) {

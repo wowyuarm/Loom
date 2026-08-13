@@ -66,6 +66,10 @@ test("keeps Thread history as references and expands an earlier Turn only on req
         "write_thread_file",
       ]);
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
+      assert.match(context.systemPrompt ?? "", /A Thread is a continuity that reaches beyond the present/);
+      assert.match(context.systemPrompt ?? "", /A person is not a Thread and a relationship is not a project/);
+      assert.match(context.systemPrompt ?? "", /The Index must remain a map rather than a content store/);
+      assert.match(context.systemPrompt ?? "", /Write prose that can be understood on one reading/);
       const prompt = userPrompt(context.messages);
       assert.match(prompt, /thread-garden/);
       assert.match(prompt, /activity-2/);

@@ -25,6 +25,7 @@ import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import type { ExternalAttentionEvidence } from "../channels/surface.js";
 import type { HarnessConditionsEvidence } from "../instance/harness-conditions.js";
+import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../continuity-guidance.js";
 import { createPiCognitiveOrganSession } from "./session/index.js";
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 20;
@@ -51,6 +52,8 @@ Judgment belongs to the Individual. Carry forward the facts needed to recognize 
 The Individual's complete Identity and Stable Facts are appended below this instruction. Identity grounds what kind of life this Individual is actually living and what may have genuine pull for it; it does not prove that an opening exists now. Stable Facts ground attribution, relationship coordinates, forms of address, places, and language. Neither overrides an explicit correction in current evidence.
 
 Look for an opening that belongs to this Individual rather than favoring work, relationship, self-development, or any other subject in advance. Identity shapes relevance; recent evidence establishes whether the relevance is alive now.
+
+When Threads matter, use this understanding: ${THREAD_MENTAL_MODEL} A Thread is not evidence that the Individual ought to resume it. It may be quiet, naturally ended, or newly relevant. A relationship opening is complete in its own right and need not be reframed as progress on a project.
 
 Start from the indexes in the run context. Read only the materials that help you understand a promising scene; do not preload the whole Workspace. Use read_recent_activity when recent lived evidence matters. Distinguish facts you actually observed from possibilities you inferred.
 
@@ -80,6 +83,8 @@ A useful narrative usually contains:
 3. a light entrance, question, or direction without completing the judgment.
 
 One to three sentences is usually enough. A Workspace path may be included when it provides a real entrance, but a path is an address, not a reason. Preserve important quoted language when wording or tone is the evidence. When the opening directly continues a human interaction in one clear language, write every output field in that language. Otherwise follow the language of the lived material at issue, and use Stable Facts only when that material has no clear signal. Preserve genuinely useful technical terms, but do not code-switch ordinary prose merely because surrounding materials are bilingual. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, and paths; none of those chooses the output language.
+
+${NATURAL_LANGUAGE_GUIDANCE}
 
 Good boundaries:
 

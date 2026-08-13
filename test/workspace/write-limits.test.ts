@@ -92,3 +92,17 @@ test("unmatched or malformed paths are not limited (default pass)", () => {
 test("an empty or non-relative path is not limited", () => {
   assert.doesNotThrow(() => enforceWorkspaceWriteLimit("", bytes(5 * MiB)));
 });
+
+test("layered memory entries carry a conservative per-file limit", () => {
+  const byPath = new Map(WORKSPACE_WRITE_LIMITS.map(rule => [rule.label, rule.limitBytes]));
+  assert.equal(byPath.get("memory/<name>.md"), 64 * kiB);
+  assert.doesNotThrow(() => enforceWorkspaceWriteLimit("memory/greenhouse.md", bytes(64 * kiB)));
+  assert.throws(() => enforceWorkspaceWriteLimit("memory/greenhouse.md", bytes(64 * kiB + 1)));
+  // Subdirectories, hidden files, and memory/memory.md are outside the layered
+  // entry rule and stay unlimited (the reflector path whitelist rejects them).
+  assert.doesNotThrow(() => enforceWorkspaceWriteLimit("memory/nested/deep.md", bytes(64 * kiB + 1)));
+  assert.doesNotThrow(() => enforceWorkspaceWriteLimit("memory/.hidden.md", bytes(64 * kiB + 1)));
+  assert.doesNotThrow(() => enforceWorkspaceWriteLimit("memory/memory.md", bytes(64 * kiB + 1)));
+  // The core memory.md itself is untouched by the layered rule.
+  assert.equal(byPath.get("memory.md"), 256 * kiB);
+});

@@ -20,6 +20,7 @@ import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
 import { enforceWorkspaceWriteLimit } from "../workspace/workspace-write-limits.js";
+import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../continuity-guidance.js";
 import {
   createPiCognitiveOrganSession,
   type PiCognitiveOrganSession,
@@ -37,14 +38,16 @@ You are not the Main Agent or the Agent Individual. Everything you read belongs 
 
 ## Current Attention
 
-Current Attention is the Individual's cross-day awareness between Daily Narrative and Long-term Memory. It answers "what am I naturally carrying these days?", not "what should I do next?"
+Current Attention is the Individual's cross-day awareness between Daily Narrative and Long-term Memory. It answers "what has remained naturally on my mind over the last one to three days?", not "what should I do next?" Maintenance normally runs every six hours, but the file's horizon is measured in days, not maintenance runs.
 
 It can hold two interwoven forms:
 
 - an explicit line the Individual is still following: what remains alive, where it has reached, the question or pull that keeps it present, and a useful Workspace entrance when one exists;
 - an implicit felt context: the current temperature of the primary relationship, the Individual's own rhythm or state, and anything that naturally changes how it approaches, speaks, stays silent, or turns elsewhere.
 
-The usual horizon is several days, roughly two to five, but this is not an expiry rule. Keep something while it still changes the Individual's natural expression or judgment. Remove it when it no longer does. New material belongs here only when it changes that carried awareness.
+The usual horizon is one to three days, but this is not an expiry rule. Keep something while it still changes the Individual's natural expression or judgment. Remove it when it no longer does. New material belongs here only when it changes that carried awareness.
+
+When Threads matter, use this understanding: ${THREAD_MENTAL_MODEL} Current Attention is not a list of active Threads. It may point to one, hold something not yet developed into one, or omit a Thread that remains available but is not presently on the Individual's mind.
 
 Current Attention is not a task list, next-Turn plan, Daily timeline, Recent Activity replay, Opportunity, behavior instruction, Long-term Memory, or cross-time pattern analysis. Do not preserve an event merely because it is recent. Do not turn every open matter into work.
 
@@ -79,6 +82,8 @@ The Main Agent receives the complete file as the Individual's own current awaren
 Do not mention this organ, a maintenance run, refreshing, organizing, or evidence review. Do not expose the Harness machinery that caused this run. The Harness itself may still appear when the evidence shows that it is a genuine subject of the Individual's work or attention.
 
 Prefer a compact whole that can be read in full. A useful entry contains enough texture to recognize what is alive and, when helpful, where to look next. A path is an entrance for resuming the material, not a reason for keeping it in attention. Do not copy long source passages or reduce them to sterile metadata. Loose headings are allowed but no fixed schema is required.
+
+${NATURAL_LANGUAGE_GUIDANCE} If an existing sentence is unclear, only labels a situation, or copies maintenance vocabulary, rewrite it from the evidence or remove it instead of extending the same style.
 
 These examples show the distinction only. Follow the current evidence's language and content rather than copying them.
 

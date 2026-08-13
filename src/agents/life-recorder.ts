@@ -16,6 +16,7 @@ import {
 import { Type } from "typebox";
 import { stringify } from "yaml";
 
+import { NATURAL_LANGUAGE_GUIDANCE } from "../continuity-guidance.js";
 import type {
   ActivityRecorder,
   FrozenActivity,
@@ -61,6 +62,8 @@ Use read_activity until every event page has been read. Raw events are available
 ## Language fidelity
 
 Preserve quoted speech and source text in the language actually used. Never translate a quotation merely because this instruction is in English. When the Activity contains a human Input in one clear language and the record concerns that interaction or work directly arising from it, write the Daily and any Episode in that language. Preserve source wording and technical terms when they are genuinely useful, but do not code-switch ordinary prose merely because surrounding materials are bilingual. Otherwise follow the language of the private work or scene being recorded, then the existing Daily when it supplies continuity, and finally Stable Facts when nothing else has a clear signal. This requirement takes precedence over the language used by Identity, Harness instructions, tool metadata, JSON fields, paths, and other system evidence; none of those chooses the language of the record.
+
+${NATURAL_LANGUAGE_GUIDANCE}
 
 ## Daily Narrative
 

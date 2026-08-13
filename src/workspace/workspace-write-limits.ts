@@ -50,6 +50,21 @@ const threadLike = (limitBytes: number) => ({
 });
 
 /**
+ * Layered long-term memory units: single-level ordinary .md files directly
+ * under memory/ (no subdirectories, no hidden files, never the core
+ * memory.md itself).
+ */
+const MEMORY_ENTRY = /^memory\/[^/.][^/]*\.md$/;
+
+const memoryEntry = (limitBytes: number) => ({
+  label: "memory/<name>.md",
+  limitBytes,
+  matches: (relativePath: string) =>
+    MEMORY_ENTRY.test(relativePath)
+    && relativePath !== "memory/memory.md",
+});
+
+/**
  * A recoverable rejection for a single over-limit write. It rejects only the
  * current write (the organ can trim and retry in the same Pi session); it never
  * triggers a whole-mutation rollback on its own.
@@ -102,6 +117,9 @@ export const WORKSPACE_WRITE_LIMITS: ReadonlyArray<{
   // Thread Maintainer.
   exact("threads/index.md", 256 * kiB),
   threadLike(256 * kiB),
+  // Memory Reflector layered long-term memory units (conservative until
+  // measured on real compressed material; core memory.md stays at 256 KiB).
+  memoryEntry(64 * kiB),
 ];
 
 /**

@@ -26,6 +26,7 @@ export type OpenedWorkspaceMutation<Result> =
 
 export interface WorkspaceMutation<Result> {
   write(relativePath: string, content: string | Buffer): Promise<WorkspaceWriteOutcome>;
+  remove(relativePath: string): Promise<WorkspaceWriteOutcome>;
   complete(result: Result): Promise<void>;
   rollback(): Promise<void>;
 }
@@ -125,6 +126,44 @@ class DurableWorkspaceMutation<Result> implements WorkspaceMutation<Result> {
       // A failed rename, chmod, directory sync, or staged-file cleanup can
       // leave the target changed even when the promise rejects. Never let an
       // organ retry such a write inside the same mutation.
+      return { state: "uncertain", error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async remove(relativePath: string): Promise<WorkspaceWriteOutcome> {
+    this.#assertActive();
+    let normalized: string;
+    try {
+      normalized = normalizeRelativePath(relativePath);
+    } catch (error) {
+      return { state: "rejected", error: error instanceof Error ? error.message : String(error) };
+    }
+    try {
+      const target = await resolveWorkspaceFile(this.workspaceRoot, normalized, false);
+      try {
+        await lstat(target);
+      } catch (error) {
+        // Removing a file that is already absent is a provable no-op: the
+        // post-condition (target does not exist) already holds, matching the
+        // write-side convention where reaching the target state is applied.
+        if (isMissing(error)) return { state: "applied" };
+        throw error;
+      }
+      if (!this.#manifest.snapshots.some(snapshot => snapshot.path === normalized)) {
+        const snapshot = await captureFileSnapshot(target, normalized, this.journalDirectory);
+        this.#manifest = {
+          ...this.#manifest,
+          snapshots: [...this.#manifest.snapshots, snapshot],
+        };
+        await writeManifest(this.journalDirectory, this.#manifest);
+      }
+      await rm(target, { force: true });
+      await syncDirectory(path.dirname(target));
+      return { state: "applied" };
+    } catch (error) {
+      // A failed unlink or directory sync can leave the target changed even
+      // when the promise rejects. Never let an organ retry such a removal
+      // inside the same mutation.
       return { state: "uncertain", error: error instanceof Error ? error.message : String(error) };
     }
   }
@@ -455,12 +494,16 @@ async function restoreTreeSnapshot(
   await syncDirectory(path.dirname(treeRoot));
 }
 
-async function resolveWorkspaceFile(workspaceRoot: string, relativePath: string): Promise<string> {
+async function resolveWorkspaceFile(
+  workspaceRoot: string,
+  relativePath: string,
+  createParent = true,
+): Promise<string> {
   const target = path.resolve(workspaceRoot, relativePath);
   if (target === workspaceRoot || !target.startsWith(`${workspaceRoot}${path.sep}`)) {
     throw new Error("Workspace Mutation path must stay inside the Agent Workspace");
   }
-  await mkdir(path.dirname(target), { recursive: true });
+  if (createParent) await mkdir(path.dirname(target), { recursive: true });
   const [canonicalRoot, canonicalParent] = await Promise.all([
     realpath(workspaceRoot),
     realpath(path.dirname(target)),

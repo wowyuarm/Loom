@@ -26,6 +26,8 @@ test("grounds a recorder run and writes protected Daily and Episode records", as
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
       assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
+      assert.match(context.systemPrompt ?? "", /This is a clarity rule, not a style template/);
+      assert.match(context.systemPrompt ?? "", /Identity and lived evidence determine the Individual's voice/);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
         "finish",
         "grep",

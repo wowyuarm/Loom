@@ -30,6 +30,9 @@ test("updates Current Attention from indexed Workspace and Activity evidence", a
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /"name": "Alex"/);
       assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
+      assert.match(context.systemPrompt ?? "", /last one to three days/);
+      assert.match(context.systemPrompt ?? "", /not a list of active Threads/);
+      assert.match(context.systemPrompt ?? "", /Write prose that can be understood on one reading/);
       const prompt = userPrompt(context.messages);
       assert.match(prompt, /attention\.md/);
       assert.match(prompt, /activity-recent/);

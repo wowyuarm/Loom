@@ -161,3 +161,83 @@ test("rejects an over-limit write and leaves the mutation usable for a smaller w
   );
   await opened.mutation.complete({ outcome: "updated", runId: "recorder-1" });
 });
+
+test("remove deletes a file and restores it on rollback", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-remove-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const journalRoot = path.join(root, "runtime", "workspace-mutations");
+  const entry = path.join(workspaceRoot, "memory", "greenhouse.md");
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(entry, "original greenhouse notes\n", "utf8");
+
+  const opened = await beginWorkspaceMutation<{ outcome: string }>({
+    workspaceRoot,
+    journalRoot,
+    operationKey: "memory-reflector:remove-1",
+  });
+  assert.equal(opened.state, "active");
+  const outcome = await opened.mutation.remove("memory/greenhouse.md");
+  assert.deepEqual(outcome, { state: "applied" });
+  await assert.rejects(readFile(entry), /ENOENT/);
+
+  await opened.mutation.rollback();
+
+  assert.equal(await readFile(entry, "utf8"), "original greenhouse notes\n");
+});
+
+test("remove of an absent file is an applied no-op", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-remove-absent-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const journalRoot = path.join(root, "runtime", "workspace-mutations");
+  await mkdir(path.join(workspaceRoot, "memory"), { recursive: true });
+
+  const opened = await beginWorkspaceMutation<{ outcome: string }>({
+    workspaceRoot,
+    journalRoot,
+    operationKey: "memory-reflector:remove-absent",
+  });
+  assert.equal(opened.state, "active");
+  const outcome = await opened.mutation.remove("memory/absent.md");
+  assert.deepEqual(outcome, { state: "applied" });
+  await opened.mutation.complete({ outcome: "no_change" });
+});
+
+test("remove rejects a path that escapes the Workspace", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-remove-escape-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const journalRoot = path.join(root, "runtime", "workspace-mutations");
+  await mkdir(workspaceRoot, { recursive: true });
+
+  const opened = await beginWorkspaceMutation<{ outcome: string }>({
+    workspaceRoot,
+    journalRoot,
+    operationKey: "memory-reflector:remove-escape",
+  });
+  assert.equal(opened.state, "active");
+  const outcome = await opened.mutation.remove("../outside.md");
+  assert.equal(outcome.state, "rejected");
+  await opened.mutation.rollback();
+});
+
+test("remove after write shares one snapshot and rollback restores the original", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-workspace-remove-after-write-"));
+  const workspaceRoot = path.join(root, "workspace");
+  const journalRoot = path.join(root, "runtime", "workspace-mutations");
+  const entry = path.join(workspaceRoot, "memory", "merged.md");
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(entry, "original merged notes\n", "utf8");
+
+  const opened = await beginWorkspaceMutation<{ outcome: string }>({
+    workspaceRoot,
+    journalRoot,
+    operationKey: "memory-reflector:remove-after-write",
+  });
+  assert.equal(opened.state, "active");
+  assert.deepEqual(await opened.mutation.write("memory/merged.md", "rewritten before merge\n"), { state: "applied" });
+  assert.deepEqual(await opened.mutation.remove("memory/merged.md"), { state: "applied" });
+  await assert.rejects(readFile(entry), /ENOENT/);
+
+  await opened.mutation.rollback();
+
+  assert.equal(await readFile(entry, "utf8"), "original merged notes\n");
+});

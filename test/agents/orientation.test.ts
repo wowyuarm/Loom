@@ -27,6 +27,9 @@ test("forms a grounded Opportunity through an isolated Orientation run", async (
       assert.deepEqual(context.tools?.map(tool => tool.name).sort(), ["grep", "ls", "read", "read_recent_activity"]);
       assert.match(context.systemPrompt ?? "", /"name": "Rowan"/);
       assert.match(context.systemPrompt ?? "", /Rowan is an Agent Individual\./);
+      assert.match(context.systemPrompt ?? "", /A Thread is a continuity that reaches beyond the present/);
+      assert.match(context.systemPrompt ?? "", /Write prose that can be understood on one reading/);
+      assert.match(context.systemPrompt ?? "", /relationship opening is complete in its own right/);
       const messages = JSON.stringify(context.messages);
       assert.match(messages, /activity-recent/);
       assert.match(messages, /attention\.md/);
