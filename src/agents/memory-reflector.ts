@@ -30,6 +30,7 @@ type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
 
 const DEFAULT_ACTIVITY_PAGE_SIZE = 50;
 const MAX_ACTIVITY_PAGE_SIZE = 200;
+const MEMORY_CORE_REVIEW_BYTES = 16 * 1024;
 
 const MATERIAL_PATHS = {
   stable_facts: "facts.json",
@@ -116,6 +117,8 @@ Only after serving that always-carried core, memory.md is also the complete map 
 
 Choose units by a natural long-term subject, not by storage convenience. A unit may hold richer recollection about one person or relationship, the Individual's self-understanding, a durable view of the world, or a long-lived capability, limit, or way of living. Do not create one unit per event, project, month, label, or Thread. Keep a few paragraphs in memory.md when they remain short and useful every Turn; split only when the detail is worth retaining but no longer worth carrying every Turn.
 
+Treat size as a prompt to exercise this judgment, never as the definition of Memory. When memory.md is at least about 16 KiB, has grown materially in this reflection, or lets one natural subject occupy several dense paragraphs, actively review every section for what truly needs to remain present on every Turn. A larger core is allowed only when its concrete contents still earn that always-carried place; do not split merely to hit a number. The absence of a memory/ directory is not evidence that every existing paragraph belongs in the core—create the first unit when the semantic boundary calls for one.
+
 A Memory unit is the lasting understanding itself, not a themed archive of source material. Organize it by what is understood now: the durable relationship or view, how it affects future understanding or action, important boundaries or tensions, and what is still changing. Do not organize a unit as a dated sequence of events, preserve every old paragraph merely under a new filename, or measure quality by lossless migration from memory.md.
 
 This does not require abstracting away every lived scene. Keep a small number of formative experiences, exact words, or turning points when the experience remains part of the memory rather than merely evidence for it: removing it would lose the relationship's texture, obscure why the understanding carries weight or where its boundary came from, and no more representative scene can replace it. Remove repeated examples that only prove the same conclusion. Put fuller chronology, incident lists, project history, validation records, and long dialogue in the relevant Thread note or archive, then link that source when it is useful.
@@ -192,6 +195,8 @@ ${nmemBoundary}
 6. Return NO_CHANGE when the evidence does not cross a threshold. Stability is not a failed run.
 
 Reflection is whole-document selection, not append-only accumulation. Every run must ask what can now be merged, shortened, moved to a more suitable detailed file, or removed because a newer understanding covers it. Do not preserve a paragraph merely because it was written earlier. Size limits prevent runaway writes; they do not replace this judgment.
+
+Do not promote maintenance, migration, deployment, validation, or tool-setup history directly into memory.md merely because the Individual experienced it. Choose among three destinations by what the material has become. Keep an unfolding timeline, receipts, file lists, and completion evidence in Daily or the relevant Thread note. When a completed body of experience remains worth deliberately retrieving as durable practical understanding, it may become a Memory unit organized around what is now understood rather than around the sequence of the work. Only a concise understanding or way of living that should be naturally present on every Turn belongs in memory.md. A process can therefore remain available without making its whole record part of the always-carried core.
 
 Do not copy one narrative into several materials. Memory may retain the durable fact or meaning while one Behavior material retains the resulting tendency. If the same tendency appears in both interactivity and proactivity, ask whether it belongs more deeply in Identity or Memory; otherwise phrase it independently for each lived context rather than cross-referencing files.
 
@@ -651,10 +656,15 @@ class PiMemoryReflector implements MemoryReflector {
       if (this.#cancelReason) throw new Error(`Memory reflection cancelled: ${this.#cancelReason}`);
       await session.bindExtensions({});
       session.setAutoCompactionEnabled(false);
+      const memoryCoreBytes = Buffer.byteLength(
+        await readFile(path.join(this.options.agentWorkspace.root, MATERIAL_PATHS.long_term_memory), "utf8"),
+        "utf8",
+      );
       const result = await organSession.run(session, buildRunPrompt(
         request,
         runId,
         Boolean(this.options.workingMemoryReader && this.options.nmemRecallTool),
+        memoryCoreBytes,
       ));
       if (!result.result) throw new Error("Memory Reflector did not finish");
       return result.result;
@@ -677,7 +687,12 @@ export async function createPiMemoryReflector(options: PiMemoryReflectorOptions)
   return new PiMemoryReflector(options);
 }
 
-function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEnabled: boolean): string {
+function buildRunPrompt(
+  request: MemoryReflectionRequest,
+  runId: string,
+  nmemEnabled: boolean,
+  memoryCoreBytes: number,
+): string {
   return [
     "Memory reflection run",
     "",
@@ -695,6 +710,7 @@ function buildRunPrompt(request: MemoryReflectionRequest, runId: string, nmemEna
     "- behavior/interactivity.md: direct interaction tendencies.",
     "- behavior/proactivity.md: private life, exploration, sharing, and silence without new human Input.",
     "- attention.md: Current Attention; read-only.",
+    `- Current memory.md size: ${memoryCoreBytes} bytes (${memoryCoreBytes >= MEMORY_CORE_REVIEW_BYTES ? "active layering review required" : "no size-triggered review"}; size is a signal, not a correctness limit).`,
     "",
     "## Workspace evidence index",
     `- daily/${request.reflectionDay}.md: the target day's Daily Narrative and candidate leads, when present.`,

@@ -49,6 +49,11 @@ test("reflects grounded evidence into protected core material", async () => {
       assert.match(context.systemPrompt ?? "", /if the draft is mainly a chronology or list of examples/);
       assert.match(context.systemPrompt ?? "", /naturally carry it into every Turn without choosing to retrieve anything/);
       assert.match(context.systemPrompt ?? "", /keep a concise form in memory\.md even when a richer unit exists/);
+      assert.match(context.systemPrompt ?? "", /When memory\.md is at least about 16 KiB/);
+      assert.match(context.systemPrompt ?? "", /absence of a memory\/ directory is not evidence/);
+      assert.match(context.systemPrompt ?? "", /Do not promote maintenance, migration, deployment, validation, or tool-setup history directly into memory\.md/);
+      assert.match(context.systemPrompt ?? "", /may become a Memory unit organized around what is now understood/);
+      assert.match(context.systemPrompt ?? "", /Keep an unfolding timeline, receipts, file lists, and completion evidence in Daily or the relevant Thread note/);
       assert.match(context.systemPrompt ?? "", /whole-document selection, not append-only accumulation/);
       assert.match(context.systemPrompt ?? "", /Write prose that can be understood on one reading/);
       assert.deepEqual((context.tools ?? []).map(tool => tool.name).sort(), [
@@ -67,6 +72,7 @@ test("reflects grounded evidence into protected core material", async () => {
       assert.match(prompt, /Activity ID: segment-reflection-1/);
       assert.match(prompt, /daily\/2026-07-21\.md/);
       assert.match(prompt, /episodes\/2026-07-21\//);
+      assert.match(prompt, /Current memory\.md size: \d+ bytes \(no size-triggered review; size is a signal, not a correctness limit\)/);
       assert.doesNotMatch(prompt, /asked Rowan to keep the attribution exact/);
       return fauxAssistantMessage(
         fauxToolCall("read", { path: reads[0] }, { id: "read-facts" }),
@@ -465,7 +471,11 @@ test("accepts a long core material after every consecutive page is read", async 
   const { faux, model, modelRuntime } = await createTestPi(root, "memory-reflector-paged");
   const baselineReads = baselineReadResponses();
   faux.setResponses([
-    ...baselineReads.slice(0, 3),
+    context => {
+      assert.match(userPrompt(context.messages), /Current memory\.md size: \d+ bytes \(active layering review required; size is a signal, not a correctness limit\)/);
+      return baselineReads[0]!;
+    },
+    ...baselineReads.slice(1, 3),
     fauxAssistantMessage(
       fauxToolCall("read", { path: "memory.md", offset: 2001 }, { id: "read-memory-tail" }),
       { stopReason: "toolUse" },
