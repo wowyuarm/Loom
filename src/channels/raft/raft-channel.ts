@@ -945,6 +945,8 @@ class DefaultRaftChannel implements RaftChannel {
         COUNT(*) FILTER (WHERE status = 'retry_wait') AS retrying,
         COUNT(*) FILTER (WHERE status = 'failed') AS failed,
         MIN(received_at) FILTER (WHERE status != 'complete') AS oldest_outstanding_at,
+        MIN(last_attempt_at) FILTER (WHERE status = 'failed') AS first_failure_at,
+        MAX(last_attempt_at) FILTER (WHERE status = 'failed') AS last_failure_at,
         (
           SELECT failure_category FROM wakes
           WHERE status IN ('retry_wait', 'failed')
@@ -957,6 +959,8 @@ class DefaultRaftChannel implements RaftChannel {
       retrying: number;
       failed: number;
       oldest_outstanding_at: string | null;
+      first_failure_at: string | null;
+      last_failure_at: string | null;
       last_failure_category: RaftFailureCategory | null;
     };
     const failedIds = this.#database.prepare(`
@@ -972,6 +976,8 @@ class DefaultRaftChannel implements RaftChannel {
       failed: row.failed,
       spooled: this.#spooledCount,
       ...(oldest ? { oldestOutstandingAt: oldest } : {}),
+      ...(row.first_failure_at ? { firstFailureAt: row.first_failure_at } : {}),
+      ...(row.last_failure_at ? { lastFailureAt: row.last_failure_at } : {}),
       ...(row.last_failure_category ? { lastFailureCategory: row.last_failure_category }
         : this.#spooledCount > 0 ? { lastFailureCategory: "invalid_message" as const } : {}),
       ...(failedIds.length > 0 ? { failedItemIds: failedIds.map(item => `wake-${item.rowid}`) } : {}),

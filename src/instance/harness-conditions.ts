@@ -17,6 +17,8 @@ export interface HarnessCondition {
   impact: string;
   /** When the degradation started (ISO time), when a provable time exists. */
   since?: string;
+  /** When the most recent contributing failure happened (ISO time). */
+  lastFailureAt?: string;
 }
 
 export interface HarnessConditionsEvidence {
@@ -137,12 +139,24 @@ export function createHarnessConditionSource(
             .map(itemId => `channel-item:${channelId}:${causeRef}:${itemId}`)
             .filter(token => !presented.has(token));
           if (freshTokens.length === 0) continue;
-          conditions.push({ ref, capability, impact });
+          conditions.push({
+            ref,
+            capability,
+            impact,
+            ...(status.ingress?.firstFailureAt ? { since: status.ingress.firstFailureAt } : {}),
+            ...(status.ingress?.lastFailureAt ? { lastFailureAt: status.ingress.lastFailureAt } : {}),
+          });
           pendingRefs.push(ref, ...freshTokens);
         } else {
           // Adapters without item ids keep the channel+cause singleton.
           if (presented.has(ref)) continue;
-          conditions.push({ ref, capability, impact });
+          conditions.push({
+            ref,
+            capability,
+            impact,
+            ...(status.ingress?.firstFailureAt ? { since: status.ingress.firstFailureAt } : {}),
+            ...(status.ingress?.lastFailureAt ? { lastFailureAt: status.ingress.lastFailureAt } : {}),
+          });
           pendingRefs.push(ref);
         }
       }

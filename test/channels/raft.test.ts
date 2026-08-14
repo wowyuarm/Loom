@@ -1784,3 +1784,187 @@ test("picks the most recent failure category by local insertion order when attem
   // wins the tie, so its category is the one reported.
   assert.equal(channel.status().ingress.lastFailureCategory, "invalid_message");
 });
+
+test("status failure times come from currently failed wakes and follow manual retry and restart", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-failure-times-"));
+  let permanent = true;
+  const remote: RaftRemote = {
+    async resolveMessage(messageId) {
+      if (permanent) throw new Error("permanent failure");
+      return {
+        messageId,
+        occurredAt: "2026-08-03T05:00:00.000Z",
+        signal: "direct_message",
+        content: `Recovered ${messageId}.`,
+        sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+        place: {
+          target: "dm:@yu",
+          kind: "direct",
+          visibility: "private",
+          audience: "Only this Individual and Yu can see this DM.",
+        },
+      };
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const clock = { current: Date.parse("2026-08-03T05:00:00.000Z") };
+  const open = () => openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 40,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  const channel = await open();
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+
+  // First wake fails permanently at 05:00:00.
+  await channel.acceptWake({
+    attemptId: "attempt-first",
+    messageId: "first-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 1);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:00:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:00:00.000Z");
+
+  // Second wake fails permanently later at 05:10:00; MIN/MAX now differ and
+  // only currently failed rows count (the pending/retrying rows are excluded).
+  clock.current = Date.parse("2026-08-03T05:10:00.000Z");
+  await channel.acceptWake({
+    attemptId: "attempt-second",
+    messageId: "second-wake",
+    receivedAt: "2026-08-03T05:10:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 2);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:00:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:10:00.000Z");
+
+  // Manual retry of the older wake clears it; the remaining failed set
+  // recomputes both times from the surviving row.
+  permanent = false;
+  const [firstItemId] = channel.status().ingress.failedItemIds!;
+  assert.equal(await channel.retryFailedIngress(firstItemId), 1);
+  await eventually(() => channel.status().ingress.failed === 1);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:10:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:10:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureCategory, "invalid_message");
+
+  // Restart keeps the same authoritative times from the persisted wakes.
+  await channel.stop();
+  clock.current = Date.parse("2026-08-03T06:00:00.000Z");
+  const recovered = await open();
+  t.after(() => recovered.stop());
+  await recovered.start(async () => {
+    throw new Error("a failed wake must not be auto-processed after restart");
+  });
+  assert.equal(recovered.status().ingress.failed, 1);
+  assert.equal(recovered.status().ingress.firstFailureAt, "2026-08-03T05:10:00.000Z");
+  assert.equal(recovered.status().ingress.lastFailureAt, "2026-08-03T05:10:00.000Z");
+});
+
+test("failure times ignore pending and retry_wait wakes", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-failure-times-filter-"));
+  let releasePending: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => { releasePending = resolve; });
+  const remote: RaftRemote = {
+    async resolveMessage(messageId) {
+      if (messageId === "pending-wake") {
+        await gate;
+        return {
+          messageId,
+          occurredAt: "2026-08-03T05:00:00.000Z",
+          signal: "direct_message",
+          content: "A wake that stayed pending while others failed.",
+          sender: { memberId: "human-yu", kind: "human", handle: "yu" },
+          place: {
+            target: "dm:@yu",
+            kind: "direct",
+            visibility: "private",
+            audience: "Only this Individual and Yu can see this DM.",
+          },
+        };
+      }
+      if (messageId === "retry-wake") throw new RaftRetryableError("server unavailable");
+      throw new Error("permanent failure");
+    },
+    sendText: async () => { throw new Error("no send expected"); },
+  };
+  const clock = { current: Date.parse("2026-08-03T05:00:00.000Z") };
+  const channel = await openRaftChannel({
+    stateFile: path.join(root, "raft.db"),
+    now: () => new Date(clock.current),
+    retryBaseDelayMs: 60_000,
+    routeRef: "raft-primary",
+    serverId: "server-1",
+    selfMemberId: "agent-hal",
+    principalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    remote,
+  });
+  t.after(() => channel.stop());
+  const inputs: RuntimeInput[] = [];
+  await channel.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: input.sourceId };
+  });
+
+  // A transient failure stays retry_wait (next_retry_at far in the future).
+  await channel.acceptWake({
+    attemptId: "attempt-retry",
+    messageId: "retry-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.retrying === 1);
+  assert.equal(channel.status().ingress.failed, 0);
+  assert.equal(channel.status().ingress.firstFailureAt, undefined);
+
+  // A permanent failure at 05:00:00 is the only failed row so far.
+  await channel.acceptWake({
+    attemptId: "attempt-failed",
+    messageId: "failed-wake",
+    receivedAt: "2026-08-03T05:00:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 1);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:00:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:00:00.000Z");
+
+  // A wake held in pending (resolve never settles) must not change the times:
+  // MIN/MAX count only currently failed rows.
+  await channel.acceptWake({
+    attemptId: "attempt-pending",
+    messageId: "pending-wake",
+    receivedAt: "2026-08-03T05:05:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.pending === 1);
+  assert.equal(channel.status().ingress.pending, 1);
+  assert.equal(channel.status().ingress.retrying, 1);
+  assert.equal(channel.status().ingress.failed, 1);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:00:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:00:00.000Z");
+
+  // Let the pending wake complete, then fail a second wake later; the still
+  // retry_wait row must stay excluded from both times.
+  releasePending!();
+  await eventually(() => inputs.some(input => input.sourceId === "pending-wake"));
+  clock.current = Date.parse("2026-08-03T05:10:00.000Z");
+  await channel.acceptWake({
+    attemptId: "attempt-failed-later",
+    messageId: "failed-wake-later",
+    receivedAt: "2026-08-03T05:10:00.000Z",
+  });
+  await eventually(() => channel.status().ingress.failed === 2);
+  assert.equal(channel.status().ingress.retrying, 1);
+  assert.equal(channel.status().ingress.pending, 0);
+  assert.equal(channel.status().ingress.firstFailureAt, "2026-08-03T05:00:00.000Z");
+  assert.equal(channel.status().ingress.lastFailureAt, "2026-08-03T05:10:00.000Z");
+});

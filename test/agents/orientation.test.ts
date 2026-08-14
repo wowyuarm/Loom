@@ -240,6 +240,10 @@ test("renders Harness Conditions evidence as facts without new tools and keeps n
       assert.doesNotMatch(messages, /model service unavailable/);
       assert.match(messages, /2026-08-11T09:40:28.288Z/);
       assert.doesNotMatch(messages, /organ-blocked:/);
+      // Channel condition renders both the first and the most recent failure
+      // time, so the model does not read "first observed" as "first failed".
+      assert.match(messages, /2026-08-11T08:30:00.000Z/);
+      assert.match(messages, /2026-08-11T09:15:00.000Z/);
       return fauxAssistantMessage(JSON.stringify({
         outcome: "none",
         whyNow: "The blocked organ has no lived impact right now.",
@@ -267,6 +271,12 @@ test("renders Harness Conditions evidence as facts without new tools and keeps n
         capability: "Thread maintenance",
         impact: "blocked after retries exhausted",
         since: "2026-08-11T09:40:28.288Z",
+      }, {
+        ref: "channel-ingress-failed:raft:invalid_message",
+        capability: "raft message ingress",
+        impact: "2 inbound item(s) permanently failed",
+        since: "2026-08-11T08:30:00.000Z",
+        lastFailureAt: "2026-08-11T09:15:00.000Z",
       }],
     },
     nextRunId: () => "orientation-run-harness",

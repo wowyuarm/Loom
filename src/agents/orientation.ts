@@ -325,6 +325,7 @@ function buildRunPrompt(
         capability: condition.capability,
         impact: condition.impact,
         ...(condition.since ? { since: condition.since } : {}),
+        ...(condition.lastFailureAt ? { lastFailureAt: condition.lastFailureAt } : {}),
       }))),
       "",
     ] : []),

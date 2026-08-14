@@ -31,6 +31,16 @@ export interface InteractionChannelIngressStatus {
   spooled: number;
   /** Earliest received time among items that are not complete. */
   oldestOutstandingAt?: string;
+  /**
+   * ISO time when the earliest currently-failed item entered permanent
+   * failure. Only counts items that are still failed now.
+   */
+  firstFailureAt?: string;
+  /**
+   * ISO time when the most recent currently-failed item entered permanent
+   * failure. Only counts items that are still failed now.
+   */
+  lastFailureAt?: string;
   /** Most recent failure class among retrying/failed/spooled items. */
   lastFailureCategory?: InteractionChannelFailureCategory;
   /** Bounded local ids of failed items, for targeted recovery without a restart. */

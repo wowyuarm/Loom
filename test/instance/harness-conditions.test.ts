@@ -88,6 +88,7 @@ test("capture projects permanent channel ingress failure as a condition", async 
   assert.equal(evidence.conditions[0]!.ref, "channel-ingress-failed:raft:invalid_message");
   assert.doesNotMatch(evidence.conditions[0]!.ref, /wake-/);
   assert.equal(evidence.conditions[0]!.since, undefined);
+  assert.equal(evidence.conditions[0]!.lastFailureAt, undefined);
   assert.match(evidence.conditions[0]!.impact, /3 inbound item\(s\) permanently failed/);
 });
 
@@ -348,4 +349,31 @@ test("item ids with surrounding whitespace are acknowledged verbatim", async () 
   ]);
   await source.markPresented(first.revision);
   assert.equal(await source.capture(), undefined);
+});
+
+test("channel condition carries provable first and last failure times", async () => {
+  const store = new MemoryStore();
+  const source = createHarnessConditionSource({
+    runtimeStatus: () => runtimeStatus(),
+    channelStatuses: () => ({
+      raft: {
+        state: "connected",
+        ingress: {
+          pending: 0, retrying: 0, failed: 2, spooled: 0,
+          lastFailureCategory: "invalid_message",
+          failedItemIds: ["wake-1", "wake-2"],
+          firstFailureAt: "2026-08-11T08:30:00.000Z",
+          lastFailureAt: "2026-08-11T09:15:00.000Z",
+        },
+      },
+    }),
+    store,
+    now: () => new Date("2026-08-11T10:00:00.000Z"),
+  });
+  const evidence = await source.capture();
+  assert.ok(evidence);
+  // Earliest failure maps to the existing since slot; the most recent failure
+  // is carried separately so the model sees both.
+  assert.equal(evidence.conditions[0]!.since, "2026-08-11T08:30:00.000Z");
+  assert.equal(evidence.conditions[0]!.lastFailureAt, "2026-08-11T09:15:00.000Z");
 });
