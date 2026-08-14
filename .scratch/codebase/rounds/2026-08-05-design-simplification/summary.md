@@ -1,6 +1,9 @@
 # Loom Design Simplification Review
 
 Status: completed
+Captured: 2026-08-05
+Baseline: `fb38e69`；具体证据见 `research/`
+Implementation result: `6dd5a1e`
 
 ## Purpose
 

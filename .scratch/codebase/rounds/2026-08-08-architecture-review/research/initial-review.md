@@ -1,7 +1,7 @@
 # Loom src 初步整体审查与重构建议
 
 审查日期：2026-08-08
-审查范围：`src/`、对应 `test/`、`docs/architecture.md`、`CONTEXT.md`、ADR 与 `.scratch/codebase-refactor/` 现有材料。
+审查范围：`src/`、对应 `test/`、`docs/architecture.md`、`CONTEXT.md`、ADR 与本主题前序 round 的现有材料。
 审查基线：`main` 当前 `ee3e5db`；审查过程中 task #14 的改动已形成该 commit，本次未修改生产代码。
 
 ## 结论

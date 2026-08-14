@@ -16,15 +16,15 @@ Status: confirmed, production incident #5
 
 ### 原始目的
 
-Ticket 14 有意把“没有实际行动”的主动机会排除在生活证据之外：不进入 Frozen Activity、Recent Activity 或 Life Recorder，以免把内部安静判断伪造成发生过的活动。[Ticket 14](../../harness-layers/issues/14-form-proactive-opportunities.md)
+Ticket 14 有意把“没有实际行动”的主动机会排除在生活证据之外：不进入 Frozen Activity、Recent Activity 或 Life Recorder，以免把内部安静判断伪造成发生过的活动。[Ticket 14](../../../../harness-layers/issues/14-form-proactive-opportunities.md)
 
 ### 现在实际保护了什么
 
-它正确保护了活动证据的真实性。Xi 同样会丢弃无消息、无普通工具的 background 段，只留下运行日志，不写空 activity。[Xi actions](../../../../Xi/src/runtime/actions.ts)；[Xi scheduling doc](../../../../Xi/docs/daemon-scheduling.md)
+它正确保护了活动证据的真实性。Xi 同样会丢弃无消息、无普通工具的 background 段，只留下运行日志，不写空 activity。[Xi actions](../../../../../../Xi/src/runtime/actions.ts)；[Xi scheduling doc](../../../../../../Xi/docs/daemon-scheduling.md)
 
 ### 成本 / 错误行为
 
-`reflectionDayComplete()` 却从 `turns.segment_id` 反推“每个 completed Turn 必须对应 activities”，把已经合法丢弃的 segment 当成丢失。该日 Reflection 永久卡住，且 Scheduler 随后不再检查 Pulse。[Runtime](../../../src/runtime/runtime.ts)；[issue #5](https://github.com/wowyuarm/Loom/issues/5)
+`reflectionDayComplete()` 却从 `turns.segment_id` 反推“每个 completed Turn 必须对应 activities”，把已经合法丢弃的 segment 当成丢失。该日 Reflection 永久卡住，且 Scheduler 随后不再检查 Pulse。[Runtime](../../../../../src/runtime/runtime.ts)；[issue #5](https://github.com/wowyuarm/Loom/issues/5)
 
 ### 当前方向与备选方案
 
@@ -42,7 +42,7 @@ Status: confirmed, production incident #5 的第二个影响
 
 ### 原始目的
 
-Ticket 25 选择单一 `runOnce` 串行推进 Runtime，避免并行的模型/Workspace 写入互相覆盖；Ticket 32 又把 Reflection 放在普通 Runtime work、Activity 收尾和 Attention 之后。[Ticket 25](../../harness-layers/issues/25-schedule-runtime-lifecycle.md)；[Ticket 32](../../harness-layers/issues/32-schedule-memory-reflection.md)
+Ticket 25 选择单一 `runOnce` 串行推进 Runtime，避免并行的模型/Workspace 写入互相覆盖；Ticket 32 又把 Reflection 放在普通 Runtime work、Activity 收尾和 Attention 之后。[Ticket 25](../../../../harness-layers/issues/25-schedule-runtime-lifecycle.md)；[Ticket 32](../../../../harness-layers/issues/32-schedule-memory-reflection.md)
 
 ### 现在实际保护了什么
 
@@ -50,11 +50,11 @@ Ticket 25 选择单一 `runOnce` 串行推进 Runtime，避免并行的模型/Wo
 
 ### 成本 / 错误行为
 
-“该 lane 此刻不能开始”与“本轮所有后续工作必须停止”被混为一谈。合法静默的 Reflection 前提错误，连带饿死不依赖它的 Orientation；status 只显示笼统 `busy`，现场需反查数据库才能确定谁拦住谁。[Scheduler](../../../src/runtime/scheduler.ts)
+“该 lane 此刻不能开始”与“本轮所有后续工作必须停止”被混为一谈。合法静默的 Reflection 前提错误，连带饿死不依赖它的 Orientation；status 只显示笼统 `busy`，现场需反查数据库才能确定谁拦住谁。[Scheduler](../../../../../src/runtime/scheduler.ts)
 
 ### Xi 对照
 
-Xi daemon 同一 tick 独立触发 Thread、Now、Memory 和 nmem maintenance；某项失败被记录，不作为后续 maintenance 的永久 gate。[Xi daemon](../../../../Xi/src/runtime/daemon.ts)；[Xi cognitive maintenance](../../../../Xi/src/runtime/cognitive-maintenance.ts)
+Xi daemon 同一 tick 独立触发 Thread、Now、Memory 和 nmem maintenance；某项失败被记录，不作为后续 maintenance 的永久 gate。[Xi daemon](../../../../../../Xi/src/runtime/daemon.ts)；[Xi cognitive maintenance](../../../../../../Xi/src/runtime/cognitive-maintenance.ts)
 
 ### 倾向
 
@@ -66,7 +66,7 @@ Status: confirmed conflict, not a simplification candidate yet
 
 ### 现象
 
-已确认 `not_sent` 且处于退避中的 Delivery 仍会让 max-age close 返回 `busy`，所以两小时过去后 Segment 不能冻结。[Runtime](../../../src/runtime/runtime.ts)；[Ticket 33](../../harness-layers/issues/33-soft-split-long-activity.md)；[Ticket 38](../../harness-layers/issues/38-back-off-not-sent-delivery.md)
+已确认 `not_sent` 且处于退避中的 Delivery 仍会让 max-age close 返回 `busy`，所以两小时过去后 Segment 不能冻结。[Runtime](../../../../../src/runtime/runtime.ts)；[Ticket 33](../../../../harness-layers/issues/33-soft-split-long-activity.md)；[Ticket 38](../../../../harness-layers/issues/38-back-off-not-sent-delivery.md)
 
 ### 两边实际保护的对象
 
@@ -82,7 +82,7 @@ Status: confirmed by focused cross-day reproduction
 
 ### 现象
 
-`runAttentionMaintenance()` 与 `runMemoryReflection()` 都要求 `#isMaintenanceIdle()`；该谓词同时检查任何 pending Activity recording 和任何 pending Thread maintenance，不按 Reflection 目标日或材料依赖范围区分。[Runtime](../../../src/runtime/runtime.ts)
+`runAttentionMaintenance()` 与 `runMemoryReflection()` 都要求 `#isMaintenanceIdle()`；该谓词同时检查任何 pending Activity recording 和任何 pending Thread maintenance，不按 Reflection 目标日或材料依赖范围区分。[Runtime](../../../../../src/runtime/runtime.ts)
 
 ### 原始目的
 
@@ -90,11 +90,11 @@ Status: confirmed by focused cross-day reproduction
 
 ### 成本 / 风险
 
-Ticket 32 的描述是“目标日”没有未完成 Activity/Thread 证据才可反思；现有实现的实际门槛更宽。最小场景已验证：8/4 的 Activity 已 recorded 且无 Thread maintenance；8/5 的 Activity recorded 后其 Thread Maintainer 故意失败并保持 pending；到 8/6 运行 8/4 Reflection 时，Reflection 没被调用而直接返回 `busy`。它把“不能同时写”扩大成“只要队列中有任何待办就完全不能开始”。[Ticket 32](../../harness-layers/issues/32-schedule-memory-reflection.md)
+Ticket 32 的描述是“目标日”没有未完成 Activity/Thread 证据才可反思；现有实现的实际门槛更宽。最小场景已验证：8/4 的 Activity 已 recorded 且无 Thread maintenance；8/5 的 Activity recorded 后其 Thread Maintainer 故意失败并保持 pending；到 8/6 运行 8/4 Reflection 时，Reflection 没被调用而直接返回 `busy`。它把“不能同时写”扩大成“只要队列中有任何待办就完全不能开始”。[Ticket 32](../../../../harness-layers/issues/32-schedule-memory-reflection.md)
 
 ### Xi 对照
 
-Xi 的 Thread Maintainer 失败会记日志并等待后续 debounce；Memory Reflector 有自己的日/失败上限，不读取 Thread Maintainer 的 pending 队列作为全局条件。[Xi cognitive maintenance](../../../../Xi/src/runtime/cognitive-maintenance.ts)
+Xi 的 Thread Maintainer 失败会记日志并等待后续 debounce；Memory Reflector 有自己的日/失败上限，不读取 Thread Maintainer 的 pending 队列作为全局条件。[Xi cognitive maintenance](../../../../../../Xi/src/runtime/cognitive-maintenance.ts)
 
 ### 倾向
 
@@ -106,7 +106,7 @@ Status: confirmed by minimal reproduction
 
 ### 现象
 
-Xi 对普通 queue failure 有五次上限、退避和 `blocked` 终态；Loom 对没有 Effect/tool 覆盖的失败 Input 重新放回 pending，schema 没有 attempt count 或 next retry time。最小场景用同一无 Effect/tool 的 execution failure 连续运行四次：Input 每次都回到 pending、四个 Turn 都是 failed，Input 没有 attempts 字段或终态。直接调用 Runtime 会立即重领；Process Driver 则在错误后统一等待 30 秒再试。[Xi/Loom comparison](../../harness-layers/research/xi-loom-state-and-queue-comparison.md)；[Runtime](../../../src/runtime/runtime.ts)；[Process Driver](../../../src/instance/process-driver.ts)
+Xi 对普通 queue failure 有五次上限、退避和 `blocked` 终态；Loom 对没有 Effect/tool 覆盖的失败 Input 重新放回 pending，schema 没有 attempt count 或 next retry time。最小场景用同一无 Effect/tool 的 execution failure 连续运行四次：Input 每次都回到 pending、四个 Turn 都是 failed，Input 没有 attempts 字段或终态。直接调用 Runtime 会立即重领；Process Driver 则在错误后统一等待 30 秒再试。[Xi/Loom comparison](../../../../harness-layers/research/xi-loom-state-and-queue-comparison.md)；[Runtime](../../../../../src/runtime/runtime.ts)；[Process Driver](../../../../../src/instance/process-driver.ts)
 
 ### 原始目的
 

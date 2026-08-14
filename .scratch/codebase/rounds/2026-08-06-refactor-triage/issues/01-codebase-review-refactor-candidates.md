@@ -4,7 +4,7 @@ Type: refactor
 Status: triaged
 Blocked by: 无
 
-Triage result: see `../triage.md`. The original candidate statements remain below as the review input; the triage result is authoritative where they differ.
+Triage result: see `../summary.md`. The original candidate statements remain below as the review input; the triage result is authoritative where they differ.
 
 ## 背景
 
@@ -14,7 +14,7 @@ Triage result: see `../triage.md`. The original candidate statements remain belo
 
 详细证据（file:line + 代码片段）见 `../research/findings.md`，截至 2026-08-06 工作区状态。本 issue 正文用域概念与模块/符号名描述，不依赖行号。
 
-本 issue 不与 `.scratch/design-simplification/` 重叠--后者是架构/设计层简化（已 paused），明确排除"按代码目录找清理项"。候选 3 与 design-simplification 的 Technical closure 1 重叠，已在条目内标注。
+本 issue 与[前一轮 design simplification](../../2026-08-05-design-simplification/summary.md)分开--后者是架构/设计层简化，明确排除“按代码目录找清理项”。候选 3 与该轮 Technical closure 1 重叠，已在条目内标注。
 
 ## 候选清单
 
@@ -36,7 +36,7 @@ Main Agent 的 tool-trace 与 pi-execution 各有一份同名 `withoutImagePixel
 
 Memory Reflector、Attention Maintainer、Thread Maintainer 各有 `finalAssistantText` 解析模型末行 `UPDATED`/`NO_CHANGE` 约定，但调用点丢弃返回值；结果实际由写操作标志（`changedMaterials` / `replaced` / `transaction.mutated`）决定。prompt 仍要求模型输出该约定，代码解析了但不用。
 
-**与 design-simplification 的关系**：已被 `.scratch/design-simplification/decisions.md` Technical closure 1 决策（derive outcome from durable mutations, remove UPDATED/NO_CHANGE gate），implementation paused。
+**与 design-simplification 的关系**：已被[前一轮 decisions](../../2026-08-05-design-simplification/decisions.md) Technical closure 1 决策（derive outcome from durable mutations, remove UPDATED/NO_CHANGE gate），implementation paused。
 
 **动作**：不单独推进；恢复 design-simplification 实施时一并清理末行解析（保留 `finalAssistantText` 里的 `stopReason` 检查）和对应 prompt 约定。在此记录代码层入口供对齐。
 **严重度**：medium

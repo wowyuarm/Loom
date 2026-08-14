@@ -1,6 +1,6 @@
 # Codebase Review Findings (Evidence)
 
-Status: evidence for `.scratch/codebase-refactor/issues/01-codebase-review-refactor-candidates.md`
+Status: evidence for `../issues/01-codebase-review-refactor-candidates.md`
 Captured: 2026-08-06, against the working-tree state at that time.
 
 > 路径与行号会随重构过期；本文件只作为 triage verify 的证据快照。issue 正文用域概念与模块/符号名描述，不依赖此处行号。
@@ -76,7 +76,7 @@ await this.#runSession(request, runId, baseline.get("facts.json")!, tools);
 
 结果由 `changedMaterials.length > 0` 决定。同模式见 `src/agents/attention-maintainer.ts:364-373`（调用点 :220）、`src/agents/thread-maintainer/index.ts:578-587`（调用点 :307）。
 
-`stopReason` 检查有用；末行 `UPDATED`/`NO_CHANGE` 解析被丢弃。已被 `.scratch/design-simplification/decisions.md` Technical closure 1 决策移除。
+`stopReason` 检查有用；末行 `UPDATED`/`NO_CHANGE` 解析被丢弃。已被 [前一轮 design simplification](../../2026-08-05-design-simplification/decisions.md) Technical closure 1 决策移除。
 
 ## 候选 4 - raft-channel 旧 state 兼容迁移
 

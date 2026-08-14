@@ -2,6 +2,7 @@
 
 Status: completed
 Date: 2026-08-06
+Baseline: `6dd5a1e`；具体证据见 `research/findings.md`
 
 ## Result
 
