@@ -777,7 +777,10 @@ function deferred<T>(): Deferred<T> {
     resolve = resolvePromise;
     reject = rejectPromise;
   });
-  void promise.catch(() => {});
+  void promise.catch(() => {
+    // A producer may reject before its consumer begins awaiting. The original
+    // promise remains rejected; this handler only prevents an early warning.
+  });
   return { promise, resolve, reject };
 }
 

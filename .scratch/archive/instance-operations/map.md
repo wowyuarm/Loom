@@ -49,8 +49,8 @@ is active.
 - [Current-state research](research/current-state.md)
 - [Backup mechanism options](research/backup-mechanism-options.md)
 - [OpenClaw and Hermes operations research](research/openclaw-hermes-operations.md)
-- [Agent-guided Instance Operations](../../docs/operations/agent-guided-instance-operations.md)
-- [Raft operational status boundary](../../docs/integrations/raft.md)
+- [Agent-guided Instance Operations](../../../docs/operations/agent-guided-instance-operations.md)
+- [Raft operational status boundary](../../../docs/channels/raft.md)
 
 ## Non-goals
 

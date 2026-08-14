@@ -267,6 +267,10 @@ export function isPreemptingInteractionSignal(signal: InteractionContext["signal
   }
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled closed union member: ${String(value)}`);
+}
+
 function deliveryRetryDelay(attempt: number): number {
   const exponent = Math.min(
     Math.max(0, attempt - 1),
@@ -496,7 +500,10 @@ class SqliteRuntime implements Runtime {
             const steering = active.steeringTail.then(async () => {
               await this.#steerInput(active, id);
             });
-            active.steeringTail = steering.catch(() => {});
+            active.steeringTail = steering.catch(() => {
+              // A failed steering attempt leaves its Input pending; it must not
+              // poison later steering or reject the active Turn's result.
+            });
           }
         }
       }
@@ -769,7 +776,10 @@ class SqliteRuntime implements Runtime {
         this.#activeOrientation = undefined;
         this.#opportunityRunning = false;
       }
-    }).catch(() => {});
+    }).catch(() => {
+      // The caller awaits the original completion promise. This derived
+      // finally promise exists only to release the in-memory running marker.
+    });
     let result: OrientationResult | "superseded";
     try {
       result = returnOnSupersede
@@ -941,7 +951,10 @@ class SqliteRuntime implements Runtime {
               const steering = active.steeringTail.then(async () => {
                 await this.#steerInput(active, inputId);
               });
-              active.steeringTail = steering.catch(() => {});
+              active.steeringTail = steering.catch(() => {
+                // A failed steering attempt leaves its Input pending; it must
+                // not poison later steering or reject the active Turn's result.
+              });
             }
           }
           this.#startHeartbeat("turn", claimed.turnId, claimed.fencingToken);
@@ -1802,7 +1815,10 @@ class SqliteRuntime implements Runtime {
     // race below still decides released vs intervention_required. A failing
     // domain cancel must not crash the input path — the grace window is the
     // backstop.
-    void active.cancel(reason).catch(() => {});
+    void active.cancel(reason).catch(() => {
+      // The persisted grace window, not the domain cancel callback, decides
+      // whether this work becomes cancelled or intervention_required.
+    });
     const settling = (async () => {
       const released = await new Promise<boolean>(resolve => {
         let settled = false;
@@ -1919,6 +1935,13 @@ class SqliteRuntime implements Runtime {
         }
         return;
       }
+      case "orientation":
+      case "tool-trace-compactor":
+        // These organs have no separate domain queue whose head can become
+        // stale; the shared work ledger is their complete requeue authority.
+        return;
+      default:
+        return assertNever(work.organ);
     }
   }
 

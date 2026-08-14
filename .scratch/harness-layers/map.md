@@ -1,6 +1,8 @@
 # Loom Harness Layers
 
-Status: active
+Status: historical archive
+
+> 连续建设历史档案：本目录记录 Loom 从 01 到 53 号的逐层建设过程。当前行为以代码、测试和正式 docs 为准；历史 ticket 与判断不回写，后续演化进入正式文档或新主题。
 
 ## Purpose
 
@@ -117,7 +119,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-当前主动工程工作是 [Raft Interaction Channel Ticket 04](../raft-channel/issues/04-implement-raft-interaction-channel.md)。它把已收束的 channel 设计实现为一项完整工作单元：Runtime Interaction facts、Main Agent/Orientation surface、Raft Adapter/Host 与运维材料先作为机械实现提交；真实 Raft-only acceptance 仍是关闭 ticket 的唯一门槛。HaL 的既有 Local 实例继续作为独立运行观察，接入 Raft 时不影响 Xi 或其他 Loom Instance。
+该建设阶段随后进入 [Raft Interaction Channel Ticket 04](../archive/raft-channel/issues/04-implement-raft-interaction-channel.md)（已归档）：把已收束的 channel 设计实现为一项完整工作单元，以真实 Raft-only acceptance 作为关闭门票的唯一门槛；HaL 的既有 Local 实例继续作为独立运行观察。当前状态以代码、测试和正式 docs 为准。
 
 ## Independent Development
 

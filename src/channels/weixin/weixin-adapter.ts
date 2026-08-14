@@ -309,7 +309,10 @@ class DefaultWeixinAdapter implements WeixinAdapter {
         }
       }
     } finally {
-      await this.remote.stop({ baseUrl: this.configuration.baseUrl, token: this.configuration.token }).catch(() => {});
+      await this.remote.stop({ baseUrl: this.configuration.baseUrl, token: this.configuration.token }).catch(() => {
+        // Polling has already stopped; remote cleanup failure must not mask the
+        // original poll failure or abort outcome.
+      });
     }
   }
 

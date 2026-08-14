@@ -161,7 +161,9 @@ async function writeState(stateFile: string, state: ThreadEvidenceState): Promis
     await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
     await rename(temporary, stateFile);
   } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
+    await rm(temporary, { force: true }).catch(() => {
+      // Best-effort staging cleanup must not replace the state-write failure.
+    });
     throw error;
   }
 }

@@ -16,10 +16,13 @@
     "test:fast": "npm run build && node scripts/run-tests.mjs 'dist/test/agents/**/*.test.js' 'dist/test/channels/**/*-parse.test.js' 'dist/test/configuration/**/*.test.js' 'dist/test/main-agent/**/*.test.js' 'dist/test/workspace/**/*.test.js'",
     "test:runtime": "npm run build && node scripts/run-tests.mjs 'dist/test/runtime/**/*.test.js'",
     "test:host": "npm run build && node scripts/run-tests.mjs 'dist/test/channels/**/*.test.js' 'dist/test/cli/**/*.test.js' 'dist/test/host/**/*.test.js' 'dist/test/instance/**/*.test.js' 'dist/test/integrations/**/*.test.js'",
+    "docs:check": "node scripts/check-markdown-links.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "github-slugger": "^2.0.0",
+    "marked": "^18.0.9",
     "typebox": "1.1.38",
     "typescript": "^7.0.2"
   },

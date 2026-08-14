@@ -1,8 +1,8 @@
 # Loom
 
-Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只承载一个 Agent Individual；Harness 提供连续时间、Workspace、认知器官和可靠的对外行动条件，但不内置具体个体的身份、关系或关切。
+Loom 是面向长期协作或关系主体的 Agent Harness。一个 Runtime Instance 只承载一个 Agent Individual；Harness 提供连续性、Workspace、认知器官和可靠的对外行动条件，不内置具体个体的身份、关系或关切。
 
-Loom 的目标不是替 Individual 决定生活内容，而是让一个能跨时间持续存在、主动、好奇且以人为中心的主体有稳定的运行条件。它来自真实运行经验的通用化，仍处于持续演进中。
+Loom 提供一个主动、好奇、独立且以人为中心的运行环境。它来自真实运行经验的通用化，仍处于持续演进中。
 
 ## 使用 Loom
 

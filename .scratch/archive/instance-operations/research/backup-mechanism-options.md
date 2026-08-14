@@ -15,7 +15,7 @@ objects, configuration and Individual material must describe one compatible
 point in time. Directly reading a live directory is therefore not yet an
 accepted consistency method: Loom uses several SQLite databases in WAL mode and
 also writes regular files. [Current state](current-state.md),
-[schema.ts](../../../src/runtime/schema.ts), [layout.ts](../../../src/instance/layout.ts)
+[schema.ts](../../../../src/runtime/schema.ts), [layout.ts](../../../../src/instance/layout.ts)
 
 ## Candidate Roles
 

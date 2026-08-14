@@ -2,6 +2,13 @@
 
 `.scratch/` 保存某个工程主题在推进期间形成的研究、方案和本地实施票。这里的内容记录的是当时的事实和决定，不是 Loom 当前行为或正式合同的事实源。
 
+## 目录导览
+
+- `.scratch/harness-layers/`：Loom 逐层建设历史档案（01→53 号），当前行为以代码、测试和正式 docs 为准
+- `.scratch/codebase/`：codebase 审查的时间轮次记录（rounds/）
+- `.scratch/archive/`：已完成且正式 docs 已承接的主题（raft-channel、instance-operations、web-access）
+- 新主题按下方「新建主题」约定创建
+
 ## 阅读
 
 - 只有当前任务明确引用某个主题时才进入对应目录。

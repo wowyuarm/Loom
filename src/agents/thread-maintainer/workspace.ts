@@ -136,7 +136,9 @@ async function atomicWrite(target: string, content: Buffer, mode: number): Promi
     await writeFile(temporary, content, { mode });
     await rename(temporary, target);
   } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
+    await rm(temporary, { force: true }).catch(() => {
+      // Best-effort staging cleanup must not replace the write failure.
+    });
     throw error;
   }
 }

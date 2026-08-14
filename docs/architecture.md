@@ -1,6 +1,6 @@
 # Loom 架构
 
-本文说明 Loom 各模块如何组合，以及数据如何在一个运行的 Instance 中流动。稳定术语先读 [CONTEXT.md](../../CONTEXT.md)，工程约定读 [AGENTS.md](../../AGENTS.md)。
+本文说明 Loom 各模块如何组合，以及数据如何在一个运行的 Instance 中流动。稳定术语先读 [CONTEXT.md](../CONTEXT.md)，工程约定读 [AGENTS.md](../AGENTS.md)。
 
 ## 执行模块
 

@@ -143,6 +143,8 @@ export class RaftActivityProjector {
         return result;
       }
       default:
+        // Operational events outside run/tool lifecycle have no Raft activity
+        // projection; adding one does not implicitly expose it to the UI.
         return [];
     }
   }

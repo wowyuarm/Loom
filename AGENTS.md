@@ -14,10 +14,13 @@ Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只�
 4. 与当前任务直接相关的 `docs/`；
 5. 任务明确引用的代码、测试和工作记录。
 
-按角色继续阅读：
+按需要继续阅读：
 
 - 规划、研究、问题收敛：[`docs/agents/planning-workflow.md`](docs/agents/planning-workflow.md)
 - 实现、验证、交接：[`docs/agents/execution-workflow.md`](docs/agents/execution-workflow.md)
+- TypeScript 实现：[`docs/agents/typescript-conventions.md`](docs/agents/typescript-conventions.md)
+- 测试选择与证据：[`docs/agents/testing-policy.md`](docs/agents/testing-policy.md)
+- 生命周期、并发、进程或文件删除：[`docs/agents/defensive-patterns.md`](docs/agents/defensive-patterns.md)
 - 本地问题记录格式：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
 - 任务状态：[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)
 
@@ -26,7 +29,7 @@ Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只�
 ## What is authoritative
 
 - 当前行为：代码、测试和真实运行状态。
-- 稳定合同：`README.md`、`CONTEXT.md`、`docs/` 和已接受的 ADR。
+- 稳定设计：`README.md`、`CONTEXT.md`、`docs/` 和已接受的 ADR。
 - 进行中的设计：任务合同和明确引用的 `.scratch/<topic>/` 记录。
 - 协作过程：讨论面、评审、部署和验收记录。
 
@@ -37,10 +40,12 @@ Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只�
 - 任务范围、依赖、完成证据和授权不清时，先指出缺口，不把猜测写成代码。
 - 修改共享代码前使用独立 worktree；不得覆盖其他人的未合入改动。
 - 一个提交对应一个闭合工作单元。交付时说明提交、验证结果、剩余边界和下一位动作。
+- commit message 使用简短的一行英语叙述即可。
 - 代码改动必须运行与风险相称的真实验证；没有运行就不要声称通过。
+- 测试是行为证据，不是产品合同本身；旧测试与已确认行为冲突时修正测试，不为通过测试扭曲正确逻辑。
 - 不提交凭据、个人 Instance Root、运行数据库或其他私有材料。
 - 实现、合并、部署、迁移和产品验收是不同动作；没有明确授权不得越过下一道边界。
-- 不预建空架构、通用框架或假想配置；只有真实需求出现时才增加结构。
+- 不过度防御或过度设计。只处理已经存在、边界上合理可预见，或一旦发生会造成明显损失的问题；能用现有结构直接解决，就不增加抽象、配置、兼容层、回退路径或通用框架。
 
 ## Skills
 

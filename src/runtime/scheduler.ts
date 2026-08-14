@@ -552,6 +552,8 @@ function deferredResult(
     case "agent_work_deferred":
       return { disposition: "deferred", reason: "agent_work_not_admitted" };
     default:
+      // Every other Advance result is settled or immediately runnable; it
+      // does not create a deferred Scheduler result.
       return undefined;
   }
 }

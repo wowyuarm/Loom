@@ -157,7 +157,7 @@ Runtime、Agent 或 Interaction Channel 的收发。
 - `src/channels/raft/raft-cli-remote.ts`
 - `docs/channels/raft.md`
 - `docs/adr/0001-keep-runtime-store-concrete-and-internal.md`
-- `.scratch/raft-channel/issues/07-complete-bridge-local-endpoints.md`
+- `.scratch/archive/raft-channel/issues/07-complete-bridge-local-endpoints.md`
 
 ### Raft 一手资料
 

@@ -119,7 +119,7 @@ Mechanical implementation is complete and committed with this ticket:
 - The full public test suite passes 314 tests together with typecheck, build and `git diff --check`.
   `npm audit --omit=dev` could not complete because the npm registry TLS connection ended before
   the advisory response; no security result is claimed.
-- [Raft Interaction Channel](../../../docs/integrations/raft.md) records the actual configuration,
+- [Raft Interaction Channel](../../../../docs/channels/raft.md) records the actual configuration,
   lifecycle, tool surface, limits and Operator Agent acceptance procedure.
 - The thread-context follow-up is mechanically implemented: `raft_open` now returns bounded message
   evidence and, for reply-thread refs, an anchor plus nearby replies. Public fake-remote and pinned
