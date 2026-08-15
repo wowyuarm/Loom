@@ -251,6 +251,10 @@ function aggregateAttentionSources(
             )
           : [];
       } catch {
+        // A corrupt or unreadable persisted evidence revision (e.g. a
+        // truncated journal after a crash) must not break the collection
+        // loop: the presented store simply stays as it was, and the next
+        // capture re-projects the same evidence.
         return;
       }
       for (const child of children) {

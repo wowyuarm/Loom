@@ -70,6 +70,19 @@ async function main() {
     console.log("Workspace mirror: not configured, no action");
     process.exit(0);
   }
+  // Fail-fast whitelist: the script owns the workspaceMirror contract now that
+  // the TypeScript side no longer parses this block. Unknown fields (e.g. the
+  // removed intervalMinutes) and malformed values are rejected instead of
+  // silently ignored or coerced.
+  const unknownFields = Object.keys(mirror).filter(key => !["enabled", "remote", "branch"].includes(key));
+  if (unknownFields.length > 0) {
+    console.error(`Workspace mirror: unknown workspaceMirror field(s): ${unknownFields.join(", ")}`);
+    process.exit(1);
+  }
+  if (typeof mirror.enabled !== "boolean") {
+    console.error("Workspace mirror: workspaceMirror.enabled must be a boolean");
+    process.exit(1);
+  }
   if (mirror.enabled !== true) {
     console.log("Workspace mirror: disabled, no action");
     process.exit(0);
@@ -79,7 +92,11 @@ async function main() {
     process.exit(1);
   }
   const remote = mirror.remote.trim();
-  const branch = typeof mirror.branch === "string" && mirror.branch.trim() ? mirror.branch.trim() : "main";
+  if (mirror.branch !== undefined && (typeof mirror.branch !== "string" || !mirror.branch.trim())) {
+    console.error("Workspace mirror: workspaceMirror.branch must be a non-empty string");
+    process.exit(1);
+  }
+  const branch = mirror.branch === undefined ? "main" : mirror.branch.trim();
 
   // Time zone for the commit message: use the configured instance time zone
   // when present, otherwise fall back to the machine time zone (same rule as

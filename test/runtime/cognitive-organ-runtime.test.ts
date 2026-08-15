@@ -346,13 +346,6 @@ test("fixes the Model Runtime Revision per attempt and links transcript and resu
   now = new Date("2026-07-19T11:01:00.001Z");
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
 
-  // The operator status carries references once the attempt completes.
-  const done = runtime.status().cognitiveOrganWork
-    .find(entry => entry.organ === "life-recorder")!;
-  assert.equal(done.status, "completed");
-  assert.equal(done.transcriptRef, "organs/life-recorder/run-2.jsonl");
-  assert.equal(done.resultRef, "daily/2026-07-19.md");
-
   runtime.close();
   const db = new DatabaseSync(path.join(root, "runtime.db"));
   const ledger = readLedger(db);

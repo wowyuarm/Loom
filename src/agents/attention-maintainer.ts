@@ -15,7 +15,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import type { FrozenActivity } from "../runtime/index.js";
+import type {
+  AttentionMaintenance,
+  AttentionMaintenanceRequest,
+  AttentionMaintenanceResult,
+  FrozenActivity,
+} from "../runtime/index.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
@@ -117,25 +122,7 @@ Not Current Attention:
 
 Do not modify any other file. A stable Current Attention is better left untouched than cosmetically rewritten.`;
 
-export interface AttentionMaintenanceRequest {
-  operationKey: string;
-  observedAt: string;
-  localTime: string;
-  recentActivities: FrozenActivity[];
-}
-
-export type AttentionMaintenanceResult = {
-  outcome: "updated" | "no_change";
-  runId: string;
-  path: typeof ATTENTION_PATH;
-};
-
-export interface AttentionMaintainer {
-  maintain(request: AttentionMaintenanceRequest): Promise<AttentionMaintenanceResult>;
-  cancel(reason: string): Promise<void>;
-}
-
-export interface PiAttentionMaintainerOptions {
+interface PiAttentionMaintainerOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
   transcriptDirectory: string;
@@ -146,7 +133,7 @@ export interface PiAttentionMaintainerOptions {
   mutationDirectory?: string;
 }
 
-class PiAttentionMaintainer implements AttentionMaintainer {
+class PiAttentionMaintainer implements AttentionMaintenance {
   #activeSession: PiSession | undefined;
   #cancelReason: string | undefined;
 
@@ -183,7 +170,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
         try {
           assertGrounded(attentionRead, supportingEvidenceRead);
         } catch (error) {
-          return { state: "rejected", error: errorMessage(error) };
+          return { state: "rejected", error: error instanceof Error ? error.message : String(error) };
         }
         const result: AttentionMaintenanceResult = {
           outcome: replacement === undefined ? "no_change" : "updated",
@@ -367,7 +354,7 @@ class PiAttentionMaintainer implements AttentionMaintainer {
 
 export async function createPiAttentionMaintainer(
   options: PiAttentionMaintainerOptions,
-): Promise<AttentionMaintainer> {
+): Promise<AttentionMaintenance> {
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
     mkdir(options.transcriptDirectory, { recursive: true }),
@@ -448,8 +435,4 @@ function toolResult(value: unknown) {
     content: [{ type: "text" as const, text: JSON.stringify(value) }],
     details: value,
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

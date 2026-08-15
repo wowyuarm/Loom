@@ -139,9 +139,7 @@ export interface PiLifeRecorderOptions {
   mutationDirectory?: string;
 }
 
-export type LifeRecorder = ActivityRecorder;
-
-class PiLifeRecorder implements LifeRecorder {
+class PiLifeRecorder implements ActivityRecorder {
   #activeSession: PiSession | undefined;
   #cancelReason: string | undefined;
 
@@ -410,7 +408,7 @@ class PiLifeRecorder implements LifeRecorder {
   }
 }
 
-export async function createPiLifeRecorder(options: PiLifeRecorderOptions): Promise<LifeRecorder> {
+export async function createPiLifeRecorder(options: PiLifeRecorderOptions): Promise<ActivityRecorder> {
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
     mkdir(options.transcriptDirectory, { recursive: true }),

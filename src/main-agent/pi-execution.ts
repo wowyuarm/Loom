@@ -69,7 +69,7 @@ import { presentInput } from "./pi/input.js";
 const MAIN_AGENT_BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
 
 type PiSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
-export type PiContextMessage = AgentMessage;
+type PiContextMessage = AgentMessage;
 
 /**
  * Consecutive tool failures within one Turn that trip the error circuit
@@ -113,11 +113,8 @@ export interface PiAgentExecution extends AgentExecution {
   close(): void;
 }
 
-export interface PiExecutionResult extends ExecutionResult {
-}
-
 export interface PiRunningExecution extends RunningExecution {
-  result: Promise<PiExecutionResult>;
+  result: Promise<ExecutionResult>;
 }
 
 interface ActiveTurn {
@@ -335,7 +332,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     request: TurnRequest,
     sessionManager: SessionManager,
     lifecycle: InputAnnotationLifecycle,
-  ): Promise<PiExecutionResult> {
+  ): Promise<ExecutionResult> {
     let session: PiSession | undefined;
     const messageDecision: MessageTurnDecision = { sent: 0, noReply: false };
     try {

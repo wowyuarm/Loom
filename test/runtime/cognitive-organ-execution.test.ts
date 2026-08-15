@@ -355,17 +355,6 @@ test("reconcile blocks work whose attempts are exhausted", () => {
   assert.deepEqual(ledger.attempts(work.id).map(a => a.status), ["failed", "failed", "failed"]);
 });
 
-test("nextDue returns only due retry_wait works", () => {
-  let now = new Date("2026-08-07T10:00:00.000Z");
-  const { ledger } = openLedger(() => now);
-  const { work: a } = ledger.begin("orientation", "pulse:1", "rev-1");
-  const { work: b } = ledger.begin("attention-maintainer", "place:p", "rev-1");
-  ledger.failAttempt(a.id, { failureCategory: "provider" });
-  ledger.failAttempt(b.id, { failureCategory: "provider" });
-
-  assert.deepEqual(ledger.nextDue(new Date("2026-08-07T10:00:59.999Z")), []);
-  assert.deepEqual(ledger.nextDue(new Date("2026-08-07T10:01:00.000Z")), [a.id, b.id]);
-});
 
 test("independent works of different organs do not interfere (concurrency boundary)", () => {
   let now = new Date("2026-08-07T10:00:00.000Z");

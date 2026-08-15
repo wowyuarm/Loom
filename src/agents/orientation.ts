@@ -119,7 +119,7 @@ export interface OrientationActionSpace {
   evidenceSources: string[];
 }
 
-export interface PiOrientationOptions {
+interface PiOrientationOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
   transcriptDirectory: string;
@@ -361,9 +361,8 @@ function parseResult(messages: AgentMessage[], runId: string): OrientationResult
   const text = message.content.flatMap(block => block.type === "text" ? [block.text] : []).join("\n").trim();
   const value = [...jsonObjectsIn(text)].reverse().find(candidate =>
     isObject(candidate) && (candidate.outcome === "opportunity" || candidate.outcome === "none"));
-  if (value === undefined) throw new Error("Orientation did not return a valid JSON result object");
-  if (!isObject(value) || (value.outcome !== "opportunity" && value.outcome !== "none")) {
-    throw new Error("Orientation returned an invalid outcome");
+  if (!isObject(value)) {
+    throw new Error("Orientation did not return a valid JSON result object");
   }
   const whyNow = nonBlank(value.whyNow, "whyNow");
   const evidence = stringArray(value.evidence, "evidence");

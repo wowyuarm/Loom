@@ -414,38 +414,15 @@ export class CognitiveOrganExecution {
     };
   }
 
-  /** Work ids in retry_wait whose backoff has elapsed. */
-  nextDue(now: Date): string[] {
-    const rows = this.#database.prepare(`
-      SELECT id FROM cognitive_work
-      WHERE status = 'retry_wait' AND next_attempt_at IS NOT NULL AND next_attempt_at <= ?
-      ORDER BY next_attempt_at
-    `).all(now.toISOString()) as Array<{ id: string }>;
-    return rows.map(row => row.id);
-  }
 
   /** Latest budget cycle of the organ (running / retry_wait / held / terminal). */
   currentWork(organ: CognitiveOrganName): CognitiveWorkRecord | undefined {
     const row = this.#database.prepare(`
-      SELECT id, organ, domain_ref, status, created_at, attempt_count,
-             next_attempt_at, requeued_from, last_cancel_reason, last_failure_category, last_error
-      FROM cognitive_work WHERE organ = ?
+      SELECT id FROM cognitive_work WHERE organ = ?
       ORDER BY created_at DESC, rowid DESC LIMIT 1
-    `).get(organ) as Record<string, unknown> | undefined;
+    `).get(organ) as { id: string } | undefined;
     if (!row) return undefined;
-    return {
-      id: row.id as string,
-      organ: row.organ as CognitiveOrganName,
-      domainRef: row.domain_ref as string,
-      status: row.status as CognitiveWorkStatus,
-      createdAt: row.created_at as string,
-      attemptCount: row.attempt_count as number,
-      ...optionalStringField(row, "next_attempt_at", "nextAttemptAt"),
-      ...optionalStringField(row, "requeued_from", "requeuedFrom"),
-      ...optionalStringField(row, "last_cancel_reason", "lastCancelReason"),
-      ...optionalStringField(row, "last_failure_category", "lastFailureCategory"),
-      ...optionalStringField(row, "last_error", "lastError"),
-    };
+    return this.#workRecord(row.id);
   }
 
   /**

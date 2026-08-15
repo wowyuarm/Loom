@@ -16,7 +16,12 @@ import {
 import { Type } from "typebox";
 
 import type { NmemWorkingMemoryReader } from "../integrations/nmem/index.js";
-import type { FrozenActivity } from "../runtime/index.js";
+import type {
+  FrozenActivity,
+  MemoryReflection,
+  MemoryReflectionRequest,
+  MemoryReflectionResult,
+} from "../runtime/index.js";
 import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../continuity-guidance.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
@@ -63,7 +68,7 @@ function normalizeMemoryEntryPath(value: string): string {
   return normalized;
 }
 
-export type CoreMaterial = keyof typeof MATERIAL_PATHS;
+type CoreMaterial = keyof typeof MATERIAL_PATHS;
 
 function memoryReflectorSystemPrompt(nmemEnabled: boolean): string {
   const evidenceLeads = nmemEnabled
@@ -223,25 +228,7 @@ Use replace_core_material for an authorized core material. Use write_memory_entr
 Finish after the warranted replacements are complete. Do not return advice.`;
 }
 
-export interface MemoryReflectionRequest {
-  reflectionDay: string;
-  observedAt: string;
-  localTime: string;
-  activities: FrozenActivity[];
-}
-
-export type MemoryReflectionResult = {
-  outcome: "updated" | "no_change";
-  runId: string;
-  changedMaterials: CoreMaterial[];
-};
-
-export interface MemoryReflector {
-  reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult>;
-  cancel(reason: string): Promise<void>;
-}
-
-export interface PiMemoryReflectorOptions {
+interface PiMemoryReflectorOptions {
   agentWorkspace: AgentWorkspace;
   agentDir: string;
   transcriptDirectory: string;
@@ -255,11 +242,14 @@ export interface PiMemoryReflectorOptions {
   mutationDirectory?: string;
 }
 
-class PiMemoryReflector implements MemoryReflector {
+class PiMemoryReflector implements MemoryReflection {
   #activeSession: PiSession | undefined;
   #cancelReason: string | undefined;
+  #nmemEnabled: boolean;
 
-  constructor(private readonly options: PiMemoryReflectorOptions) {}
+  constructor(private readonly options: PiMemoryReflectorOptions) {
+    this.#nmemEnabled = Boolean(options.workingMemoryReader && options.nmemRecallTool);
+  }
 
   async reflect(request: MemoryReflectionRequest): Promise<MemoryReflectionResult> {
     validateRequest(request);
@@ -297,9 +287,6 @@ class PiMemoryReflector implements MemoryReflector {
       validateAndCommit: async () => {
         try {
           assertGrounded(readBaselines, supportingEvidenceRead);
-          if (changedMaterials.length > 0) {
-            await validateCurrentMaterials(this.options.agentWorkspace.root);
-          }
           await validateMemoryIndex(this.options.agentWorkspace.root);
         } catch (error) {
           return { state: "rejected", error: errorMessage(error) };
@@ -350,7 +337,7 @@ class PiMemoryReflector implements MemoryReflector {
           });
         },
       }),
-      ...(this.options.workingMemoryReader && this.options.nmemRecallTool ? [defineTool({
+      ...(this.#nmemEnabled ? [defineTool({
         name: "read_nmem_working_memory",
         label: "Read nmem Working Memory",
         description: [
@@ -367,7 +354,7 @@ class PiMemoryReflector implements MemoryReflector {
           return toolResult({ type: "loom.nmem-working-memory-evidence", version: 1, ...evidence });
         },
       }),
-      observeRecallTool(this.options.nmemRecallTool)] : []),
+      observeRecallTool(this.options.nmemRecallTool!)] : []),
       defineTool({
         name: "replace_core_material",
         label: "Replace Core Material",
@@ -489,40 +476,14 @@ class PiMemoryReflector implements MemoryReflector {
           try {
             result = await execute(toolCallId, params, signal, onUpdate, context);
           } catch (error) {
-            const requested = tool.name === "read"
-              ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
-              : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
-            if (isOptionalMissingMaterial(tool.name, requested, error)) {
-              if (tool.name === "read" && isMemoryEntryPath(requested)) {
-                readMemoryFiles.add(requested);
-                memoryNextOffsets.delete(requested);
-              }
-              return toolResult({
-                type: "loom.workspace-material",
-                version: 1,
-                path: requested,
-                status: "missing",
-              });
-            }
+            const missing = missingMaterialOrThrow(tool.name, params, error);
+            if (missing) return missing;
             throw error;
           }
           const resultError = result as unknown as { isError?: boolean };
           if (resultError.isError) {
-            const requested = tool.name === "read"
-              ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
-              : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
-            if (isOptionalMissingMaterial(tool.name, requested, result)) {
-              if (tool.name === "read" && isMemoryEntryPath(requested)) {
-                readMemoryFiles.add(requested);
-                memoryNextOffsets.delete(requested);
-              }
-              return toolResult({
-                type: "loom.workspace-material",
-                version: 1,
-                path: requested,
-                status: "missing",
-              });
-            }
+            const missing = missingMaterialOrThrow(tool.name, params, result);
+            if (missing) return missing;
           }
           if (tool.name === "read") {
             const readParams = params as { path?: unknown; offset?: unknown; limit?: unknown };
@@ -578,6 +539,27 @@ class PiMemoryReflector implements MemoryReflector {
       };
     }
 
+    function missingMaterialOrThrow(
+      toolName: string,
+      params: unknown,
+      failure: unknown,
+    ): ReturnType<typeof toolResult> | undefined {
+      const requested = toolName === "read"
+        ? normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? ""))
+        : normalizeWorkspacePath(workspaceRoot, String((params as { path?: unknown }).path ?? "."));
+      if (!isOptionalMissingMaterial(toolName, requested, failure)) return undefined;
+      if (toolName === "read" && isMemoryEntryPath(requested)) {
+        readMemoryFiles.add(requested);
+        memoryNextOffsets.delete(requested);
+      }
+      return toolResult({
+        type: "loom.workspace-material",
+        version: 1,
+        path: requested,
+        status: "missing",
+      });
+    }
+
     function observeRecallTool(tool: ToolDefinition): ToolDefinition {
       if (tool.name !== "nmem_recall") throw new Error("Memory Reflector requires the nmem_recall tool");
       const execute = tool.execute.bind(tool);
@@ -628,7 +610,7 @@ class PiMemoryReflector implements MemoryReflector {
       noThemes: true,
       noContextFiles: true,
       systemPromptOverride: () => [
-        memoryReflectorSystemPrompt(Boolean(this.options.workingMemoryReader && this.options.nmemRecallTool)),
+        memoryReflectorSystemPrompt(this.#nmemEnabled),
         "",
         "<current_stable_facts>",
         stableFacts.trim(),
@@ -663,7 +645,7 @@ class PiMemoryReflector implements MemoryReflector {
       const result = await organSession.run(session, buildRunPrompt(
         request,
         runId,
-        Boolean(this.options.workingMemoryReader && this.options.nmemRecallTool),
+        this.#nmemEnabled,
         memoryCoreBytes,
       ));
       if (!result.result) throw new Error("Memory Reflector did not finish");
@@ -678,7 +660,7 @@ class PiMemoryReflector implements MemoryReflector {
   }
 }
 
-export async function createPiMemoryReflector(options: PiMemoryReflectorOptions): Promise<MemoryReflector> {
+export async function createPiMemoryReflector(options: PiMemoryReflectorOptions): Promise<MemoryReflection> {
   await Promise.all([
     mkdir(options.agentDir, { recursive: true }),
     mkdir(options.transcriptDirectory, { recursive: true }),
@@ -767,12 +749,6 @@ async function backupMaterials(
   }
 }
 
-async function validateCurrentMaterials(root: string): Promise<void> {
-  const baseline = await loadBaseline(root);
-  for (const relativePath of Object.values(MATERIAL_PATHS)) {
-    if (!baseline.get(relativePath)?.trim()) throw new Error(`Core material ${relativePath} is empty`);
-  }
-}
 
 async function validateMemoryIndex(root: string): Promise<void> {
   const memorySource = await readFile(path.join(root, "memory.md"), "utf8");

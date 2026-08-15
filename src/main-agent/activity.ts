@@ -274,7 +274,7 @@ function bridgeMessage(activities: Array<{
         "</recent_activity>",
       ].join("\n"),
     }],
-    timestamp: Date.parse(activities.at(-1)?.closedAt ?? new Date(0).toISOString()),
+    timestamp: Date.parse(activities.at(-1)!.closedAt),
   }), references };
 }
 

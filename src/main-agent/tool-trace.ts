@@ -376,9 +376,13 @@ function replaceRawInteraction(
 
 function replaceExpandedInteraction(messages: AgentMessage[], interaction: ExpandedInteraction): void {
   const callMessage = messages[interaction.messageIndex]!;
-  if (callMessage.role !== "assistant" || !Array.isArray(callMessage.content)) return;
+  if (callMessage.role !== "assistant" || !Array.isArray(callMessage.content)) {
+    throw new Error(`Context tool call ${interaction.toolCallId} changed during compaction`);
+  }
   const block = callMessage.content[interaction.blockIndex];
-  if (!block || block.type !== "toolCall") return;
+  if (!block || block.type !== "toolCall") {
+    throw new Error(`Context tool call ${interaction.toolCallId} changed during compaction`);
+  }
   callMessage.content[interaction.blockIndex] = {
     ...block,
     arguments: {
@@ -390,7 +394,9 @@ function replaceExpandedInteraction(messages: AgentMessage[], interaction: Expan
     },
   };
   const result = messages[interaction.resultIndex]!;
-  if (result.role !== "toolResult") return;
+  if (result.role !== "toolResult") {
+    throw new Error(`Context tool result ${interaction.toolCallId} changed during compaction`);
+  }
   result.content = [{
     type: "text",
     text: JSON.stringify({

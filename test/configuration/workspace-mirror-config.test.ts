@@ -39,7 +39,7 @@ test("workspaceMirror is undefined when not configured", async () => {
   });
 });
 
-test("workspaceMirror parses enabled/remote/branch/intervalMinutes with defaults", async () => {
+test("workspaceMirror parses enabled/remote/branch with defaults", async () => {
   const yaml = BASE + "workspaceMirror:\n  enabled: true\n  remote: git@github.com:wowyuarm/loom-hal-workspace.git\n";
   await withConfig(yaml, async file => {
     const config = await loadInstanceConfiguration({ file });
@@ -47,24 +47,24 @@ test("workspaceMirror parses enabled/remote/branch/intervalMinutes with defaults
       enabled: true,
       remote: "git@github.com:wowyuarm/loom-hal-workspace.git",
       branch: "main",
-      intervalMinutes: 30,
     });
   });
 });
 
-test("workspaceMirror honors explicit branch and intervalMinutes", async () => {
+test("workspaceMirror honors explicit branch and rejects intervalMinutes", async () => {
   const yaml = BASE + [
     "workspaceMirror:",
     "  enabled: true",
     "  remote: git@github.com:wowyuarm/loom-xi-workspace.git",
     "  branch: mirror",
-    "  intervalMinutes: 60",
     "",
   ].join("\n");
   await withConfig(yaml, async file => {
     const config = await loadInstanceConfiguration({ file });
     assert.equal(config.workspaceMirror?.branch, "mirror");
-    assert.equal(config.workspaceMirror?.intervalMinutes, 60);
+  });
+  await withConfig(BASE + "workspaceMirror:\n  enabled: true\n  remote: r\n  intervalMinutes: 60\n", async file => {
+    await assert.rejects(loadInstanceConfiguration({ file }), /unknown fields/);
   });
 });
 
@@ -78,9 +78,7 @@ test("workspaceMirror rejects unknown keys and bad values", async () => {
   await withConfig(BASE + "workspaceMirror:\n  enabled: \"yes\"\n  remote: r\n", async file => {
     await assert.rejects(loadInstanceConfiguration({ file }), /enabled/);
   });
-  await withConfig(BASE + "workspaceMirror:\n  enabled: true\n  remote: r\n  intervalMinutes: 0\n", async file => {
-    await assert.rejects(loadInstanceConfiguration({ file }), /intervalMinutes/);
-  });
+
 });
 
 test("orientation is undefined when not configured", async () => {

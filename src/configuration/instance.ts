@@ -23,15 +23,11 @@ export interface OrientationConfiguration {
   };
 }
 
-export const DEFAULT_ORIENTATION: OrientationConfiguration = Object.freeze({
-  harnessConditions: Object.freeze({ enabled: false }),
-});
 
 export interface WorkspaceMirrorConfiguration {
   enabled: boolean;
   remote: string;
   branch: string;
-  intervalMinutes: number;
 }
 
 export interface ChannelConfiguration {
@@ -183,7 +179,7 @@ function parseOrientation(value: unknown): OrientationConfiguration {
 
 function parseWorkspaceMirror(value: unknown): WorkspaceMirrorConfiguration {
   if (!isObject(value)) throw new Error("Instance Configuration workspaceMirror must be an object");
-  assertOnlyKeys(value, ["enabled", "remote", "branch", "intervalMinutes"], "Instance Configuration workspaceMirror");
+  assertOnlyKeys(value, ["enabled", "remote", "branch"], "Instance Configuration workspaceMirror");
   if (typeof value.enabled !== "boolean") {
     throw new Error("Instance Configuration workspaceMirror.enabled must be a boolean");
   }
@@ -194,14 +190,10 @@ function parseWorkspaceMirror(value: unknown): WorkspaceMirrorConfiguration {
   if (typeof branch !== "string" || !branch.trim()) {
     throw new Error("Instance Configuration workspaceMirror.branch must be a non-empty string");
   }
-  const intervalMinutes = value.intervalMinutes === undefined
-    ? 30
-    : parsePositiveMinutes(value.intervalMinutes, "Instance Configuration workspaceMirror.intervalMinutes", 30);
   return {
     enabled: value.enabled,
     remote: value.remote.trim(),
     branch: branch.trim(),
-    intervalMinutes,
   };
 }
 

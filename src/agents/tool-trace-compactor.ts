@@ -188,9 +188,6 @@ function parseCompactionResult(raw: string, expectedIds: string[]): ToolTraceCom
     }
     details.set(candidate.toolCallId, candidate as unknown as ToolTraceCompactionDetail);
   }
-  if (details.size !== expectedIds.length) {
-    throw new Error("Tool Trace Compactor returned an incomplete result set");
-  }
   return expectedIds.map(id => details.get(id)!);
 }
 

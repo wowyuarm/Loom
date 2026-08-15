@@ -26,7 +26,6 @@ workspaceMirror:
   enabled: true
   remote: git@github.com:wowyuarm/loom-xi-workspace.git
   branch: main            # 可选，默认 main
-  intervalMinutes: 30     # 可选，默认 30
 ```
 
 | 字段 | 类型 | 默认 | 含义 |
@@ -34,10 +33,10 @@ workspaceMirror:
 | `enabled` | boolean | — | 是否启用镜像。 |
 | `remote` | string | — | 私有 remote URL（SSH 形式，如 `git@github.com:...`）。启用时必须提供。 |
 | `branch` | string | `main` | 镜像推送的目标分支。 |
-| `intervalMinutes` | number | `30` | 镜像轮询间隔分钟数，必须为正整数。 |
 
-配置解析是白名单校验：`workspaceMirror` 只接受上述四个字段，未知字段或非法值
+配置解析是白名单校验：`workspaceMirror` 只接受上述三个字段，未知字段或非法值
 会在配置加载时报错。配置变更在下次镜像轮询时生效（脚本每轮重新读取配置）。
+轮询节奏由 systemd timer 决定，不由配置控制。
 
 ### 凭据：实例账号的 SSH deploy key
 

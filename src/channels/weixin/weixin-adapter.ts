@@ -116,7 +116,6 @@ export interface OpenWeixinAdapterOptions {
   remote?: WeixinRemote;
 }
 
-export interface OpenConfiguredWeixinAdapterOptions extends OpenWeixinAdapterOptions {}
 
 interface WeixinConfiguration {
   routeRef: string;
@@ -378,7 +377,7 @@ export async function openWeixinAdapter(options: OpenWeixinAdapterOptions): Prom
 }
 
 export async function openConfiguredWeixinAdapter(
-  options: OpenConfiguredWeixinAdapterOptions,
+  options: OpenWeixinAdapterOptions,
 ): Promise<WeixinAdapter | undefined> {
   const [hasConfiguration, hasAuth] = await Promise.all([
     fileExists(options.configurationFile),
@@ -418,6 +417,9 @@ async function toRuntimeInput(
   attachmentStore: AttachmentStore,
   signal: AbortSignal,
 ): Promise<RuntimeInput | undefined> {
+  // Wire-boundary filtering, not a defect: incoming messages that are not
+  // from the configured peer, not a user message, or not finished are not
+  // Inputs by contract and are silently dropped here.
   if (message.from !== configuration.peerId || message.messageType !== "user" || message.messageState !== "finished") return undefined;
   if (!message.messageId) return undefined;
   const text = (message.items ?? [])
@@ -442,6 +444,9 @@ async function toRuntimeInput(
         content: downloaded.content,
       })
     : undefined;
+  // Messages carrying neither text nor a downloadable attachment produce no
+  // Input; the wire contract keeps them out of the Runtime rather than
+  // surfacing empty interactions.
   if (!text && !attachment) return undefined;
   const occurredAt = message.createTimeMs === undefined ? undefined : new Date(message.createTimeMs);
   if (occurredAt && !Number.isFinite(occurredAt.getTime())) return undefined;

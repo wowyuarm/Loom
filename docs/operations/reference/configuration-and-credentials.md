@@ -24,7 +24,7 @@ Keep assembly choices, credentials and runtime state separate:
 rejected. `version` must be `1`. A Channel or Integration is assembled only when its `enabled` value is
 true (all channels and integrations are off by default). At least one Interaction Channel must be enabled: a configuration with zero
 enabled Channels is rejected when the Host opens. `workspaceMirror` is an
-optional block (enabled/remote/branch/intervalMinutes); the mirror is only
+optional block (enabled/remote/branch); the mirror is only
 assembled when configured (see
 [Workspace Mirror Integration](../../integrations/workspace-mirror.md)).
 
