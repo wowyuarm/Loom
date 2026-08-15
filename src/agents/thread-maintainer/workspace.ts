@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { durableWrite } from "../../workspace/workspace-mutation.js";
 import type { WorkspaceWriteOutcome } from "../../workspace/workspace-mutation.js";
 import { enforceWorkspaceWriteLimit } from "../../workspace/workspace-write-limits.js";
 
@@ -59,7 +59,7 @@ export class ThreadWorkspaceTransaction {
       };
     }
     try {
-      await atomicWrite(target, next, mode);
+      await durableWrite(target, next, mode);
     } catch (error) {
       return { state: "uncertain", error: errorMessage(error) };
     }
@@ -127,20 +127,6 @@ function diff(before: ThreadWorkspaceSnapshot, after: ThreadWorkspaceSnapshot): 
       return !left || !right || left.mode !== right.mode || !left.content.equals(right.content);
     })
     .sort();
-}
-
-async function atomicWrite(target: string, content: Buffer, mode: number): Promise<void> {
-  await mkdir(path.dirname(target), { recursive: true });
-  const temporary = `${target}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, content, { mode });
-    await rename(temporary, target);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {
-      // Best-effort staging cleanup must not replace the write failure.
-    });
-    throw error;
-  }
 }
 
 async function exists(target: string): Promise<boolean> {

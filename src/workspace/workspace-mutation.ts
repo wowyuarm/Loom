@@ -601,7 +601,7 @@ function isFileSnapshot(value: unknown): value is FileSnapshot {
         && isFileMode(value.mode));
 }
 
-async function durableWrite(file: string, content: Buffer, mode: number): Promise<void> {
+export async function durableWrite(file: string, content: Buffer, mode: number): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   const handle = await open(temporary, "wx", mode);

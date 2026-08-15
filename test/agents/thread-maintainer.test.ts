@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -615,4 +615,26 @@ test("ThreadWorkspaceTransaction enforces the byte limit and stays usable after 
   // The transaction remains usable after a rejected write.
   assert.deepEqual(await transaction.write("index.md", "small index\n"), { state: "applied" });
   assert.equal(await readFile(path.join(threadsRoot, "index.md"), "utf8"), "small index\n");
+});
+
+test("ThreadWorkspaceTransaction returns uncertain and leaves no residue when the durable write fails", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-thread-uncertain-"));
+  const { ThreadWorkspaceTransaction } = await import("../../src/agents/thread-maintainer/workspace.js");
+  const threadsRoot = path.join(root, "threads");
+  const blocked = path.join(threadsRoot, "blocked");
+  await mkdir(blocked, { recursive: true });
+  await writeFile(path.join(blocked, "entry.md"), "original\n", { mode: 0o600 });
+  // A read-only parent directory makes the durable staging file fail to open.
+  await chmod(blocked, 0o555);
+  t.after(async () => {
+    await chmod(blocked, 0o755).catch(() => {});
+  });
+  const transaction = await ThreadWorkspaceTransaction.begin(threadsRoot);
+  const outcome = await transaction.write("blocked/entry.md", "changed\n");
+  assert.equal(outcome.state, "uncertain");
+  // The target is untouched, no staging file remains, and the transaction
+  // reports no mutation so the outer tree rollback stays a no-op.
+  assert.equal(await readFile(path.join(blocked, "entry.md"), "utf8"), "original\n");
+  assert.deepEqual(await readdir(blocked), ["entry.md"]);
+  assert.equal(transaction.mutated, false);
 });
