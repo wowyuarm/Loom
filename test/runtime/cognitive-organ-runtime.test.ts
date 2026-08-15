@@ -1965,3 +1965,94 @@ test("a requeued thread head gates Reflection until the successor completes", as
   assert.equal(released.reflectionDay, "2026-07-19");
   assert.equal(reflectCalls, 1);
 });
+
+test("a foreground Input submitted immediately after an organ starts is cancelled (no claim→run scheduling gap)", async t => {
+  // Regression: the shared #driveCognitiveOrgan driver must set the active
+  // organ in the same synchronous tick as the ledger/domain claim, so a human
+  // Input arriving in the next microtask still cancels it.
+  const root = await mkdtemp(path.join(tmpdir(), "loom-organ-cancel-same-tick-"));
+  let now = new Date("2026-07-19T12:00:00.000Z");
+  const attended = deferred<{ outcome: "no_change"; runId: string; path: string }>();
+  let cancelCalls = 0;
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, "record"),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => attended.promise,
+      cancel: async () => {
+        cancelCalls += 1;
+      },
+    },
+    memoryReflection: {
+      reflect: async () => ({ outcome: "no_change", runId: "reflection", changedMaterials: [] }),
+      cancel: async () => {},
+    },
+    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 10_000 },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  // Establish one recorded Activity and both maintenance schedules, mirroring
+  // the held-organ cancel test above, so that at due time attention is the only
+  // organ that can claim (life-recorder and thread are settled) and no active
+  // organ is left lingering.
+  await runtime.acceptInput({ source: "test", sourceId: "day-one", kind: "interaction", payload: { text: "day one" } });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+  assert.equal(
+    (await runtime.runMemoryReflection({
+      observedAt: now,
+      delayMs: 0,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    })).disposition,
+    "waiting",
+  );
+  assert.equal(
+    (await runtime.runAttentionMaintenance({
+      observedAt: now,
+      initialDelayMs: 1,
+      cadenceMs: 60_000,
+      retryDelayMs: 30_000,
+      agentWork: "allow",
+    })).disposition,
+    "waiting",
+  );
+
+  // Due time: start attention and, WITHOUT awaiting the run, submit a
+  // foreground human Input in the same synchronous tick. The Input must find
+  // the active organ and trigger its cancel; otherwise a gap between the
+  // ledger/domain claim and the active-organ assignment swallows the cancel.
+  now = new Date("2026-07-20T04:00:01.000Z");
+  const attentionRun = runtime.runAttentionMaintenance({
+    observedAt: now,
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  });
+  const human = await runtime.acceptInput({
+    source: "test",
+    sourceId: "human-same-tick",
+    kind: "interaction",
+    payload: { text: "please stop" },
+  });
+  assert.equal(human.disposition, "accepted");
+  // The active organ must have been visible to #cancelActiveCognitiveOrgan.
+  assert.equal(cancelCalls, 1, "the foreground Input must cancel the just-started organ");
+
+  // Release the organ run; the canceled attempt settles to a busy lane.
+  attended.resolve({ outcome: "no_change", runId: "run-1", path: "daily/2026-07-19.md" });
+  assert.equal((await attentionRun).disposition, "busy");
+  assert.equal(
+    runtime.status().inputs.find(input => input.id === human.inputId)?.status,
+    "pending",
+  );
+});
