@@ -210,9 +210,14 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     if (this.#stopped) return;
     this.#stopped = true;
     this.#controller?.abort();
-    await this.#running;
-    this.#state = { ...this.#state, state: "stopped" };
-    this.#database.close();
+    try {
+      await this.#running;
+    } finally {
+      // Channel state converges even when remote shutdown failed; the failure
+      // still propagates to the caller instead of being discarded.
+      this.#state = { ...this.#state, state: "stopped" };
+      this.#database.close();
+    }
   }
 
   async deliver(attempt: DeliveryAttemptRequest): Promise<DeliveryObservation> {
@@ -308,10 +313,22 @@ class DefaultWeixinAdapter implements WeixinAdapter {
         }
       }
     } finally {
-      await this.remote.stop({ baseUrl: this.configuration.baseUrl, token: this.configuration.token }).catch(() => {
-        // Polling has already stopped; remote cleanup failure must not mask the
-        // original poll failure or abort outcome.
-      });
+      // Await remote shutdown: stop() must not return while the remote may
+      // still be delivering. A failed notify-stop is recorded instead of being
+      // discarded or propagated: poll/abort failures already won precedence
+      // inside the loop (degraded state / abort break), and propagating here
+      // would block the Host's channel-state convergence.
+      try {
+        await this.remote.stop({ baseUrl: this.configuration.baseUrl, token: this.configuration.token });
+      } catch (error) {
+        // Preserve original poll/abort error precedence: only record the
+        // failed notify-stop when no ingress failure already owns lastError.
+        if (!this.#readState().last_error) {
+          const message = errorMessage(error);
+          this.#writeState({ lastError: message });
+          this.#state = { ...this.#state, state: "degraded", lastError: message };
+        }
+      }
     }
   }
 

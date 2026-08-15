@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -449,6 +450,91 @@ test("times out a hung Raft CLI command and reports it as retryable", async () =
   assert.match(error.message, /timed out after 150ms/);
 });
 
+test("stop waits for bridge close after SIGTERM and preserves exit-code facts", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-stop-exit-"));
+  const cli = path.join(root, "exit-raft.mjs");
+  await writeFile(cli, exitCodeCli(), "utf8");
+  const remote = await openRaftCliRemote({
+    profile: "loom-pilot",
+    expectedServerId: "server-1",
+    expectedSelfMemberId: "agent-loom",
+    expectedPrincipalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    bridgeStateDirectory: path.join(root, "bridge"),
+    cliEntrypoint: cli,
+  });
+  assert.ok(remote.start);
+  assert.ok(remote.stop);
+  await remote.start(async () => ({ ok: true }));
+  await remote.stop();
+  const exitedStatus = remote.status?.();
+  assert.equal(exitedStatus?.available, false);
+  // The non-zero exit code is preserved as a distinct fact instead of being
+  // reported as a signal death or a timeout.
+  assert.match(exitedStatus?.lastError ?? "", /code 3/);
+  assert.doesNotMatch(exitedStatus?.lastError ?? "", /signal|did not exit/);
+});
+
+test("stop returns within an upper bound and reports a timeout when the bridge ignores SIGTERM", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-stop-timeout-"));
+  const cli = path.join(root, "stubborn-raft.mjs");
+  await writeFile(cli, stubbornCli(), "utf8");
+  const remote = await openRaftCliRemote({
+    profile: "loom-pilot",
+    expectedServerId: "server-1",
+    expectedSelfMemberId: "agent-loom",
+    expectedPrincipalMemberId: "human-yu",
+    principalDmTarget: "dm:@yu",
+    bridgeStateDirectory: path.join(root, "bridge"),
+    cliEntrypoint: cli,
+  });
+  assert.ok(remote.start);
+  assert.ok(remote.stop);
+  await remote.start(async () => ({ ok: true }));
+
+  const started = Date.now();
+  await remote.stop();
+  const elapsed = Date.now() - started;
+  // The upper bound is 3s; stop must never hang. Allow generous slack for slow CI.
+  assert.ok(elapsed < 10_000, `stop took ${elapsed}ms`);
+  const timedOutStatus = remote.status?.();
+  assert.match(timedOutStatus?.lastError ?? "", /did not exit within/);
+  // A late close after the SIGKILL must not overwrite the timeout fact.
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.match(remote.status?.().lastError ?? "", /did not exit within/);
+});
+
+test("stop does not leave a timer keeping the process alive", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-stop-timer-"));
+  const cli = path.join(root, "exit-raft.mjs");
+  await writeFile(cli, exitCodeCli(), "utf8");
+  const entrypoint = new URL("../../src/channels/raft/raft-cli-remote.js", import.meta.url).href;
+  const script = `
+    import { openRaftCliRemote } from ${JSON.stringify(entrypoint)};
+    const remote = await openRaftCliRemote({
+      profile: "loom-pilot",
+      expectedServerId: "server-1",
+      expectedSelfMemberId: "agent-loom",
+      expectedPrincipalMemberId: "human-yu",
+      principalDmTarget: "dm:@yu",
+      bridgeStateDirectory: ${JSON.stringify(path.join(root, "bridge"))},
+      cliEntrypoint: ${JSON.stringify(cli)},
+    });
+    await remote.start(async () => ({ ok: true }));
+    await remote.stop();
+    console.log("child-stop-done");
+  `;
+  const started = Date.now();
+  execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const elapsed = Date.now() - started;
+  // A prompt SIGTERM stop returns in ~100ms; a leftover 3s bound timer would
+  // hold the child process open well past one second.
+  assert.ok(elapsed < 2_000, `child stayed alive ${elapsed}ms after stop`);
+});
+
 test("thread task, mention and other-task resolves do not query channel members", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-raft-cli-signal-"));
   const cli = path.join(root, "fake-raft.mjs");
@@ -480,6 +566,62 @@ test("thread task, mention and other-task resolves do not query channel members"
     delete process.env.LOOM_TEST_COUNT_FILE;
   }
 });
+
+function stubbornCli(): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const command = args[0] === "--profile" ? args.slice(2) : args;
+process.on("SIGTERM", () => {
+  // Deliberately ignore SIGTERM: exercises the bounded stop timeout.
+});
+if (command[0] === "--version") {
+  process.stdout.write(${JSON.stringify(`${SUPPORTED_RAFT_CLI_VERSION}\n`)});
+  process.exit(0);
+} else if (command[0] === "agent" && command[1] === "bridge") {
+  process.stdout.write(JSON.stringify({ type: "bridge_process_started", pid: process.pid, mode: "poll" }) + "\\n");
+  setInterval(() => {}, 60_000);
+} else if (command.join(" ") === "auth whoami") {
+  process.stdout.write(JSON.stringify({ ok: true, data: { agentId: "agent-loom", serverId: "server-1" } }) + "\\n");
+} else if (command[0] === "profile" && command[1] === "show") {
+  const target = command.find(value => value.startsWith("@"));
+  const profiles = {
+    self: { id: "agent-loom", kind: "agent", name: "loom", displayName: "Loom Individual", description: "A continuing Individual." },
+    "@yu": { id: "human-yu", kind: "human", name: "Yu", displayName: "Yu", description: "Long-term counterpart: operator" },
+  };
+  process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
+} else {
+  setInterval(() => {}, 60_000);
+}
+`;
+}
+
+function exitCodeCli(): string {
+  return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+const command = args[0] === "--profile" ? args.slice(2) : args;
+process.on("SIGTERM", () => {
+  process.exit(3);
+});
+if (command[0] === "--version") {
+  process.stdout.write(${JSON.stringify(`${SUPPORTED_RAFT_CLI_VERSION}\n`)});
+  process.exit(0);
+} else if (command[0] === "agent" && command[1] === "bridge") {
+  process.stdout.write(JSON.stringify({ type: "bridge_process_started", pid: process.pid, mode: "poll" }) + "\\n");
+  setInterval(() => {}, 60_000);
+} else if (command.join(" ") === "auth whoami") {
+  process.stdout.write(JSON.stringify({ ok: true, data: { agentId: "agent-loom", serverId: "server-1" } }) + "\\n");
+} else if (command[0] === "profile" && command[1] === "show") {
+  const target = command.find(value => value.startsWith("@"));
+  const profiles = {
+    self: { id: "agent-loom", kind: "agent", name: "loom", displayName: "Loom Individual", description: "A continuing Individual." },
+    "@yu": { id: "human-yu", kind: "human", name: "Yu", displayName: "Yu", description: "Long-term counterpart: operator" },
+  };
+  process.stdout.write(JSON.stringify({ ok: true, data: profiles[target ?? "self"] }) + "\\n");
+} else {
+  setInterval(() => {}, 60_000);
+}
+`;
+}
 
 function hangCli(): string {
   return `#!/usr/bin/env node

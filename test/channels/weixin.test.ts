@@ -619,6 +619,39 @@ test("retries once without an expired peer context inside the same Delivery atte
   assert.equal(sends[0]?.clientId, sends[1]?.clientId);
 });
 
+function pollThenStopFailRemote(): WeixinRemote {
+  let polls = 0;
+  return {
+    start: async () => {},
+    poll: async () => {
+      polls += 1;
+      if (polls === 1) throw new Error("original poll failure");
+      throw new Error("unexpected second poll");
+    },
+    downloadImage: async () => { throw new Error("no image expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    stop: async () => { throw new Error("remote shutdown failed"); },
+  };
+}
+
+function failingStopRemote(): WeixinRemote {
+  let polls = 0;
+  return {
+    start: async () => {},
+    poll: async request => {
+      polls += 1;
+      if (polls === 1) return { messages: [] };
+      await aborted(request.signal);
+      return { messages: [] };
+    },
+    downloadImage: async () => { throw new Error("no image expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    stop: async () => { throw new Error("remote shutdown failed"); },
+  };
+}
+
 function blockingRemote(options: {
   cursors: string[];
   firstPoll: Awaited<ReturnType<WeixinRemote["poll"]>>;
@@ -642,6 +675,38 @@ function blockingRemote(options: {
     stop: async () => {},
   };
 }
+
+test("stop failure does not overwrite an earlier poll failure", async t => {
+  const paths = await weixinPaths();
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote: pollThenStopFailRemote(),
+  });
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => adapter.status().state === "degraded");
+  assert.match(adapter.status().lastError ?? "", /original poll failure/);
+  await adapter.stop();
+  // The original poll failure keeps precedence; the failed notify-stop is
+  // awaited but must not replace it.
+  assert.equal(adapter.status().state, "stopped");
+  assert.match(adapter.status().lastError ?? "", /original poll failure/);
+  assert.doesNotMatch(adapter.status().lastError ?? "", /remote shutdown failed/);
+});
+
+test("stop awaits remote shutdown, records its failure, and still converges", async t => {
+  const paths = await weixinPaths();
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote: failingStopRemote(),
+  });
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => adapter.status().state === "connected");
+  await adapter.stop();
+  // The failed notify-stop is awaited and recorded, not discarded; the adapter
+  // still converges to stopped so the Host can proceed with channel teardown.
+  assert.equal(adapter.status().state, "stopped");
+  assert.match(adapter.status().lastError ?? "", /remote shutdown failed/);
+});
 
 async function weixinPaths(): Promise<{
   configurationFile: string;

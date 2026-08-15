@@ -73,6 +73,9 @@ export interface OpenRaftCliRemoteOptions {
   activity?: RaftActivityProjector;
 }
 
+/** Upper bound for waiting on the bridge child after SIGTERM before escalating. */
+const BRIDGE_STOP_CLOSE_TIMEOUT_MS = 3_000;
+
 class DefaultRaftCliRemote implements RaftRemote {
   readonly #entrypoint: string;
   readonly #profile: string;
@@ -179,9 +182,32 @@ class DefaultRaftCliRemote implements RaftRemote {
     }
     const child = this.#bridgeProcess;
     this.#bridgeProcess = undefined;
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await new Promise<void>(resolve => child.once("close", () => resolve()));
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    child.kill("SIGTERM");
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      closed,
+      new Promise<"timeout">(resolve => {
+        timeoutTimer = setTimeout(() => resolve("timeout"), BRIDGE_STOP_CLOSE_TIMEOUT_MS);
+      }),
+    ]);
+    // The loser of the race must not keep the process alive: clear the timer on
+    // both paths so a prompt child close does not linger for the full bound.
+    if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+    if (outcome === "timeout") {
+      // Preserve the timeout fact and force the child down; stop() itself is
+      // bounded and must never hang regardless of how the child behaves.
+      this.#bridgeFailed(`Raft bridge did not exit within ${BRIDGE_STOP_CLOSE_TIMEOUT_MS}ms of SIGTERM; sent SIGKILL`);
+      child.kill("SIGKILL");
+      return;
+    }
+    if (outcome.signal !== null && outcome.signal !== "SIGTERM") {
+      this.#bridgeFailed(`Raft bridge exited during stop by signal ${outcome.signal}`);
+    } else if (outcome.code !== null && outcome.code !== 0) {
+      this.#bridgeFailed(`Raft bridge exited during stop with code ${outcome.code}`);
     }
   }
 
