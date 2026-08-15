@@ -6,10 +6,12 @@ import test from "node:test";
 
 import { createMainAgentActivityLifecycle } from "../../src/main-agent/activity.js";
 import {
+  parseContextWindowState,
   serializeContextWindowState,
   type ContextWindowState,
 } from "../../src/main-agent/context.js";
 import { createExpandTool } from "../../src/main-agent/tool-trace.js";
+import { createToolInteractionReference } from "../../src/main-agent/transcript.js";
 import type { ActivityFreezeRequest } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
@@ -417,6 +419,76 @@ test("freezes one Activity from committed Turns across daily transcripts", async
     {} as never,
   );
   assert.match(JSON.stringify(expanded.content), /prior-day tool result/);
+});
+
+test("strips nested image pixels from the expand_tool_result visible page", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-main-agent-nested-image-expand-"));
+  const pixel = "RAW-IMAGE-BASE64-MUST-NOT-LEAK";
+  const transcriptRecords: unknown[] = [
+    { type: "session", version: 3, id: "session-1", timestamp: "2026-07-19T10:00:00.000Z", cwd: root },
+    {
+      type: "message",
+      id: "assistant-tool",
+      parentId: null,
+      timestamp: "2026-07-19T10:00:01.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Reading the evidence." },
+          { type: "toolCall", id: "call-image", name: "lookup", arguments: { query: "pixels" } },
+        ],
+        stopReason: "toolUse",
+        timestamp: 1,
+      },
+    },
+    {
+      type: "message",
+      id: "tool-result",
+      parentId: "assistant-tool",
+      timestamp: "2026-07-19T10:00:02.000Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "call-image",
+        toolName: "lookup",
+        content: [
+          { type: "text", text: "evidence payload" },
+          // A nested image: the image block is not at the top level, so a
+          // non-recursive stripper would leave its pixels in the expanded trace.
+          { type: "container", items: [{ type: "image", data: pixel, mimeType: "image/png" }] },
+        ],
+        isError: false,
+        timestamp: 2,
+      },
+    },
+  ];
+  const { transcriptDirectory } = await writePrimaryTranscript(
+    root,
+    transcriptRecords.map(record => JSON.stringify(record)).join("\n") + "\n",
+  );
+  const reference = createToolInteractionReference("2026-07-19", "session-1", "tool-result");
+  const window = parseContextWindowState(serializeContextWindowState({
+    version: 1,
+    id: "window-1",
+    frozenSeed: [],
+    recentActivityReferences: [reference],
+    committedTrace: [],
+    transcriptSources: [{ sourceId: "2026-07-19", sessionId: "session-1", entryId: "tool-result" }],
+    transcriptAnchor: { sourceId: "2026-07-19", sessionId: "session-1", entryId: "tool-result" },
+  }));
+  assert.ok(window);
+  const expanded = await createExpandTool({ window, transcriptDirectory }).execute(
+    "expand-nested-image",
+    { reference, offset: 0 },
+    undefined,
+    undefined,
+    {} as never,
+  );
+  const pageText = expanded.content.find(block => block.type === "text")?.text ?? "";
+  assert.doesNotMatch(pageText, /RAW-IMAGE-BASE64-MUST-NOT-LEAK/);
+  assert.match(pageText, /pixelContentOmitted/);
+  // text and metadata preserved; the nested image survives as a metadata-only placeholder
+  assert.match(pageText, /evidence payload/);
+  assert.match(pageText, /image\/png/);
 });
 
 test("refreshes Daily Context only when creating a successor window", async () => {

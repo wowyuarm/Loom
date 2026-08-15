@@ -20,6 +20,7 @@ import {
   readReferencedToolInteraction,
   type TranscriptToolInteraction,
 } from "./transcript.js";
+import { withoutImagePixels } from "./pi/tool-activity.js";
 
 const BATCH_MAX_CALLS = 10;
 const BATCH_MAX_TOKENS = 64_000;
@@ -556,16 +557,6 @@ function compactedExpansionMetadata(message: AgentMessage): boolean {
   if (!metadata || message.role !== "toolResult" || !message.details || typeof message.details !== "object") return false;
   const record = (message.details as Record<string, unknown>)[COMPACTION_DETAILS];
   return Boolean(record && typeof record === "object" && (record as Record<string, unknown>).expansion === true);
-}
-
-function withoutImagePixels(value: JsonValue): JsonValue {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
-  if (value.type !== "image") return value;
-  return {
-    type: "image",
-    ...(typeof value.mimeType === "string" ? { mimeType: value.mimeType } : {}),
-    pixelContentOmitted: true,
-  };
 }
 
 function estimateInputTokens(input: ToolTraceCompactionInput): number {

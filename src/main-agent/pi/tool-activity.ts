@@ -83,7 +83,8 @@ function stoppedContext() {
 }
 
 function serializeValue(value: unknown): JsonValue { return JSON.parse(JSON.stringify(value)) as JsonValue; }
-function withoutImagePixels(value: JsonValue): JsonValue {
+
+export function withoutImagePixels(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(withoutImagePixels);
   if (!value || typeof value !== "object") return value;
   if (value.type === "image") return { type: "image", ...(typeof value.mimeType === "string" ? { mimeType: value.mimeType } : {}), pixelContentOmitted: true };

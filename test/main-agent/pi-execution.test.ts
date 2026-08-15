@@ -17,7 +17,7 @@ import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
 import { parseContextWindowState } from "../../src/main-agent/context.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
-import { createToolActivityExtension } from "../../src/main-agent/pi/tool-activity.js";
+import { createToolActivityExtension, withoutImagePixels } from "../../src/main-agent/pi/tool-activity.js";
 import { isRawCompactableToolResult } from "../../src/main-agent/tool-trace.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 import type { EffectRequest, JsonValue } from "../../src/runtime/index.js";
@@ -1335,6 +1335,27 @@ test("omits image pixels from ordinary tool activity persisted by Runtime", asyn
   const serialized = JSON.stringify(recorded);
   assert.doesNotMatch(serialized, /iVBOR/);
   assert.match(serialized, /pixelContentOmitted/);
+});
+
+test("recursively strips nested image pixels from ordinary tool activity evidence", () => {
+  const pixel = "RAW-NESTED-BASE64";
+  const stripped = withoutImagePixels({
+    version: 1,
+    entries: [
+      { type: "text", text: "keep me" },
+      { type: "container", items: [{ type: "image", data: pixel, mimeType: "image/png" }] },
+      [{ type: "image", data: pixel, mimeType: "image/jpeg" }],
+    ],
+  });
+  const serialized = JSON.stringify(stripped);
+  assert.doesNotMatch(serialized, /RAW-NESTED-BASE64/);
+  // metadata and non-image data survive
+  assert.match(serialized, /keep me/);
+  assert.match(serialized, /"type":"container"/);
+  // nested image blocks become honest metadata-only placeholders
+  assert.match(serialized, /pixelContentOmitted/);
+  assert.match(serialized, /image\/png/);
+  assert.match(serialized, /image\/jpeg/);
 });
 
 test("does not record Context expansion as ordinary lived activity", async t => {
