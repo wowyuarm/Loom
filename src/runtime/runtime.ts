@@ -5006,7 +5006,9 @@ function agentFailureCategory(error: unknown): string {
   if (/transcript|anchor|invalid|requires/i.test(message)) return "invalid_result";
   // Provider errors commonly include URLs containing `/workspace/...`; classify
   // protocol status and provider signals before generic filesystem wording.
-  if (/provider|model|network|connect|429|5\d\d/i.test(message)) return "provider";
+  if (/provider|model|network|connect|stream ended|finish_reason|429|5\d\d/i.test(message)) {
+    return "provider";
+  }
   if (/workspace|mutation|file|directory/i.test(message)) return "workspace";
   return "unknown";
 }

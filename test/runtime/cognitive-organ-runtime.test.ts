@@ -476,6 +476,27 @@ test("a Life Recorder receipt for another segment fails without superseding doma
   assert.equal(ledger.attempts[0]!.status, "failed");
 });
 
+test("classifies an incomplete model stream as a provider failure", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-stream-failure-"));
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async () => { throw new Error("Stream ended without finish_reason"); },
+    },
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "stream-failure", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
+  const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder");
+  assert.equal(work?.status, "retry_wait");
+  assert.equal(work?.lastFailureCategory, "provider");
+});
+
 test("blocked Life Recorder work releases the scheduler and remains requeueable", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-blocked-recorder-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
