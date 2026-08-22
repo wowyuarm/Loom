@@ -138,6 +138,64 @@ function failingRecorder(attempted: string[]): ActivityRecorder {
   };
 }
 
+test("an aborted scheduler pass finishes current work without starting the next organ", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-abort-between-organs-"));
+  let now = new Date("2026-07-21T12:00:00.000Z");
+  let releaseRecorder!: () => void;
+  const recorderReleased = new Promise<void>(resolve => { releaseRecorder = resolve; });
+  let recorderStarted!: () => void;
+  const recorderDidStart = new Promise<void>(resolve => { recorderStarted = resolve; });
+  let reflectionCalls = 0;
+  const runtime = openRuntime({
+    root,
+    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
+    execution: completingExecution,
+    activityLifecycle,
+    activityRecorder: {
+      record: async activity => {
+        recorderStarted();
+        await recorderReleased;
+        return {
+          version: 1,
+          segmentId: activity.segmentId,
+          runId: "record-after-stop",
+          recordedAt: activity.closedAt,
+          daily: { status: "no_change", path: `daily/${activity.recordingDay}.md` },
+          episodes: [],
+        };
+      },
+    },
+    memoryReflection: {
+      reflect: async () => {
+        reflectionCalls += 1;
+        return { outcome: "no_change", runId: "must-not-start", changedMaterials: [] };
+      },
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  assert.equal((await runtime.runMemoryReflection({
+    observedAt: now,
+    delayMs: 0,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  })).disposition, "waiting");
+  await runtime.acceptInput({ source: "test", sourceId: "stop-between-organs", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+
+  now = new Date("2026-07-22T03:00:00.000Z");
+  const controller = new AbortController();
+  const running = createScheduler({ runtime, memoryReflection: { delayMs: 0 } }).runOnce(now, controller.signal);
+  await recorderDidStart;
+  controller.abort();
+  releaseRecorder();
+
+  assert.deepEqual(await running, { disposition: "idle" });
+  assert.equal(reflectionCalls, 0);
+});
+
 test("backs off after a confirmed not-sent Delivery", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-not-sent-"));
   const now = new Date("2026-07-21T08:00:00.000Z");

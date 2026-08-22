@@ -50,6 +50,7 @@ class DefaultProcessDriver implements ProcessDriver {
   readonly #observe: OperationalEventObserver | undefined;
   #running: Promise<void> | undefined;
   #waitController: AbortController | undefined;
+  #runController: AbortController | undefined;
   #wakeVersion = 0;
   #stopRequested = false;
   #state: ProcessDriverStatus["state"] = "created";
@@ -103,6 +104,7 @@ class DefaultProcessDriver implements ProcessDriver {
     }
     this.#stopRequested = true;
     this.#state = "stopping";
+    this.#runController?.abort();
     this.wake();
     if (this.#running) {
       await this.#running;
@@ -126,8 +128,10 @@ class DefaultProcessDriver implements ProcessDriver {
         this.#state = "running";
         this.#nextRunAt = undefined;
         let result: LoomInstanceRunResult;
+        const runController = new AbortController();
+        this.#runController = runController;
         try {
-          result = await this.#instance.runOnce(observedAt);
+          result = await this.#instance.runOnce(observedAt, runController.signal);
           emitOperationalEvent(this.#observe, {
             event: "driver.run.completed",
             at: operationalTimestamp(this.#now),
@@ -154,6 +158,8 @@ class DefaultProcessDriver implements ProcessDriver {
           if (this.#wakeVersion !== wakeVersion) continue;
           await this.#waitFor(nextRunAt);
           continue;
+        } finally {
+          if (this.#runController === runController) this.#runController = undefined;
         }
         if (this.#stopRequested) break;
         if (this.#wakeVersion !== wakeVersion) continue;

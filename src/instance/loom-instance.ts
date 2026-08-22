@@ -99,7 +99,7 @@ export interface LoomInstance {
   requeueInput(inputId: string): RequeueInputResult;
   /** Create a successor budget cycle for blocked / intervention_required Cognitive Organ work. */
   requeueCognitiveOrganWork(workId: string): RequeueCognitiveOrganWorkResult;
-  runOnce(observedAt: Date): Promise<LoomInstanceRunResult>;
+  runOnce(observedAt: Date, signal?: AbortSignal): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
   operationalStatus(options?: { since?: string }): RuntimeOperationalStatus;
@@ -156,9 +156,10 @@ class AssembledLoomInstance implements LoomInstance {
     return this.runtime.requeueCognitiveOrganWork(workId);
   }
 
-  async runOnce(observedAt: Date): Promise<LoomInstanceRunResult> {
+  async runOnce(observedAt: Date, signal?: AbortSignal): Promise<LoomInstanceRunResult> {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Loom Instance requires a valid observedAt");
-    const result = await this.scheduler.runOnce(observedAt);
+    const result = await this.scheduler.runOnce(observedAt, signal);
+    if (signal?.aborted) return result;
     await this.#reconcileAttachments(observedAt);
     if (result.disposition === "deferred" && result.reason === "agent_work_not_admitted") {
       const nmemNextRunAt = await this.#reconcileNmem();

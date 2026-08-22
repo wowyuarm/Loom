@@ -66,7 +66,7 @@ export type SchedulerRunResult =
     };
 
 export interface Scheduler {
-  runOnce(observedAt: Date): Promise<SchedulerRunResult>;
+  runOnce(observedAt: Date, signal?: AbortSignal): Promise<SchedulerRunResult>;
 }
 
 class RuntimeScheduler implements Scheduler {
@@ -105,8 +105,9 @@ class RuntimeScheduler implements Scheduler {
     }
   }
 
-  async runOnce(observedAt: Date): Promise<SchedulerRunResult> {
+  async runOnce(observedAt: Date, signal?: AbortSignal): Promise<SchedulerRunResult> {
     if (!Number.isFinite(observedAt.getTime())) throw new Error("Scheduler requires a valid observedAt");
+    if (signal?.aborted) return { disposition: "idle" };
 
     if (this.#proactivePulse) {
       await this.#runtime.runOpportunityPulse({
@@ -137,7 +138,9 @@ class RuntimeScheduler implements Scheduler {
 
     let deferredLane: SchedulerRunResult | undefined;
     while (true) {
+      if (signal?.aborted) return { disposition: "idle" };
       const agentWork = await this.#admitAgentWork() ? "allow" : "defer";
+      if (signal?.aborted) return { disposition: "idle" };
 
       // A due Proactive Pulse may Fair-split an active (not yet idle) Segment
       // before any pending ambient Inputs are reprocessed, so Orientation gets
@@ -180,6 +183,7 @@ class RuntimeScheduler implements Scheduler {
       }
 
       const advanced = await this.#runtime.advance({ agentWork, observedAt });
+      if (signal?.aborted) return { disposition: "idle" };
       const advanceWaiting = advanced.disposition === "waiting"
         ? { disposition: "waiting" as const, nextRunAt: advanced.nextRunAt }
         : undefined;
@@ -219,6 +223,7 @@ class RuntimeScheduler implements Scheduler {
       if (advanced.disposition !== "idle" && advanced.disposition !== "waiting" && !deferredLane) continue;
 
       const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
+      if (signal?.aborted) return { disposition: "idle" };
       if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") {
         if (deferredLane) return { disposition: "busy" };
         continue;
@@ -234,8 +239,10 @@ class RuntimeScheduler implements Scheduler {
       const active = status.activeSegment;
       if (!active) {
         const maintenance = await this.#runAttentionMaintenance(observedAt, agentWork);
+        if (signal?.aborted) return { disposition: "idle" };
         if (maintenance && maintenance.disposition !== "waiting") deferredLane ??= maintenance;
         const reflection = await this.#runMemoryReflection(observedAt, agentWork);
+        if (signal?.aborted) return { disposition: "idle" };
         if (reflection && reflection.disposition !== "waiting") deferredLane ??= reflection;
         if (!this.#proactivePulse) {
           if (deferredLane) return deferredLane;
