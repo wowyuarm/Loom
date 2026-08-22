@@ -95,9 +95,17 @@ sudo -u loom-hal -- /usr/bin/node /opt/loom/dist/src/cli.js history --root /home
 ## Update Loom
 
 An already running Host continues to use its current build. For each affected
-Instance, obtain authorization, gracefully stop its service, update and build
-the shared checkout, then start the service and verify it with `loom status` and
-the relevant Channel or Integration checks.
+Instance, obtain authorization, update and build the shared checkout while the
+current Host is still running, then validate the Instance Configuration against
+the new build:
+
+```bash
+sudo -u loom-<name> -- /usr/bin/node /opt/loom/dist/src/cli.js validate-config \
+  --root /home/loom-<name>/.loom
+```
+
+Only after both checks pass, gracefully stop and start the service. Verify it
+with `loom status` and the relevant Channel or Integration checks.
 
 Do not replace Instance Roots or credentials during a code update. If the Host
 does not stop normally, investigate before forcing it; durable recovery does not

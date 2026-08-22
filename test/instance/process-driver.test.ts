@@ -214,6 +214,33 @@ test("retries transient busy results without polling other deferred work", async
   assert.equal(waits[0]?.toISOString(), "2026-07-22T10:00:01.000Z");
 });
 
+test("waits for an explicit wake while Cognitive Organ intervention is required", async t => {
+  const waits: Array<Date | undefined> = [];
+  let runs = 0;
+  const driver = createProcessDriver({
+    instance: fakeInstance({
+      runOnce: async () => {
+        runs += 1;
+        return { disposition: "deferred", reason: "cognitive_organ_intervention_required" };
+      },
+    }),
+    now: () => new Date("2026-07-22T10:00:00.000Z"),
+    wait: async (until, signal) => {
+      waits.push(until);
+      await aborted(signal);
+    },
+  });
+  t.after(() => driver.stop());
+
+  driver.start();
+  await eventually(() => waits.length === 1);
+  assert.equal(waits[0], undefined);
+  assert.equal(runs, 1);
+
+  driver.wake();
+  await eventually(() => runs === 2 && waits.length === 2);
+});
+
 function fakeInstance(overrides: Partial<LoomInstance>): LoomInstance {
   return {
     acceptInput: async () => ({ disposition: "accepted", inputId: "input" }),

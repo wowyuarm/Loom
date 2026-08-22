@@ -14,6 +14,7 @@ import {
   retryLoomChannelIngress,
   type LoomStatusReport,
 } from "./host/index.js";
+import { loadInstanceConfiguration } from "./configuration/index.js";
 import { initializeLoomInstance } from "./instance/index.js";
 import { resolveInstanceLayout } from "./instance/layout.js";
 import type { InteractionViewEntry } from "./runtime/index.js";
@@ -26,8 +27,8 @@ import {
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
   if (command !== "init" && command !== "run" && command !== "history"
-    && command !== "status" && command !== "requeue" && command !== "requeue-organ"
-    && command !== "retry-ingress") {
+    && command !== "status" && command !== "validate-config" && command !== "requeue"
+    && command !== "requeue-organ" && command !== "retry-ingress") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -43,6 +44,13 @@ async function main(argv: string[]): Promise<void> {
     for (const entry of entries) {
       console.log(`${entry.at} ${entry.actorRef} [${entry.source}]: ${interactionText(entry.content) ?? JSON.stringify(entry.content)}`);
     }
+    return;
+  }
+  if (command === "validate-config") {
+    const remaining = remainingArguments(args, "--root");
+    if (remaining.length > 0) throw new Error(`Unknown argument: ${remaining[0]}`);
+    await loadInstanceConfiguration({ file: resolveInstanceLayout(root).configurationFile });
+    console.log("Instance Configuration is valid");
     return;
   }
   if (command === "status") {
@@ -257,7 +265,8 @@ function writeOperationalEvent(event: OperationalEvent): void {
   console.log(JSON.stringify(event));
 }
 
-type LoomCommand = "init" | "run" | "history" | "status" | "requeue" | "requeue-organ" | "retry-ingress";
+type LoomCommand = "init" | "run" | "history" | "status" | "validate-config" | "requeue"
+  | "requeue-organ" | "retry-ingress";
 
 function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
@@ -298,6 +307,7 @@ function usage(command?: LoomCommand): string {
   if (command === "status") {
     return "Usage: loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]";
   }
+  if (command === "validate-config") return "Usage: loom validate-config [--root <instance-root>]";
   if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
   if (command === "requeue-organ") {
     return "Usage: loom requeue-organ [--root <instance-root>] <work-id>";
@@ -315,6 +325,7 @@ function usage(command?: LoomCommand): string {
     "  loom run [--root <instance-root>]",
     "  loom history [--root <instance-root>]",
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
+    "  loom validate-config [--root <instance-root>]",
     "  loom requeue [--root <instance-root>] <input-id>",
     "  loom requeue-organ [--root <instance-root>] <work-id>",
     "  loom retry-ingress [--root <instance-root>] <channel-id> [item-id]",

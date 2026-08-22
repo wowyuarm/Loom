@@ -160,6 +160,46 @@ test("backs off after a confirmed not-sent Delivery", async () => {
   }
 });
 
+test("a deferred Delivery blocks a due Pulse without causing busy polling", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-delivery-pulse-wait-"));
+  let now = new Date("2026-07-21T08:00:00.000Z");
+  const runtime = openRuntime({
+    root,
+    execution: effectExecution,
+    outboundDelivery: { deliver: async () => ({ status: "not_sent", error: "route unavailable" }) },
+    activityLifecycle,
+    orientation: {
+      form: async () => ({ outcome: "none", runId: "unexpected", whyNow: "", evidence: [] }),
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+  const scheduler = createScheduler({
+    runtime,
+    activityIdleMs: 1,
+    proactivePulse: {
+      timeZone: "UTC",
+      intervalMs: 60_000,
+      initialDelayMs: 1,
+      quietHours: { start: "00:00", end: "00:01", intervalMs: 60_000 },
+    },
+  });
+
+  await runtime.acceptInput({ source: "test", sourceId: "pulse-wait", kind: "interaction", payload: {} });
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "deferred",
+    reason: "delivery_not_sent",
+    nextRunAt: "2026-07-21T08:01:00.000Z",
+  });
+  now = new Date("2026-07-21T08:00:00.002Z");
+  await runtime.closeActivity({ inactiveBefore: now.toISOString() });
+
+  assert.deepEqual(await scheduler.runOnce(now), {
+    disposition: "waiting",
+    nextRunAt: "2026-07-21T08:01:00.000Z",
+  });
+});
+
 test("records a late Delivery retry in a later Activity", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-scheduler-late-delivery-"));
   let now = new Date("2026-07-21T08:00:00.000Z");

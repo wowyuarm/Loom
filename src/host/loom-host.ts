@@ -233,6 +233,7 @@ class DefaultLoomHost implements LoomHost {
       throw new Error(`Loom Host cannot requeue Cognitive Organ work while ${this.#state}`);
     }
     this.#instance.requeueCognitiveOrganWork(workId);
+    this.#driver.wake();
   }
 
   retryChannelIngress(channelId: string, itemId?: string): Promise<number> {

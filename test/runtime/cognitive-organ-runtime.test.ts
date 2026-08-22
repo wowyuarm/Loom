@@ -232,7 +232,7 @@ test("a cancel that is not released persists intervention_required and blocks pa
     { disposition: "busy" },
   );
   assert.equal(reflectionCalls, 0);
-  assert.deepEqual(await runtime.advance(), { disposition: "busy" });
+  assert.deepEqual(await runtime.advance(), { disposition: "cognitive_organ_intervention_required" });
   assert.equal(
     runtime.status().inputs.find(input => input.id === human.inputId)?.status,
     "pending",
@@ -1964,15 +1964,15 @@ test("a requeued thread head gates Reflection until the successor completes", as
   assert.equal(work.status, "running");
   assert.equal(work.requeuedFrom, blockedWork.workId);
 
-  // While the successor is runnable the same-day Reflection must stay gated:
-  // running it now would race the Thread writer.
+  // While the successor is runnable the same-day Reflection must stay gated,
+  // but the durable dependency is idle rather than active busy work.
   now = new Date("2026-07-20T04:00:01.000Z");
   assert.equal((await runtime.runMemoryReflection({
     observedAt: now,
     delayMs: 0,
     retryDelayMs: 30_000,
     agentWork: "allow",
-  })).disposition, "busy");
+  })).disposition, "idle");
   assert.equal(reflectCalls, 0);
 
   // The successor completes the Thread work, then Reflection is released.

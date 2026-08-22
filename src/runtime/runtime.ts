@@ -892,9 +892,11 @@ class SqliteRuntime implements Runtime {
 
     if (this.#execution) {
       // While Cognitive Organ work is held for human intervention no parallel
-      // Workspace writer may run: the foreground Input stays durable until a
-      // human resolves the held work.
-      if (this.#hasHeldCognitiveOrganWork()) return { disposition: "busy" };
+      // Workspace writer may run. This is durable operator-held state, not an
+      // active computation that warrants ProcessDriver polling.
+      if (this.#hasHeldCognitiveOrganWork()) {
+        return { disposition: "cognitive_organ_intervention_required" };
+      }
       if (options.agentWork === "defer" && this.#hasPendingInput()) {
         return { disposition: "agent_work_deferred" };
       }

@@ -48,7 +48,8 @@ export type SchedulerRunResult =
         | "memory_reflection_failed"
         | "agent_work_not_admitted"
         | "delivery_not_sent"
-        | "delivery_requires_reconciliation";
+        | "delivery_requires_reconciliation"
+        | "cognitive_organ_intervention_required";
       nextRunAt?: string;
     }
   | {
@@ -273,7 +274,14 @@ class RuntimeScheduler implements Scheduler {
             error: pulse.error,
           };
         }
-        return deferredLane ?? { disposition: "busy" };
+        if (deferredLane) return deferredLane;
+        return earliestWaiting(
+          maintenance,
+          reflection,
+          afterChatWaiting,
+          deliveryWaiting,
+          advanceWaiting,
+        ) ?? { disposition: "busy" };
       }
       const idleCloseAt = new Date(Math.min(
         new Date(active.lastActivityAt).getTime() + this.#activityIdleMs,
@@ -551,6 +559,8 @@ function deferredResult(
       return { disposition: "deferred", reason: result.disposition };
     case "agent_work_deferred":
       return { disposition: "deferred", reason: "agent_work_not_admitted" };
+    case "cognitive_organ_intervention_required":
+      return { disposition: "deferred", reason: result.disposition };
     default:
       // Every other Advance result is settled or immediately runnable; it
       // does not create a deferred Scheduler result.
