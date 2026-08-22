@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import type { OperationalEventObserver } from "../operational-events.js";
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
@@ -137,6 +138,7 @@ export interface PiLifeRecorderOptions {
   nextRunId?: () => string;
   now?: () => Date;
   mutationDirectory?: string;
+  observe?: OperationalEventObserver;
 }
 
 class PiLifeRecorder implements ActivityRecorder {
@@ -171,6 +173,8 @@ class PiLifeRecorder implements ActivityRecorder {
     const organSession = createPiCognitiveOrganSession<LifeRecorderReceipt>({
       completion: "finish",
       organ: "life-recorder",
+      agentName: "life-recorder",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       finishReminder: "This recording is not complete. Read any missing evidence, make any needed writes, then call finish to validate and commit the recording.",
       validateAndCommit: async () => {
         if (readEventIndexes.size !== activity.events.length) {

@@ -58,6 +58,7 @@ import { RESERVED_LOOM_TOOL_NAMES } from "../channels/reserved-tool-names.js";
 import { createAttachmentTool } from "./attachment.js";
 import type { OperationalEventObserver } from "../operational-events.js";
 import { createPiSessionFactory, type PreparedPiSession } from "./pi/session.js";
+import { forwardPiAutoRetryEvents } from "../agents/session/index.js";
 import {
   createToolActivityExtension,
   type ContextLimitCircuit,
@@ -334,6 +335,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     lifecycle: InputAnnotationLifecycle,
   ): Promise<ExecutionResult> {
     let session: PiSession | undefined;
+    let unsubscribeRetry: (() => void) | undefined;
     const messageDecision: MessageTurnDecision = { sent: 0, noReply: false };
     try {
       const restoredWindow = parseContextWindowState(request.executionState);
@@ -424,6 +426,9 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         sessionManager,
       );
       session = preparedSession.session;
+      unsubscribeRetry = this.observe
+        ? forwardPiAutoRetryEvents(session, this.observe, "main-agent")
+        : undefined;
       const budget = { ...DEFAULT_CONTEXT_BUDGET, ...this.contextBudget };
       const fixedTokens = {
         system: textTokens(session.systemPrompt),
@@ -574,6 +579,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       this.#throwIfContextLimitOpened();
       throw error;
     } finally {
+      unsubscribeRetry?.();
       session?.dispose();
       lifecycle.end(request.turnId);
       this.#runningTurnId = undefined;

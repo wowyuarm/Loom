@@ -23,6 +23,7 @@ import type {
   MemoryReflectionResult,
 } from "../runtime/index.js";
 import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../continuity-guidance.js";
+import type { OperationalEventObserver } from "../operational-events.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
@@ -240,6 +241,7 @@ interface PiMemoryReflectorOptions {
   nmemRecallTool?: ToolDefinition;
   nextRunId?: () => string;
   mutationDirectory?: string;
+  observe?: OperationalEventObserver;
 }
 
 class PiMemoryReflector implements MemoryReflection {
@@ -283,6 +285,8 @@ class PiMemoryReflector implements MemoryReflection {
     const organSession = createPiCognitiveOrganSession<MemoryReflectionResult>({
       completion: "finish",
       organ: "memory-reflector",
+      agentName: "memory-reflector",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       finishReminder: "This reflection is not complete. Read any missing evidence, make any needed replacements, then call finish to validate and commit it.",
       validateAndCommit: async () => {
         try {

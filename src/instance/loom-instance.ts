@@ -313,6 +313,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     revisions,
     layout,
     agentWorkspace,
+    ...(options.observe ? { observe: options.observe } : {}),
     ...(options.channelAgentSurface?.attentionSource
       ? { externalAttentionSource: options.channelAgentSurface.attentionSource }
       : {}),
@@ -347,6 +348,7 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
     revisions,
     layout,
     agentWorkspace,
+    ...(options.observe ? { observe: options.observe } : {}),
     loadActivity: async activityId => runtime.frozenActivity(activityId),
   });
   runtime = openRuntime({
@@ -362,17 +364,20 @@ export async function openLoomInstance(options: OpenLoomInstanceOptions): Promis
       revisions,
       layout,
       agentWorkspace,
+      ...(options.observe ? { observe: options.observe } : {}),
       ...(options.now ? { now: options.now } : {}),
     }),
     attentionMaintenance: createRevisionBoundAttentionMaintenance({
       revisions,
       layout,
       agentWorkspace,
+      ...(options.observe ? { observe: options.observe } : {}),
     }),
     memoryReflection: createRevisionBoundMemoryReflection({
       revisions,
       layout,
       agentWorkspace,
+      ...(options.observe ? { observe: options.observe } : {}),
       ...(workingMemoryReader ? { workingMemoryReader } : {}),
       ...(recallTool ? { nmemRecallTool: recallTool } : {}),
     }),

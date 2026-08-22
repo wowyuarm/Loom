@@ -21,6 +21,7 @@ import type {
   AttentionMaintenanceResult,
   FrozenActivity,
 } from "../runtime/index.js";
+import type { OperationalEventObserver } from "../operational-events.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import { beginWorkspaceMutation } from "../workspace/workspace-mutation.js";
@@ -131,6 +132,7 @@ interface PiAttentionMaintainerOptions {
   thinkingLevel?: ThinkingLevel;
   nextRunId?: () => string;
   mutationDirectory?: string;
+  observe?: OperationalEventObserver;
 }
 
 class PiAttentionMaintainer implements AttentionMaintenance {
@@ -165,6 +167,8 @@ class PiAttentionMaintainer implements AttentionMaintenance {
     const organSession = createPiCognitiveOrganSession<AttentionMaintenanceResult>({
       completion: "finish",
       organ: "attention-maintainer",
+      agentName: "attention-maintainer",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       finishReminder: "This maintenance run is not complete. Read any missing evidence, stage any needed replacement, then call finish to validate and commit it.",
       validateAndCommit: async () => {
         try {

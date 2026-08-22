@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentSession, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
+import { emitOperationalEvent, operationalTimestamp, type OperationalEventObserver } from "../../operational-events.js";
 import type { WorkspaceWriteOutcome } from "../../workspace/workspace-mutation.js";
 import {
   createCognitiveOrganFinish,
@@ -26,6 +27,51 @@ interface FinishCompletionOptions<Result> {
 export type PiCognitiveOrganSessionOptions<Result> =
   | NaturalCompletionOptions
   | FinishCompletionOptions<Result>;
+
+/** Shared observability tail applied to every variant. */
+export interface PiCognitiveOrganSessionObservability {
+  /** When present together with agentName, Pi auto-retries are forwarded to the Operational Event stream. */
+  observe?: OperationalEventObserver;
+  agentName?: string;
+}
+
+/**
+ * Forward Pi session auto-retry events to the Operational Event stream.
+ *
+ * In-session retries are otherwise invisible: a run that fails after several
+ * internal retries looks like one ordinary failure, so operators cannot tell
+ * transient blips (absorbed here) from sustained provider windows (which the
+ * organ retry budget must absorb). Returns an unsubscriber.
+ */
+export function forwardPiAutoRetryEvents(
+  session: { subscribe(listener: (event: { type?: string }) => void): () => void },
+  observer: OperationalEventObserver,
+  agentName: string,
+): () => void {
+  return session.subscribe((raw: { type?: string }) => {
+    const event = raw as { type?: string } & Record<string, unknown>;
+    if (event.type === "auto_retry_start") {
+      emitOperationalEvent(observer, {
+        event: "agent.retry.scheduled",
+        at: operationalTimestamp(),
+        agentName,
+        attempt: Number(event.attempt),
+        maxAttempts: Number(event.maxAttempts),
+        delayMs: Number(event.delayMs),
+      });
+      return;
+    }
+    if (event.type === "auto_retry_end") {
+      emitOperationalEvent(observer, {
+        event: "agent.retry.finished",
+        at: operationalTimestamp(),
+        agentName,
+        success: Boolean(event.success),
+        attempt: Number(event.attempt),
+      });
+    }
+  });
+}
 
 export interface PiCognitiveOrganSessionResult<Result> {
   turns: number;
@@ -59,7 +105,7 @@ class PiCognitiveOrganFatalError extends Error {
  * controller; natural organs share only the turn, reminder, and stop policy.
  */
 export function createPiCognitiveOrganSession<Result = never>(
-  options: PiCognitiveOrganSessionOptions<Result>,
+  options: PiCognitiveOrganSessionOptions<Result> & PiCognitiveOrganSessionObservability,
 ): PiCognitiveOrganSession<Result> {
   const finish = options.completion === "finish"
     ? createCognitiveOrganFinish({
@@ -88,6 +134,9 @@ export function createPiCognitiveOrganSession<Result = never>(
       const turnLimitMessage = new PiCognitiveOrganTurnLimitError().message;
       const fatalStopMessage = new PiCognitiveOrganFatalError().message;
 
+      const unsubscribeRetry = options.observe && options.agentName
+        ? forwardPiAutoRetryEvents(session, options.observe, options.agentName)
+        : undefined;
       const unsubscribe = session.agent.subscribe(async event => {
         if (event.type !== "turn_end" || event.message.role !== "assistant") return;
         if (event.message.errorMessage === turnLimitMessage || event.message.errorMessage === fatalStopMessage) return;
@@ -138,6 +187,7 @@ export function createPiCognitiveOrganSession<Result = never>(
       try {
         await session.prompt(prompt, { expandPromptTemplates: false });
       } finally {
+        unsubscribeRetry?.();
         unsubscribe();
         if (previousBeforeToolCall) {
           session.agent.beforeToolCall = previousBeforeToolCall;

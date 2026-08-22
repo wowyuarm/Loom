@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import type { OperationalEventObserver } from "../operational-events.js";
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
@@ -53,6 +54,7 @@ export interface PiToolTraceCompactorOptions {
   modelRuntime: ModelRuntime;
   model: Model<any>;
   thinkingLevel?: ThinkingLevel;
+  observe?: OperationalEventObserver;
 }
 
 export interface ToolTraceCompactor {
@@ -104,6 +106,8 @@ class PiToolTraceCompactor implements ToolTraceCompactor {
       let result: ToolTraceCompactionDetail[] | undefined;
       const organSession = createPiCognitiveOrganSession({
         completion: "natural",
+      agentName: "tool-trace-compactor",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
         completeNaturally: () => {
           try {
             result = parseCompactionResult(

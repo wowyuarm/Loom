@@ -42,6 +42,8 @@ export interface RevisionBoundOrganOptions {
   layout: InstanceLayout;
   agentWorkspace: AgentWorkspace;
   now?: () => Date;
+  /** Forwarded to organ sessions so Pi auto-retries surface in the Operational Event stream. */
+  observe?: import("../operational-events.js").OperationalEventObserver;
   loadOrientationActionSpace?: () => Promise<OrientationActionSpace>;
   externalAttentionSource?: InteractionChannelAttentionSource;
   harnessConditionSource?: HarnessConditionSource;
@@ -83,6 +85,7 @@ class RevisionBoundOrientation implements Orientation {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "orientation"),
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       modelRuntime: selection.modelRuntime,
       model: selection.model,
       ...(selection.thinkingLevel ? { thinkingLevel: selection.thinkingLevel } : {}),
@@ -124,6 +127,7 @@ class RevisionBoundLifeRecorder implements ActivityRecorder {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "life-recorder"),
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       mutationDirectory: this.options.layout.workspaceMutationRoot,
       modelRuntime: selection.modelRuntime,
       model: selection.model,
@@ -155,6 +159,7 @@ class RevisionBoundThreadMaintenance implements ThreadMaintenance {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "thread-maintainer"),
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       stateFile: path.join(this.options.layout.runtimeRoot, "thread-evidence.json"),
       mutationDirectory: this.options.layout.workspaceMutationRoot,
       modelRuntime: selection.modelRuntime,
@@ -181,6 +186,7 @@ class RevisionBoundAttentionMaintenance implements AttentionMaintenance {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "attention-maintainer"),
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       mutationDirectory: this.options.layout.workspaceMutationRoot,
       modelRuntime: selection.modelRuntime,
       model: selection.model,
@@ -208,6 +214,7 @@ class RevisionBoundMemoryReflection implements MemoryReflection {
       agentWorkspace: this.options.agentWorkspace,
       agentDir: this.options.layout.piAgentDirectory,
       transcriptDirectory: path.join(this.options.layout.organTranscriptRoot, "memory-reflector"),
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       backupDirectory: path.join(this.options.layout.backupRoot, "memory-reflector"),
       mutationDirectory: this.options.layout.workspaceMutationRoot,
       modelRuntime: selection.modelRuntime,

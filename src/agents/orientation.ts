@@ -21,6 +21,7 @@ import type {
   OrientationRequest,
   OrientationResult,
 } from "../runtime/index.js";
+import type { OperationalEventObserver } from "../operational-events.js";
 import type { AgentWorkspace } from "../workspace/agent-workspace.js";
 import { createWorkspaceReadTools } from "../workspace/tools.js";
 import type { ExternalAttentionEvidence } from "../channels/surface.js";
@@ -130,6 +131,7 @@ interface PiOrientationOptions {
   externalAttentionEvidence?: ExternalAttentionEvidence;
   harnessConditionsEvidence?: HarnessConditionsEvidence;
   nextRunId?: () => string;
+  observe?: OperationalEventObserver;
 }
 
 class PiOrientation implements Orientation {
@@ -235,6 +237,8 @@ class PiOrientation implements Orientation {
       let result: OrientationResult | undefined;
       const organSession = createPiCognitiveOrganSession({
         completion: "natural",
+      agentName: "orientation",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
         completeNaturally: () => {
           try {
             result = parseResult(session.messages, runId);

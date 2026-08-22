@@ -73,6 +73,24 @@ export type OperationalEvent =
       failureCategory?: string;
     }
   | {
+      /** Pi session is about to sleep before re-running a retryable model error. */
+      event: "agent.retry.scheduled";
+      at: string;
+      agentName: string;
+      /** 1-indexed upcoming retry attempt. */
+      attempt: number;
+      maxAttempts: number;
+      delayMs: number;
+    }
+  | {
+      event: "agent.retry.finished";
+      at: string;
+      agentName: string;
+      success: boolean;
+      /** Retry attempts consumed by this session run. */
+      attempt: number;
+    }
+  | {
       event: "agent.tool.completed";
       at: string;
       toolCallId: string;

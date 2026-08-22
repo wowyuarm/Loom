@@ -16,6 +16,7 @@ import {
 import { Type } from "typebox";
 
 import type { FrozenActivity } from "../../runtime/index.js";
+import type { OperationalEventObserver } from "../../operational-events.js";
 import type { AgentWorkspace } from "../../workspace/agent-workspace.js";
 import { NATURAL_LANGUAGE_GUIDANCE, THREAD_MENTAL_MODEL } from "../../continuity-guidance.js";
 import { createWorkspaceReadTools } from "../../workspace/tools.js";
@@ -127,6 +128,7 @@ export interface PiThreadMaintainerOptions {
   nextRunId?: () => string;
   nextThreadRef?: () => string;
   mutationDirectory?: string;
+  observe?: OperationalEventObserver;
 }
 
 interface DurableThreadMaintenanceResult {
@@ -185,6 +187,8 @@ class PiThreadMaintainer implements ThreadMaintainer {
     const organSession = createPiCognitiveOrganSession<ThreadMaintenanceResult>({
       completion: "finish",
       organ: "thread-maintainer",
+      agentName: "thread-maintainer",
+      ...(this.options.observe ? { observe: this.options.observe } : {}),
       finishReminder: "This maintenance run is not complete. Read any missing evidence, make any needed structural changes, then call finish to validate and commit them.",
       validateAndCommit: async () => {
         try {
