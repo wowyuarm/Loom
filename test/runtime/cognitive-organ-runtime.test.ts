@@ -485,7 +485,11 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
     execution: completingExecution,
     activityLifecycle: activityLifecycle(),
     activityRecorder: {
-      record: async () => { throw new Error("workspace is not writable"); },
+      record: async () => {
+        throw new Error(
+          "429 GoUsageLimitError: usage limit reached for https://opencode.ai/workspace/example/go",
+        );
+      },
       cancel: async () => {},
     },
     threadMaintenance: {
@@ -527,7 +531,14 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
   const blocked = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder");
   assert.equal(blocked?.status, "blocked");
   assert.equal(blocked?.attemptCount, 3);
+  assert.equal(blocked?.lastFailureCategory, "provider");
   assert.equal(runtime.status().threadMaintenance[0]?.status, "pending");
+  assert.equal((await runtime.runMemoryReflection({
+    observedAt: now,
+    delayMs: 0,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  })).disposition, "waiting");
 
   // Both the pending Activity and its Thread row stay durable, but their
   // blocked recorder dependency does not force the ProcessDriver into its
@@ -543,6 +554,18 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
   now = new Date("2026-07-19T11:06:00.001Z");
   assert.equal((await runtime.runAttentionMaintenance({ ...attentionOptions, observedAt: now })).disposition, "completed");
   assert.equal(attentionCalls, 1);
+
+  // A due Reflection day cannot advance until its Activities are recorded, but
+  // a terminally blocked recorder is not active work. It must release the
+  // ProcessDriver instead of causing a one-second busy retry forever.
+  now = new Date("2026-07-20T03:00:00.000Z");
+  assert.equal((await runtime.runMemoryReflection({
+    observedAt: now,
+    delayMs: 0,
+    retryDelayMs: 30_000,
+    agentWork: "allow",
+  })).disposition, "idle");
+
   assert.ok(blocked);
   assert.deepEqual(runtime.requeueCognitiveOrganWork(blocked.workId), { disposition: "requeued" });
 });

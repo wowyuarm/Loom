@@ -1152,7 +1152,11 @@ class SqliteRuntime implements Runtime {
     if (this.#memoryReflectionRunning || !this.#isCognitiveOrganIdle()) {
       return { disposition: "busy" };
     }
-    if (!this.#reflectionDayComplete(schedule.next_day)) return { disposition: "busy" };
+    // Unsettled Activity or Thread dependencies are durable queue state, not
+    // active work. Their own lanes carry retry wake times or remain explicitly
+    // blocked for operator recovery; Reflection must yield instead of forcing
+    // the ProcessDriver into its one-second busy retry loop.
+    if (!this.#reflectionDayComplete(schedule.next_day)) return { disposition: "idle" };
 
     const reflectionDay = schedule.next_day;
     const activities = this.#reflectionActivities(reflectionDay);
@@ -4998,8 +5002,10 @@ function agentFailureCategory(error: unknown): string {
   if (/abort|interrupt/i.test(message)) return "interrupted";
   if (/auth|credential|token|401|403/i.test(message)) return "authentication";
   if (/transcript|anchor|invalid|requires/i.test(message)) return "invalid_result";
-  if (/workspace|mutation|file|directory/i.test(message)) return "workspace";
+  // Provider errors commonly include URLs containing `/workspace/...`; classify
+  // protocol status and provider signals before generic filesystem wording.
   if (/provider|model|network|connect|429|5\d\d/i.test(message)) return "provider";
+  if (/workspace|mutation|file|directory/i.test(message)) return "workspace";
   return "unknown";
 }
 
