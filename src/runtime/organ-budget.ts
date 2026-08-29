@@ -35,6 +35,27 @@ export interface OrganBudgetFields {
 /** How a failed run should be classified by the caller. */
 export type OrganFailureClass = "failure" | "quota";
 
+const QUOTA_ERROR_PATTERN =
+  /GoUsageLimitError|FreeUsageLimitError|usage limit reached|insufficient_quota|quota exceeded|billing/i;
+
+/**
+ * Quota exhaustion (provider usage limits) is an environment fact, not an
+ * organ fault: it parks the row instead of consuming the attempt budget.
+ */
+export function organFailureClass(error: unknown): OrganFailureClass {
+  const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  return QUOTA_ERROR_PATTERN.test(message) ? "quota" : "failure";
+}
+
+/** Extract a provider quota reset timestamp from an error, when one exists. */
+export function quotaResetAt(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))/.exec(message);
+  if (!match) return null;
+  const parsed = Date.parse(match[1]!);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
 export function successBudget(
   now: Date,
   options: { policy?: OrganBudgetPolicy; cadenceMs?: number } = {},
@@ -64,9 +85,10 @@ export function failureBudget(
 ): OrganBudgetFields {
   const policy = options.policy ?? ORGAN_BUDGET_POLICY;
   if (failure.class === "quota") {
-    const parkMs = failure.quotaResetAt
-      ? Math.max(0, Date.parse(failure.quotaResetAt) - now.getTime())
-      : policy.defaultQuotaParkMs;
+    const resetMs = failure.quotaResetAt
+      ? Date.parse(failure.quotaResetAt) - now.getTime()
+      : Number.NaN;
+    const parkMs = Number.isFinite(resetMs) && resetMs > 0 ? resetMs : policy.defaultQuotaParkMs;
     return {
       attempts: previous.attempts,
       nextEligibleAt: after(now, parkMs),

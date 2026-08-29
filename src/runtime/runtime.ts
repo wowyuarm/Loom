@@ -8,6 +8,13 @@ import { createHostTimePolicy, type TimePolicy } from "../configuration/index.js
 import { initializeRuntimeSchema } from "./schema.js";
 import { RuntimeStatusReader, reflectionSlice } from "./status-reader.js";
 import {
+  failureBudget,
+  organFailureClass,
+  quotaResetAt,
+  successBudget,
+  type OrganBudgetFields,
+} from "./organ-budget.js";
+import {
   CognitiveOrganExecution,
   COGNITIVE_ORGAN_POLICY,
   type CognitiveAttemptRecord,
@@ -294,8 +301,12 @@ interface ActiveOrientation {
 }
 
 interface ActiveCognitiveOrgan {
-  workId: string;
-  attempt: CognitiveAttemptRecord;
+  organ: CognitiveOrganName;
+  /** Legacy execution-ledger organ (grace window + fenced attempt); domain-row organs are false. */
+  executionLedger: boolean;
+  /** Ledger work id; defined exactly when executionLedger is true. */
+  workId?: string;
+  markCancelled(): void;
   cancel: (reason: string) => Promise<void>;
   run: Promise<unknown>;
 }
@@ -897,6 +908,13 @@ class SqliteRuntime implements Runtime {
       if (this.#hasHeldCognitiveOrganWork()) {
         return { disposition: "cognitive_organ_intervention_required" };
       }
+      if (this.#activeCognitiveOrgan) {
+        // An organ run is still active or unwinding after a foreground abort:
+        // the single Workspace writer must release before the Turn starts.
+        // The abort is prompt by contract, so this is a short wait, not a
+        // held state.
+        return { disposition: "busy" };
+      }
       if (options.agentWork === "defer" && this.#hasPendingInput()) {
         return { disposition: "agent_work_deferred" };
       }
@@ -1037,113 +1055,95 @@ class SqliteRuntime implements Runtime {
 
     const windowEnd = schedule.window_end_sequence ?? this.#latestActivitySequence();
     const activities = this.#activitiesInSequenceRange(schedule.cursor_sequence, windowEnd);
-    return this.#driveCognitiveOrgan<CognitiveOrganClaim, AttentionMaintenanceResult, RunAttentionMaintenanceResult>({
-      organ: "attention-maintainer",
-      domainRef: `window:${windowEnd}`,
-      claimLostMessage: "Attention maintenance domain claim lost",
-      noClaim: nextAttemptAt =>
-        nextAttemptAt
-          ? { disposition: "waiting", nextRunAt: nextAttemptAt }
-          // A terminal blocked work record remains visible and requeueable, but
-          // it is not an active writer. Do not let it turn this independent lane
-          // into a scheduler-wide busy loop.
-          : this.#cognitiveOrgan.currentWork("attention-maintainer")?.status === "running"
-            ? { disposition: "busy" }
-            : { disposition: "idle" },
-      claimLost: () => ({ disposition: "busy" }),
-      acquire: claim => {
-        this.#attentionMaintenanceRunning = true;
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE attention_maintenance
-            SET window_end_sequence = ?, attempt_count = attempt_count + 1
-            WHERE singleton = 1
-          `).run(windowEnd);
-          this.#startAgentRun(claim.agentRunId, "attention-maintainer", this.#now());
-        });
-        return claim;
-      },
-      release: () => { this.#attentionMaintenanceRunning = false; },
-      cancel: (_claim, reason) => this.#attentionMaintenance!.cancel?.(reason) ?? Promise.resolve(),
-      run: claim => this.#attentionMaintenance!.maintain({
-        operationKey: `window:${windowEnd}`,
-        observedAt: options.observedAt.toISOString(),
-        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
-        recentActivities: activities,
-      }),
-      transcriptRef: result => organTranscriptRef("attention-maintainer", result.runId),
-      resultRef: result => result.path,
-      settle: (claim, outcome) => this.#settleAttentionRun(options, claim, windowEnd, outcome),
-    });
+    const agentRunId = this.#nextId();
+    this.#attentionMaintenanceRunning = true;
+    try {
+      // Reserve the window and register the run in the same synchronous tick
+      // as the running flag, so an arriving human Input still sees an active
+      // organ and can abort it. The attempt budget is not touched until the
+      // outcome exists: an aborted run writes nothing.
+      this.#transaction(() => {
+        this.#database.prepare(`
+          UPDATE attention_maintenance
+          SET window_end_sequence = ?
+          WHERE singleton = 1
+        `).run(windowEnd);
+        this.#startAgentRun(agentRunId, "attention-maintainer", this.#now());
+      });
+      const outcome = await this.#runDomainRowOrgan("attention-maintainer", {
+        cancel: reason => this.#attentionMaintenance!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => this.#attentionMaintenance!.maintain({
+          operationKey: `window:${windowEnd}`,
+          observedAt: options.observedAt.toISOString(),
+          localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+          recentActivities: activities,
+        }),
+      });
+      return this.#settleAttentionRun(options, agentRunId, windowEnd, outcome);
+    } finally {
+      this.#attentionMaintenanceRunning = false;
+    }
   }
 
   #settleAttentionRun(
     options: RunAttentionMaintenanceOptions,
-    claim: CognitiveOrganClaim,
+    agentRunId: string,
     windowEnd: number,
-    outcome: CognitiveOrganRunOutcome<AttentionMaintenanceResult>,
+    outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: AttentionMaintenanceResult },
   ): RunAttentionMaintenanceResult {
-    switch (outcome.disposition) {
-      case "completed": {
-        const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE attention_maintenance
-            SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
-                window_end_sequence = NULL, attempt_count = 0, last_result_json = ?, last_error = NULL
-            WHERE singleton = 1
-          `).run(options.observedAt.toISOString(), nextRunAt, windowEnd, JSON.stringify(outcome.result));
-          this.#finishAgentRun(claim.agentRunId, "succeeded", outcome.result.outcome, this.#now());
-        });
-        return { disposition: "completed", result: outcome.result, nextRunAt };
-      }
-      case "cancelled": {
-        // Human preemption dropped this run; the same window is retried on the
-        // next cadence. The attempt budget is closed in the ledger.
-        const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE attention_maintenance
-            SET next_run_after = ?, last_error = NULL, window_end_sequence = NULL, attempt_count = 0
-            WHERE singleton = 1
-          `).run(nextRunAt);
-          this.#finishAgentRun(claim.agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
-        });
-        return { disposition: "busy" };
-      }
-      case "intervention_required":
-        // Domain schedule is left untouched; a human must resolve the held
-        // work before any organ may start again.
-        this.#finishAgentRun(
-          claim.agentRunId,
-          "interrupted",
-          "intervention_required",
-          this.#now(),
-          "cancelled",
+    if (!outcome.failure && !outcome.cancelled) {
+      const result = outcome.result!;
+      const nextRunAt = new Date(options.observedAt.getTime() + options.cadenceMs).toISOString();
+      const budget = successBudget(this.#now(), { cadenceMs: options.cadenceMs });
+      this.#transaction(() => {
+        this.#database.prepare(`
+          UPDATE attention_maintenance
+          SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
+              window_end_sequence = NULL, attempt_count = ?, needs_human = 0,
+              last_result_json = ?, last_error = NULL
+          WHERE singleton = 1
+        `).run(
+          this.#now().toISOString(),
+          budget.nextEligibleAt ?? nextRunAt,
+          windowEnd,
+          budget.attempts,
+          JSON.stringify(result),
         );
-        return { disposition: "busy" };
-      case "failed": {
-        const message = outcome.error;
-        const nextRunAt = outcome.nextAttemptAt
-          ?? new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE attention_maintenance
-            SET next_run_after = ?, last_error = ?
-            WHERE singleton = 1
-          `).run(nextRunAt, message.slice(0, 2_000));
-          this.#finishAgentRun(
-            claim.agentRunId,
-            "failed",
-            undefined,
-            this.#now(),
-            outcome.failureCategory ?? "unknown",
-          );
-        });
-        return { disposition: "failed", nextRunAt, error: message };
-      }
+        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      });
+      return { disposition: "completed", result, nextRunAt };
     }
+    if (outcome.cancelled) {
+      // Human preemption: write nothing — the reserved window retries once the
+      // foreground is done. There is no grace window and no budget to spend.
+      this.#finishAgentRun(agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+      return { disposition: "busy" };
+    }
+    const error = outcome.failure!.error;
+    const message = error instanceof Error ? error.message : String(error);
+    const budget = failureBudget(this.#now(), this.#readAttentionBudget(), {
+      class: organFailureClass(error),
+      error: message,
+      quotaResetAt: quotaResetAt(error),
+    });
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE attention_maintenance
+        SET next_run_after = ?, attempt_count = ?, needs_human = ?, last_error = ?
+        WHERE singleton = 1
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, message.slice(0, 2_000));
+      this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
+    });
+    return { disposition: "failed", nextRunAt: budget.nextEligibleAt!, error: message };
   }
+
+  #readAttentionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+    const row = this.#database.prepare(`
+      SELECT attempt_count, needs_human FROM attention_maintenance WHERE singleton = 1
+    `).get() as unknown as { attempt_count: number; needs_human: number } | undefined;
+    return { attempts: row?.attempt_count ?? 0, needsHuman: (row?.needs_human ?? 0) === 1 };
+  }
+
 
   async runMemoryReflection(options: RunMemoryReflectionOptions): Promise<RunMemoryReflectionResult> {
     assertReflectionOptions(options);
@@ -1759,8 +1759,10 @@ class SqliteRuntime implements Runtime {
       }
     })();
     const active: ActiveCognitiveOrgan = {
+      organ: claim.work.organ,
+      executionLedger: true,
       workId: claim.workId,
-      attempt: claim.attempt,
+      markCancelled: () => {},
       cancel: options.cancel,
       run: runPromise,
     };
@@ -1778,6 +1780,41 @@ class SqliteRuntime implements Runtime {
     // running and report a spurious failure.
     if (this.#cancelSettling) await this.#cancelSettling;
     return this.#cognitiveOrganOutcome<Result>(claim.workId, result);
+  }
+
+  /**
+   * Run one organ attempt against its domain row: no ledger, no grace window.
+   * A cancel is an in-process abort — the run wrapper observes the
+   * cancellation and the caller writes nothing, so the row stays as it was
+   * and the work becomes due again by its own fields.
+   */
+  async #runDomainRowOrgan<Result>(
+    organ: CognitiveOrganName,
+    options: {
+      cancel: (reason: string) => Promise<void>;
+      run: () => Promise<Result>;
+    },
+  ): Promise<{ cancelled: boolean; failure: { error: unknown } | undefined; result?: Result }> {
+    let cancelled = false;
+    const runPromise = options.run();
+    const active: ActiveCognitiveOrgan = {
+      organ,
+      executionLedger: false,
+      markCancelled: () => {
+        cancelled = true;
+      },
+      cancel: options.cancel,
+      run: runPromise,
+    };
+    this.#activeCognitiveOrgan = active;
+    try {
+      const result = await runPromise;
+      return { cancelled, failure: undefined, result };
+    } catch (error) {
+      return { cancelled, failure: { error } };
+    } finally {
+      if (this.#activeCognitiveOrgan === active) this.#activeCognitiveOrgan = undefined;
+    }
   }
 
   /// Drive one Cognitive Organ budget cycle for a domain entry point that has
@@ -1889,7 +1926,16 @@ class SqliteRuntime implements Runtime {
   async #cancelActiveCognitiveOrgan(reason: string): Promise<void> {
     const active = this.#activeCognitiveOrgan;
     if (!active) return;
-    this.#cognitiveOrgan.cancel(active.workId, reason);
+    if (!active.executionLedger) {
+      // Domain-row organ: a cancel is an in-process abort. The run wrapper
+      // observes the cancellation and writes nothing; there is no grace race
+      // and no persisted claim to settle. The foreground turn waits for the
+      // release at its own admission gate, not here.
+      active.markCancelled();
+      void active.cancel(reason).catch(() => {});
+      return;
+    }
+    this.#cognitiveOrgan.cancel(active.workId!, reason);
     // Deliver the cancel to the organ so it can release its work; the grace
     // race below still decides released vs intervention_required. A failing
     // domain cancel must not crash the input path — the grace window is the
@@ -1912,9 +1958,9 @@ class SqliteRuntime implements Runtime {
         void active.run.then(() => finish(true), () => finish(true));
       });
       if (released) {
-        this.#cognitiveOrgan.finishCancelled(active.workId);
+        this.#cognitiveOrgan.finishCancelled(active.workId!);
       } else {
-        this.#cognitiveOrgan.markInterventionRequired(active.workId, `${reason}: cancel grace expired`);
+        this.#cognitiveOrgan.markInterventionRequired(active.workId!, `${reason}: cancel grace expired`);
       }
     })();
     this.#cancelSettling = settling;

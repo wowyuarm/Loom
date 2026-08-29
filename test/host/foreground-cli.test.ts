@@ -145,12 +145,8 @@ test("requeues one blocked Input through the running Host", async t => {
 test("requeues one held Cognitive Organ work through the running Host", async t => {
   const root = await preparedInstanceRoot();
   let now = new Date("2026-07-19T12:00:00.000Z");
-  const attentionHang: { promise: Promise<{ outcome: "no_change"; runId: string; path: string }>; resolve: () => void } = {
-    promise: new Promise(() => {}),
-    resolve: () => {},
-  };
   let resolveStarted!: () => void;
-  const attentionStarted = new Promise<void>(resolve => { resolveStarted = resolve; });
+  const recordingStarted = new Promise<void>(resolve => { resolveStarted = resolve; });
   const runtime = openRuntime({
     root: path.join(root, "runtime"),
     timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
@@ -197,20 +193,9 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
       }),
     },
     activityRecorder: {
-      record: async activity => ({
-        version: 1,
-        segmentId: activity.segmentId,
-        runId: "record-day-one",
-        recordedAt: "2026-07-19T12:00:00.000Z",
-        daily: { status: "no_change", path: "daily/2026-07-19.md" },
-        episodes: [],
-      }),
-      cancel: async () => {},
-    },
-    attentionMaintenance: {
-      maintain: async () => {
+      record: async activity => {
         resolveStarted();
-        return attentionHang.promise;
+        return new Promise(() => {});
       },
       cancel: async () => {},
     },
@@ -226,28 +211,10 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
   });
   await runtime.advance();
   await runtime.closeActivity();
-  await runtime.advance();
-  assert.deepEqual(
-    await runtime.runAttentionMaintenance({
-      observedAt: now,
-      initialDelayMs: 1,
-      cadenceMs: 60_000,
-      retryDelayMs: 30_000,
-      agentWork: "allow",
-    }),
-    { disposition: "waiting", nextRunAt: "2026-07-19T12:00:00.001Z" },
-  );
-  now = new Date("2026-07-19T12:00:01.000Z");
-  const heldRun = runtime.runAttentionMaintenance({
-    observedAt: now,
-    initialDelayMs: 1,
-    cadenceMs: 60_000,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  });
-  await attentionStarted;
-  // The human input preempts the held organ; its cancel is ignored, so the
-  // grace expiry persists intervention_required in the ledger.
+  // The recording run starts and holds; its cancel is ignored, so the grace
+  // expiry persists intervention_required in the ledger.
+  const heldRun = runtime.advance();
+  await recordingStarted;
   await runtime.acceptInput({
     source: "test",
     sourceId: "human-while-held",
@@ -264,8 +231,8 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
 
   // The Host status exposes the discoverable local work id.
   const held = host.status().instance.runtime.cognitiveOrganWork
-    .find(work => work.organ === "attention-maintainer")!;
-  assert.match(held.workId, /^attention-maintainer-\d+$/);
+    .find(work => work.organ === "life-recorder")!;
+  assert.match(held.workId, /^life-recorder-\d+$/);
   assert.equal(held.status, "intervention_required");
 
   const result = await runCli(cli, ["requeue-organ", "--root", root, held.workId], process.env);
@@ -274,7 +241,7 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
 
   // The successor is the current cycle, referencing the held work by its local id.
   const successor = host.status().instance.runtime.cognitiveOrganWork
-    .find(work => work.organ === "attention-maintainer")!;
+    .find(work => work.organ === "life-recorder")!;
   assert.equal(successor.status, "running");
   assert.equal(successor.attemptCount, 1);
   assert.equal(successor.requeuedFrom, held.workId);
@@ -286,18 +253,18 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
   assert.match(status.stdout, /Cognitive Organ Work:/);
   assert.match(
     status.stdout,
-    new RegExp(`attention-maintainer-\\d+: running, attempt 1, requeued from ${held.workId}`),
+    new RegExp(`life-recorder-\\d+: running, attempt 1, requeued from ${held.workId}`),
   );
   // Normal execution has no wall-clock deadline, and the running successor
   // has no transcript or result reference yet.
   assert.doesNotMatch(status.stdout, /soft deadline|total deadline/);
-  assert.doesNotMatch(status.stdout, /transcript organs\/attention-maintainer/);
+  assert.doesNotMatch(status.stdout, /transcript organs\/life-recorder/);
   assert.doesNotMatch(status.stdout, /lastError/);
 
   // Unknown and missing ids fail with a clear message before touching anything.
-  const unknown = await runCli(cli, ["requeue-organ", "--root", root, "attention-maintainer-999999"], process.env);
+  const unknown = await runCli(cli, ["requeue-organ", "--root", root, "life-recorder-999999"], process.env);
   assert.equal(unknown.code, 1);
-  assert.match(unknown.stderr, /Unknown cognitive organ work attention-maintainer-999999/);
+  assert.match(unknown.stderr, /Unknown cognitive organ work life-recorder-999999/);
   const missing = await runCli(cli, ["requeue-organ", "--root", root], process.env);
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /Usage: loom requeue-organ/);
