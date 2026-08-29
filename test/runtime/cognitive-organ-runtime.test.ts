@@ -854,24 +854,24 @@ test("a retry continues the same reflection day on the same work", async t => {
   );
   assert.equal(reflectCalls, 2);
 
+  // The retry continued the immutable day input on the row itself: success
+  // cleared the budget and scheduled the next reflection day.
   runtime.close();
   const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const work = db.prepare(
-    "SELECT id, domain_ref, status FROM cognitive_work WHERE organ = 'memory-reflector'",
-  ).all() as Array<Record<string, unknown>>;
-  const attempts = db.prepare(
-    "SELECT work_id, attempt_number, status FROM cognitive_attempts WHERE work_id = ? ORDER BY attempt_number, rowid",
-  ).all(String(work[0]!.id)) as Array<Record<string, unknown>>;
+  const row = db.prepare(`
+    SELECT next_day, attempt_count, needs_human, last_error, next_run_after
+    FROM memory_reflection WHERE singleton = 1
+  `).get() as Record<string, unknown>;
+  const ledgerRows = db.prepare(
+    "SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'memory-reflector'",
+  ).get() as Record<string, number>;
   db.close();
-  assert.equal(work.length, 1);
-  assert.deepEqual(
-    { id: work[0]!.id, domain_ref: work[0]!.domain_ref, status: work[0]!.status },
-    { id: work[0]!.id, domain_ref: "day:2026-07-19", status: "completed" },
-  );
-  assert.deepEqual(attempts.map(attempt => ({ workId: attempt.work_id, attemptNumber: attempt.attempt_number, status: attempt.status })), [
-    { workId: work[0]!.id, attemptNumber: 1, status: "failed" },
-    { workId: work[0]!.id, attemptNumber: 2, status: "completed" },
-  ]);
+  assert.equal(row.next_day, "2026-07-20");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.last_error, null);
+  assert.equal(row.next_run_after, "2026-07-21T03:00:00.000Z");
+  assert.equal(ledgerRows.n, 0);
 });
 
 test("requeue refuses an active attempt, unknown ids and empty ids", async t => {
@@ -1036,98 +1036,6 @@ test("requeue refuses stale Life Recorder, Reflection and Thread work whose doma
     assert.throws(
       () => recovered.requeueCognitiveOrganWork(held.workId),
       /no Activity awaits recording/,
-    );
-  }
-
-  // Memory Reflector: the schedule's next day moved past the held day.
-  {
-    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-reflection-"));
-    let now = new Date("2026-07-19T12:00:00.000Z");
-    const reflectHang = deferred<{ outcome: "no_change"; runId: string; changedMaterials: string[] }>();
-    const reflectStarted = deferred<void>();
-    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
-    const first = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async activity => receiptFor(activity, "record-day-one"),
-        cancel: async () => {},
-      },
-      memoryReflection: {
-        reflect: async () => {
-          reflectStarted.resolve();
-          return reflectHang.promise;
-        },
-        cancel: async () => {},
-      },
-      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      now: () => now,
-    });
-    await first.acceptInput({
-      source: "test",
-      sourceId: "day-one",
-      kind: "interaction",
-      payload: { text: "day one" },
-    });
-    await first.advance();
-    await first.closeActivity();
-    await first.advance();
-    assert.deepEqual(
-      await first.runMemoryReflection({
-        observedAt: now,
-        delayMs: 0,
-        retryDelayMs: 30_000,
-        agentWork: "allow",
-      }),
-      { disposition: "waiting", nextRunAt: "2026-07-20T03:00:00.000Z" },
-    );
-    now = new Date("2026-07-20T04:00:01.000Z");
-    const heldRun = first.runMemoryReflection({
-      observedAt: now,
-      delayMs: 0,
-      retryDelayMs: 30_000,
-      agentWork: "allow",
-    });
-    await reflectStarted.promise;
-    await first.acceptInput({
-      source: "test", sourceId: "interrupt-held-reflection", kind: "interaction", payload: { text: "interrupt" },
-    });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(
-      first.status().cognitiveOrganWork.find(entry => entry.organ === "memory-reflector")?.status,
-      "intervention_required",
-    );
-    first.close();
-    // heldRun intentionally stays unsettled: the reflector never released.
-
-    // The schedule moved on to a newer day while held.
-    let db = new DatabaseSync(path.join(root, "runtime.db"));
-    db.prepare(`UPDATE memory_reflection SET next_day = '2026-07-21' WHERE singleton = 1`).run();
-    db.close();
-    const recovered = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async activity => receiptFor(activity, "record-day-one"),
-        cancel: async () => {},
-      },
-      memoryReflection: {
-        reflect: async () => ({ outcome: "no_change", runId: "reflection", changedMaterials: [] }),
-        cancel: async () => {},
-      },
-      now: () => now,
-    });
-    t.after(() => recovered.close());
-    const held = recovered.status().cognitiveOrganWork
-      .find(entry => entry.organ === "memory-reflector")!;
-    assert.equal(held.status, "intervention_required");
-    assert.throws(
-      () => recovered.requeueCognitiveOrganWork(held.workId),
-      /superseded by a newer reflection day/,
     );
   }
 

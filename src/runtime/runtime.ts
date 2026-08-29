@@ -1173,96 +1173,75 @@ class SqliteRuntime implements Runtime {
     }
     if (!this.#memoryReflection) return { disposition: "busy" };
 
-    return this.#driveCognitiveOrgan<CognitiveOrganClaim, MemoryReflectionResult, RunMemoryReflectionResult>({
-      organ: "memory-reflector",
-      domainRef: `day:${reflectionDay}`,
-      claimLostMessage: "Memory reflection domain claim lost",
-      noClaim: nextAttemptAt =>
-        nextAttemptAt
-          ? { disposition: "waiting", nextRunAt: nextAttemptAt }
-          : this.#cognitiveOrgan.currentWork("memory-reflector")?.status === "running"
-            ? { disposition: "busy" }
-            : { disposition: "idle" },
-      claimLost: () => ({ disposition: "busy" }),
-      acquire: claim => {
-        this.#memoryReflectionRunning = true;
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE memory_reflection SET attempt_count = attempt_count + 1 WHERE singleton = 1
-          `).run();
-          this.#startAgentRun(claim.agentRunId, "memory-reflector", this.#now());
-        });
-        return claim;
-      },
-      release: () => { this.#memoryReflectionRunning = false; },
-      cancel: (_claim, reason) => this.#memoryReflection!.cancel?.(reason) ?? Promise.resolve(),
-      run: () => this.#memoryReflection!.reflect({
-        reflectionDay,
-        observedAt: options.observedAt.toISOString(),
-        localTime: this.#timePolicy.formatLocalTime(options.observedAt),
-        activities,
-      }),
-      transcriptRef: result => organTranscriptRef("memory-reflector", result.runId),
-      resultRef: result => result.changedMaterials[0],
-      settle: (claim, outcome) => this.#settleMemoryRun(options, reflectionDay, claim, outcome),
-    });
+    const agentRunId = this.#nextId();
+    this.#memoryReflectionRunning = true;
+    try {
+      // Register the run in the same synchronous tick as the running flag, so
+      // an arriving human Input still sees an active organ and can abort it.
+      // The attempt budget is not touched until the outcome exists.
+      this.#transaction(() => {
+        this.#startAgentRun(agentRunId, "memory-reflector", this.#now());
+      });
+      const outcome = await this.#runDomainRowOrgan("memory-reflector", {
+        cancel: reason => this.#memoryReflection!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => this.#memoryReflection!.reflect({
+          reflectionDay,
+          observedAt: options.observedAt.toISOString(),
+          localTime: this.#timePolicy.formatLocalTime(options.observedAt),
+          activities,
+        }),
+      });
+      return this.#settleMemoryRun(options, agentRunId, reflectionDay, outcome);
+    } finally {
+      this.#memoryReflectionRunning = false;
+    }
   }
 
   #settleMemoryRun(
     options: RunMemoryReflectionOptions,
+    agentRunId: string,
     reflectionDay: string,
-    claim: CognitiveOrganClaim,
-    outcome: CognitiveOrganRunOutcome<MemoryReflectionResult>,
+    outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: MemoryReflectionResult },
   ): RunMemoryReflectionResult {
-    switch (outcome.disposition) {
-      case "completed": {
-        const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
-        const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
-        this.#transaction(() => {
-          this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, outcome.result);
-          this.#finishAgentRun(claim.agentRunId, "succeeded", outcome.result.outcome, this.#now());
-        });
-        return { disposition: "completed", reflectionDay, result: outcome.result, nextRunAt };
-      }
-      case "cancelled": {
-        const nextRunAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE memory_reflection SET next_run_after = ?, last_error = NULL, attempt_count = 0
-            WHERE singleton = 1
-          `).run(nextRunAt);
-          this.#finishAgentRun(claim.agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
-        });
-        return { disposition: "busy" };
-      }
-      case "intervention_required":
-        this.#finishAgentRun(
-          claim.agentRunId,
-          "interrupted",
-          "intervention_required",
-          this.#now(),
-          "cancelled",
-        );
-        return { disposition: "busy" };
-      case "failed": {
-        const message = outcome.error;
-        const nextRunAt = outcome.nextAttemptAt
-          ?? new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-        this.#transaction(() => {
-          this.#database.prepare(`
-            UPDATE memory_reflection SET next_run_after = ?, last_error = ? WHERE singleton = 1
-          `).run(nextRunAt, message.slice(0, 2_000));
-          this.#finishAgentRun(
-            claim.agentRunId,
-            "failed",
-            undefined,
-            this.#now(),
-            outcome.failureCategory ?? "unknown",
-          );
-        });
-        return { disposition: "failed", reflectionDay, nextRunAt, error: message };
-      }
+    if (!outcome.failure && !outcome.cancelled) {
+      const result = outcome.result!;
+      const nextDay = this.#timePolicy.nextRecordingDay(reflectionDay);
+      const nextRunAt = this.#reflectionRunAt(nextDay, options.delayMs);
+      this.#transaction(() => {
+        this.#completeMemoryReflection(reflectionDay, nextDay, nextRunAt, result);
+        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, this.#now());
+      });
+      return { disposition: "completed", reflectionDay, result, nextRunAt };
     }
+    if (outcome.cancelled) {
+      // Human preemption: write nothing — the same day retries once the
+      // foreground is done. There is no grace window and no budget to spend.
+      this.#finishAgentRun(agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+      return { disposition: "busy" };
+    }
+    const error = outcome.failure!.error;
+    const message = error instanceof Error ? error.message : String(error);
+    const budget = failureBudget(this.#now(), this.#readReflectionBudget(), {
+      class: organFailureClass(error),
+      error: message,
+      quotaResetAt: quotaResetAt(error),
+    });
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE memory_reflection
+        SET next_run_after = ?, attempt_count = ?, needs_human = ?, last_error = ?
+        WHERE singleton = 1
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, message.slice(0, 2_000));
+      this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
+    });
+    return { disposition: "failed", reflectionDay, nextRunAt: budget.nextEligibleAt!, error: message };
+  }
+
+  #readReflectionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+    const row = this.#database.prepare(`
+      SELECT attempt_count, needs_human FROM memory_reflection WHERE singleton = 1
+    `).get() as unknown as { attempt_count: number; needs_human: number } | undefined;
+    return { attempts: row?.attempt_count ?? 0, needsHuman: (row?.needs_human ?? 0) === 1 };
   }
 
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
@@ -2449,7 +2428,7 @@ class SqliteRuntime implements Runtime {
   ): void {
     this.#database.prepare(`
       UPDATE memory_reflection
-      SET next_day = ?, next_run_after = ?, attempt_count = 0,
+      SET next_day = ?, next_run_after = ?, attempt_count = 0, needs_human = 0,
           last_completed_day = ?, last_result_json = ?, last_error = NULL
       WHERE singleton = 1
     `).run(nextDay, nextRunAt, reflectionDay, result ? JSON.stringify(result) : null);
