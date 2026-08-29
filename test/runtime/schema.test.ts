@@ -109,9 +109,95 @@ test("upgrades version 19 active_segment with overdue columns (issue #4)", async
   assert.ok(columns.includes("overdue_reason_json"));
   assert.ok(columns.includes("next_overdue_check_at"));
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 20);
+  assert.equal(version.user_version, 21);
   const row = database.prepare(
     "SELECT overdue_since FROM active_segment WHERE id = 'segment-1'",
   ).get() as { overdue_since: string | null };
   assert.equal(row.overdue_since, null);
+});
+
+test("upgrades version 20 organ domain rows with budget columns", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-schema-v20-"));
+  const database = new DatabaseSync(path.join(root, "runtime.db"));
+  database.exec(`
+    CREATE TABLE activities (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      opened_at TEXT NOT NULL,
+      closed_at TEXT NOT NULL,
+      recording_day TEXT NOT NULL,
+      frozen_activity_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'recording', 'recorded')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      lease_owner TEXT,
+      fencing_token INTEGER,
+      lease_expires_at TEXT,
+      receipt_json TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      recorded_at TEXT
+    ) STRICT;
+    CREATE TABLE thread_maintenance (
+      activity_id TEXT PRIMARY KEY REFERENCES activities(id),
+      observations_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      lease_owner TEXT,
+      fencing_token INTEGER,
+      lease_expires_at TEXT,
+      result_json TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    ) STRICT;
+    CREATE TABLE attention_maintenance (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      last_completed_at TEXT,
+      next_run_after TEXT NOT NULL,
+      cursor_sequence INTEGER NOT NULL DEFAULT 0 CHECK (cursor_sequence >= 0),
+      window_end_sequence INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_result_json TEXT,
+      last_error TEXT
+    ) STRICT;
+    CREATE TABLE memory_reflection (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      next_day TEXT NOT NULL,
+      next_run_after TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_completed_day TEXT,
+      last_result_json TEXT,
+      last_error TEXT
+    ) STRICT;
+    CREATE TABLE proactive_pulse (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      last_pulse_at TEXT,
+      next_pulse_after TEXT NOT NULL,
+      consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+      last_error TEXT
+    ) STRICT;
+    INSERT INTO activities (id, opened_at, closed_at, recording_day, frozen_activity_json, status, created_at)
+    VALUES ('activity-1', '2026-08-20T08:00:00.000Z', '2026-08-20T08:10:00.000Z', '2026-08-20', '{}', 'pending', '2026-08-20T08:10:00.000Z');
+    PRAGMA user_version = 20;
+  `);
+
+  initializeRuntimeSchema(database);
+
+  const columnsOf = (table: string) =>
+    (database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>)
+      .map(column => column.name);
+  assert.ok(columnsOf("activities").includes("next_eligible_at"));
+  assert.ok(columnsOf("activities").includes("needs_human"));
+  assert.ok(columnsOf("thread_maintenance").includes("next_eligible_at"));
+  assert.ok(columnsOf("thread_maintenance").includes("needs_human"));
+  assert.ok(columnsOf("attention_maintenance").includes("needs_human"));
+  assert.ok(columnsOf("memory_reflection").includes("needs_human"));
+  assert.ok(columnsOf("proactive_pulse").includes("needs_human"));
+  const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  assert.equal(version.user_version, 21);
+  const row = database.prepare(
+    "SELECT next_eligible_at, needs_human FROM activities WHERE id = 'activity-1'",
+  ).get() as { next_eligible_at: string | null; needs_human: number };
+  assert.equal(row.next_eligible_at, null);
+  assert.equal(row.needs_human, 0);
 });

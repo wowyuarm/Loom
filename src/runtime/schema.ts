@@ -20,6 +20,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (replyGateMigrated.user_version === 18) migrateVersion18(database);
   const overdueMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (overdueMigrated.user_version === 19) migrateVersion19(database);
+  const budgetMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (budgetMigrated.user_version === 20) migrateVersion20(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -180,6 +182,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       frozen_activity_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'recording', 'recorded')),
       attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_eligible_at TEXT,
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
       lease_owner TEXT,
       fencing_token INTEGER,
       lease_expires_at TEXT,
@@ -208,6 +212,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       last_pulse_at TEXT,
       next_pulse_after TEXT NOT NULL,
       consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
       last_error TEXT
     ) STRICT;
 
@@ -216,6 +221,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       observations_json TEXT NOT NULL,
       status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed')),
       attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_eligible_at TEXT,
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
       lease_owner TEXT,
       fencing_token INTEGER,
       lease_expires_at TEXT,
@@ -232,6 +239,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       cursor_sequence INTEGER NOT NULL DEFAULT 0 CHECK (cursor_sequence >= 0),
       window_end_sequence INTEGER,
       attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
       last_result_json TEXT,
       last_error TEXT
     ) STRICT;
@@ -241,6 +249,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       next_day TEXT NOT NULL,
       next_run_after TEXT NOT NULL,
       attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
       last_completed_day TEXT,
       last_result_json TEXT,
       last_error TEXT
@@ -279,9 +288,39 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 20;
+    PRAGMA user_version = 21;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
+}
+
+function migrateVersion20(database: DatabaseSync): void {
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const tableExists = (table: string): boolean =>
+      database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(table) !== undefined;
+    const addColumn = (table: string, column: string, definition: string): void => {
+      if (!tableExists(table)) return;
+      const columns = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{
+        name: string;
+      }>;
+      if (columns.some(existing => existing.name === column)) return;
+      database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    };
+    addColumn("activities", "next_eligible_at", "TEXT");
+    addColumn("activities", "needs_human", "INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1))");
+    addColumn("thread_maintenance", "next_eligible_at", "TEXT");
+    addColumn("thread_maintenance", "needs_human", "INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1))");
+    addColumn("attention_maintenance", "needs_human", "INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1))");
+    addColumn("memory_reflection", "needs_human", "INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1))");
+    addColumn("proactive_pulse", "needs_human", "INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1))");
+    database.exec("PRAGMA user_version = 21");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function migrateVersion19(database: DatabaseSync): void {
