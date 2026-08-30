@@ -177,6 +177,7 @@ interface PulseRow {
   last_pulse_at: string | null;
   next_pulse_after: string;
   consecutive_failures: number;
+  needs_human: number;
   last_error: string | null;
 }
 
@@ -730,9 +731,13 @@ class SqliteRuntime implements Runtime {
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const retryAt = new Date(options.observedAt.getTime() + options.retryDelayMs).toISOString();
-      this.#failPulse(options.observedAt, retryAt, message);
-      return { disposition: "failed", nextRunAt: retryAt, error: message };
+      const budget = failureBudget(options.observedAt, this.#readPulseBudget(), {
+        class: organFailureClass(error),
+        error: message,
+        quotaResetAt: quotaResetAt(error),
+      });
+      this.#failPulse(options.observedAt, budget);
+      return { disposition: "failed", nextRunAt: budget.nextEligibleAt!, error: message };
     }
   }
 
@@ -1856,7 +1861,7 @@ class SqliteRuntime implements Runtime {
 
   #readPulseSchedule(): PulseRow | undefined {
     return this.#database.prepare(`
-      SELECT last_pulse_at, next_pulse_after, consecutive_failures, last_error
+      SELECT last_pulse_at, next_pulse_after, consecutive_failures, needs_human, last_error
       FROM proactive_pulse WHERE singleton = 1
     `).get() as unknown as PulseRow | undefined;
   }
@@ -2159,8 +2164,8 @@ class SqliteRuntime implements Runtime {
       const nextPulseAfter = new Date(observedAt.getTime() + initialDelayMs).toISOString();
       this.#database.prepare(`
         INSERT INTO proactive_pulse (
-          singleton, last_pulse_at, next_pulse_after, consecutive_failures, last_error
-        ) VALUES (1, NULL, ?, 0, NULL)
+          singleton, last_pulse_at, next_pulse_after, consecutive_failures, needs_human, last_error
+        ) VALUES (1, NULL, ?, 0, 0, NULL)
       `).run(nextPulseAfter);
       this.#recordTransition(
         "proactive_pulse",
@@ -2175,6 +2180,7 @@ class SqliteRuntime implements Runtime {
         last_pulse_at: null,
         next_pulse_after: nextPulseAfter,
         consecutive_failures: 0,
+        needs_human: 0,
         last_error: null,
       };
     });
@@ -2187,7 +2193,8 @@ class SqliteRuntime implements Runtime {
   #completePulseInTransaction(observedAt: Date, nextRunAt: string, reason: string): void {
     const changed = this.#database.prepare(`
       UPDATE proactive_pulse
-      SET last_pulse_at = ?, next_pulse_after = ?, consecutive_failures = 0, last_error = NULL
+      SET last_pulse_at = ?, next_pulse_after = ?, consecutive_failures = 0, needs_human = 0,
+          last_error = NULL
       WHERE singleton = 1
     `).run(observedAt.toISOString(), nextRunAt);
     if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
@@ -2202,14 +2209,22 @@ class SqliteRuntime implements Runtime {
     );
   }
 
-  #failPulse(observedAt: Date, nextRunAt: string, error: string): void {
+  #readPulseBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+    const row = this.#readPulseSchedule();
+    return {
+      attempts: row?.consecutive_failures ?? 0,
+      needsHuman: (row?.needs_human ?? 0) === 1,
+    };
+  }
+
+  #failPulse(observedAt: Date, budget: OrganBudgetFields): void {
     this.#transaction(() => {
       const changed = this.#database.prepare(`
         UPDATE proactive_pulse
-        SET next_pulse_after = ?, consecutive_failures = consecutive_failures + 1,
+        SET next_pulse_after = ?, consecutive_failures = ?, needs_human = ?,
             last_error = ?
         WHERE singleton = 1
-      `).run(nextRunAt, error.slice(0, 2_000));
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, (budget.lastError ?? "").slice(0, 2_000));
       if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
       this.#recordTransition(
         "proactive_pulse",

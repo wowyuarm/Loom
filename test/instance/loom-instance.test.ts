@@ -977,7 +977,9 @@ test("retries a failed Orientation Pulse from its persisted due time", async t =
   assert.equal(failed.disposition, "deferred");
   assert.equal("reason" in failed ? failed.reason : undefined, "orientation_failed");
   assert.equal(first.status().runtime.proactivePulse?.consecutiveFailures, 1);
-  assert.equal(first.status().runtime.proactivePulse?.nextPulseAfter, "2026-07-22T10:35:00.000Z");
+  // The pulse row carries the shared budget backoff (1 minute), not a fixed
+  // retry delay.
+  assert.equal(first.status().runtime.proactivePulse?.nextPulseAfter, "2026-07-22T10:31:00.000Z");
   first.close();
 
   now = new Date("2026-07-22T10:35:00.000Z");
