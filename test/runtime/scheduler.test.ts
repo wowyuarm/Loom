@@ -456,6 +456,7 @@ test("waits for explicit reconciliation after an unknown Delivery", async () => 
     assert.deepEqual(await createScheduler({ runtime }).runOnce(now), {
       disposition: "deferred",
       reason: "delivery_requires_reconciliation",
+      nextRunAt: "2026-07-21T08:15:00.000Z",
     });
   } finally {
     runtime.close();
@@ -1053,6 +1054,7 @@ test("does not claim a due Memory reflection while model work is blocked", async
     assert.deepEqual(await scheduler.runOnce(now), {
       disposition: "deferred",
       reason: "agent_work_not_admitted",
+      nextRunAt: "2026-07-22T03:15:00.000Z",
     });
     assert.deepEqual(requests, []);
     assert.equal(runtime.status().memoryReflection?.nextDay, "2026-07-21");
@@ -1426,6 +1428,7 @@ test("does not claim pending Thread maintenance while agent work is deferred", a
   assert.deepEqual(await scheduler.runOnce(now), {
     disposition: "deferred",
     reason: "agent_work_not_admitted",
+    nextRunAt: "2026-07-21T18:15:00.000Z",
   });
   assert.equal(maintenanceCalls, 0);
   assert.equal(runtime.status().threadMaintenance[0]?.status, "pending");

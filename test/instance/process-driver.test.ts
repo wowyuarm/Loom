@@ -191,29 +191,6 @@ test("keeps an unexpected run failure visible and schedules process recovery", a
   await eventually(() => runs === 2 && waits.length === 2);
 });
 
-test("retries transient busy results without polling other deferred work", async t => {
-  const waits: Array<Date | undefined> = [];
-  const driver = createProcessDriver({
-    instance: fakeInstance({
-      runOnce: async () => ({
-        disposition: "busy",
-        nextRunAt: "2026-07-22T11:00:00.000Z",
-      }),
-    }),
-    now: () => new Date("2026-07-22T10:00:00.000Z"),
-    wait: async (until, signal) => {
-      waits.push(until);
-      await aborted(signal);
-    },
-  });
-  t.after(() => driver.stop());
-
-  driver.start();
-  await eventually(() => waits.length === 1);
-
-  assert.equal(waits[0]?.toISOString(), "2026-07-22T10:00:01.000Z");
-});
-
 test("waits for an explicit wake while Cognitive Organ intervention is required", async t => {
   const waits: Array<Date | undefined> = [];
   let runs = 0;

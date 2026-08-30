@@ -210,8 +210,9 @@ test("a foreground input aborts the running attention organ; the turn waits for 
     "pending",
   );
 
-  // Single-writer gate: the Turn waits until the organ run has released.
-  assert.deepEqual(await runtime.advance(), { disposition: "busy" });
+  // Single-writer gate: the Turn waits until the organ run has released
+  // (a short bounded deadline, since the abort unwinds promptly).
+  assert.equal((await runtime.advance()).disposition, "waiting");
   assert.equal(
     runtime.status().inputs.find(input => input.id === human.inputId)?.status,
     "pending",

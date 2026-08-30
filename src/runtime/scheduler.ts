@@ -38,7 +38,6 @@ export interface SchedulerOptions {
 export type SchedulerRunResult =
   | { disposition: "idle" }
   | { disposition: "waiting"; nextRunAt: string }
-  | { disposition: "busy" }
   | {
       disposition: "deferred";
       reason:
@@ -63,6 +62,13 @@ export type SchedulerRunResult =
       reason: "orientation_failed";
       nextRunAt: string;
       error: string;
+    }
+  | {
+      // Defensive fallback for runtime states that cannot persist: the pass
+      // always carries a bounded deadline instead of a retry instruction.
+      disposition: "deferred";
+      reason: "runtime_busy";
+      nextRunAt: string;
     };
 
 export interface Scheduler {
@@ -167,7 +173,7 @@ class RuntimeScheduler implements Scheduler {
           if (pulse.disposition === "accepted" || pulse.disposition === "stale" || pulse.disposition === "none") {
             // Pulse ran (split + Orientation); loop so the formed Opportunity
             // (if any) is claimed before the pending ambient replies.
-            if (deferredLane) return { disposition: "busy" };
+            if (deferredLane) return deferredLane;
             continue;
           }
           if (pulse.disposition === "failed") {
@@ -218,20 +224,34 @@ class RuntimeScheduler implements Scheduler {
             }
           }
         }
-        return { disposition: "busy" };
+        return deferredLane ?? {
+          disposition: "deferred",
+          reason: "runtime_busy",
+          nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+        };
       }
       if (advanced.disposition !== "idle" && advanced.disposition !== "waiting" && !deferredLane) continue;
 
       const afterChat = await this.#runtime.runAfterChatContinuation({ observedAt, agentWork });
       if (signal?.aborted) return { disposition: "idle" };
       if (afterChat.disposition === "admitted" || afterChat.disposition === "expired") {
-        if (deferredLane) return { disposition: "busy" };
+        if (deferredLane) return deferredLane;
         continue;
       }
       if (afterChat.disposition === "agent_work_deferred") {
-        return { disposition: "deferred", reason: "agent_work_not_admitted" };
+        return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
       }
-      if (afterChat.disposition === "busy") return deferredLane ?? { disposition: "busy" };
+      }
+      if (afterChat.disposition === "busy") {
+        return deferredLane ?? {
+          disposition: "deferred",
+          reason: "runtime_busy",
+          nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+        };
+      }
       const afterChatWaiting = afterChat.disposition === "waiting" ? afterChat : undefined;
 
       const status = this.#runtime.status();
@@ -257,7 +277,7 @@ class RuntimeScheduler implements Scheduler {
           agentWork,
         });
         if (pulse.disposition === "accepted" || pulse.disposition === "stale") {
-          if (deferredLane) return { disposition: "busy" };
+          if (deferredLane) return deferredLane;
           continue;
         }
         if (pulse.disposition === "waiting" || pulse.disposition === "none") {
@@ -271,7 +291,11 @@ class RuntimeScheduler implements Scheduler {
           };
         }
         if (pulse.disposition === "agent_work_deferred") {
-          return { disposition: "deferred", reason: "agent_work_not_admitted" };
+          return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      }
         }
         if (pulse.disposition === "failed") {
           return {
@@ -288,7 +312,11 @@ class RuntimeScheduler implements Scheduler {
           afterChatWaiting,
           deliveryWaiting,
           advanceWaiting,
-        ) ?? { disposition: "busy" };
+        ) ?? {
+          disposition: "deferred",
+          reason: "runtime_busy",
+          nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+        };
       }
       const idleCloseAt = new Date(Math.min(
         new Date(active.lastActivityAt).getTime() + this.#activityIdleMs,
@@ -318,7 +346,7 @@ class RuntimeScheduler implements Scheduler {
           // The Segment was (or will be) Fair-split and Orientation ran; loop so
           // the post-freeze work (Activity recording, Thread maintenance, the
           // formed Opportunity) can proceed and surface in this pass.
-          if (deferredLane) return { disposition: "busy" };
+          if (deferredLane) return deferredLane;
           continue;
         }
         if (pulse.disposition === "waiting") {
@@ -332,7 +360,11 @@ class RuntimeScheduler implements Scheduler {
           };
         }
         if (pulse.disposition === "agent_work_deferred") {
-          return { disposition: "deferred", reason: "agent_work_not_admitted" };
+          return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      }
         }
         if (pulse.disposition === "failed") {
           return {
@@ -435,9 +467,16 @@ class RuntimeScheduler implements Scheduler {
       };
     }
     if (result.disposition === "agent_work_deferred") {
-      return { disposition: "deferred", reason: "agent_work_not_admitted" };
+      return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      }
     }
-    if (result.disposition === "busy") return { disposition: "busy" };
+    // busy is a re-entrancy/gate signal, never a state to poll: the lane is
+    // simply skipped this pass and its next wake comes from the other
+    // deadlines (pulse cadence, delivery, segment close) or a wake event.
+    if (result.disposition === "busy") return undefined;
     if (result.disposition === "waiting") return result;
     return undefined;
   }
@@ -464,10 +503,14 @@ class RuntimeScheduler implements Scheduler {
       };
     }
     if (result.disposition === "agent_work_deferred") {
-      return { disposition: "deferred", reason: "agent_work_not_admitted" };
+      return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      }
     }
-    if (result.disposition === "idle") return undefined;
-    return { disposition: "busy" };
+    // See the attention lane: busy is skipped, never polled.
+    return undefined;
   }
 }
 
@@ -572,11 +615,23 @@ function deferredResult(
         nextRunAt: result.nextRunAt,
       };
     case "delivery_requires_reconciliation":
-      return { disposition: "deferred", reason: result.disposition };
+      return {
+        disposition: "deferred",
+        reason: result.disposition,
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      };
     case "agent_work_deferred":
-      return { disposition: "deferred", reason: "agent_work_not_admitted" };
+      return {
+        disposition: "deferred",
+        reason: "agent_work_not_admitted",
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      };
     case "cognitive_organ_intervention_required":
-      return { disposition: "deferred", reason: result.disposition };
+      return {
+        disposition: "deferred",
+        reason: result.disposition,
+        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      };
     default:
       // Every other Advance result is settled or immediately runnable; it
       // does not create a deferred Scheduler result.

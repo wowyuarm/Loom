@@ -897,11 +897,13 @@ class SqliteRuntime implements Runtime {
         return { disposition: "cognitive_organ_intervention_required" };
       }
       if (this.#activeCognitiveOrgan) {
-        // An organ run is still active or unwinding after a foreground abort:
-        // the single Workspace writer must release before the Turn starts.
-        // The abort is prompt by contract, so this is a short wait, not a
-        // held state.
-        return { disposition: "busy" };
+        // An organ run is still unwinding after a foreground abort: the
+        // single Workspace writer must release before the Turn starts. The
+        // abort is prompt by contract, so this is a short bounded wait.
+        return {
+          disposition: "waiting",
+          nextRunAt: new Date((options.observedAt ?? this.#now()).getTime() + 1_000).toISOString(),
+        };
       }
       if (options.agentWork === "defer" && this.#hasPendingInput()) {
         return { disposition: "agent_work_deferred" };

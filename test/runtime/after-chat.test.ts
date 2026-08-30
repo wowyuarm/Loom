@@ -413,6 +413,7 @@ test("keeps a model-blocked continuation recoverable until it expires", async t 
   assert.deepEqual(await blocked.runOnce(now), {
     disposition: "deferred",
     reason: "agent_work_not_admitted",
+    nextRunAt: "2026-07-22T10:20:00.000Z",
   });
   assert.equal(runtime.status().afterChatContinuation?.status, "pending");
 

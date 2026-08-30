@@ -8,7 +8,6 @@ import {
 } from "../operational-events.js";
 
 const DEFAULT_PROCESS_ERROR_RETRY_MS = 30 * 1_000;
-const DEFAULT_PROCESS_BUSY_RETRY_MS = 1_000;
 
 export type ProcessDriverWait = (
   until: Date | undefined,
@@ -163,7 +162,7 @@ class DefaultProcessDriver implements ProcessDriver {
         }
         if (this.#stopRequested) break;
         if (this.#wakeVersion !== wakeVersion) continue;
-        await this.#waitForNextRun(result, observedAt);
+        await this.#waitForNextRun(result);
       }
     } finally {
       this.#instance.close();
@@ -172,14 +171,12 @@ class DefaultProcessDriver implements ProcessDriver {
     }
   }
 
-  async #waitForNextRun(result: LoomInstanceRunResult, observedAt: Date): Promise<void> {
-    const resultTime = "nextRunAt" in result ? new Date(result.nextRunAt) : undefined;
-    const busyRetry = result.disposition === "busy"
-      ? new Date(observedAt.getTime() + DEFAULT_PROCESS_BUSY_RETRY_MS)
+  async #waitForNextRun(result: LoomInstanceRunResult): Promise<void> {
+    // Every result already carries its own deadline (or none, meaning "wake
+    // me on an external event"); the driver never invents a retry cadence.
+    const until = "nextRunAt" in result && result.nextRunAt
+      ? new Date(result.nextRunAt)
       : undefined;
-    const until = resultTime && busyRetry
-      ? new Date(Math.min(resultTime.getTime(), busyRetry.getTime()))
-      : resultTime ?? busyRetry;
     await this.#waitFor(until);
   }
 
