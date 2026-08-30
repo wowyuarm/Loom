@@ -150,6 +150,17 @@ class DefaultLoomHost implements LoomHost {
       throw new Error("Loom Host status is unavailable before start or after stop");
     }
     const runtime = status.instance.runtime;
+    // An unknown attempt is kept as permanent history once a later attempt
+    // settles the effect; only unknown attempts on an unsettled effect still
+    // need an operator.
+    const unsettledEffectIds = new Set(
+      runtime.effects
+        .filter(effect => effect.status !== "completed" && effect.status !== "abandoned")
+        .map(effect => effect.id),
+    );
+    const attentionDeliveries = runtime.deliveries.filter(delivery =>
+      delivery.status === "unknown" && unsettledEffectIds.has(delivery.effectId),
+    );
     const agentStatus = this.#instance.operationalStatus({ ...(_since ? { since: _since } : {}) });
     return {
       schemaVersion: 1,
@@ -165,9 +176,8 @@ class DefaultLoomHost implements LoomHost {
         activeTurn: runtime.turns.some(turn => turn.status === "running"),
         pendingInputs: runtime.inputs.filter(input => input.status === "pending").length,
         pendingEffects: runtime.effects.filter(effect => effect.status === "pending").length,
-        deliveriesNeedingAttention: runtime.deliveries.filter(delivery => delivery.status === "unknown").length,
-        deliveriesNeedingAttentionItems: runtime.deliveries
-          .filter(delivery => delivery.status === "unknown")
+        deliveriesNeedingAttention: attentionDeliveries.length,
+        deliveriesNeedingAttentionItems: attentionDeliveries
           .map(delivery => ({
             id: delivery.id,
             attempt: delivery.attempt,

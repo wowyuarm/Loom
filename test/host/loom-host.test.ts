@@ -126,6 +126,59 @@ test("exposes an overdue active Segment through the operator status socket (issu
   assert.equal(report.runtime.activityOverdueNextCheckAt, "2026-08-08T09:15:00.000Z");
 });
 
+test("reports unknown delivery attempts only for unsettled effects", async t => {
+  const root = await preparedInstanceRoot();
+  // Production shape seen on xi-sg: an effect delivered through a later
+  // attempt keeps its earlier unknown attempt as permanent history, while an
+  // effect held in reconciliation_required still owns its unknown attempt.
+  const seeded = openRuntime({ root: path.join(root, "runtime"), now: () => new Date("2026-08-08T09:00:00.000Z") });
+  seeded.close();
+  const database = new DatabaseSync(path.join(root, "runtime", "runtime.db"));
+  database.exec(`
+    INSERT INTO active_segment (singleton, id, opened_at, last_activity_at, status)
+    VALUES (1, 'segment-1', '2026-08-08T08:00:00.000Z', '2026-08-08T08:00:00.000Z', 'active');
+    INSERT INTO turns (id, segment_id, status, lease_owner, fencing_token, lease_expires_at,
+                       started_at, recording_day)
+    VALUES ('turn-1', 'segment-1', 'completed', 'owner-1', 1, '2099-01-01T00:00:00.000Z',
+            '2026-08-08T08:05:00.000Z', '2026-08-08');
+    INSERT INTO effects (id, turn_id, kind, payload_json, route_ref, destination_ref,
+                         input_position, status, created_at, ended_at)
+    VALUES
+      ('effect-delivered', 'turn-1', 'message', '{"text":"hi"}', 'raft-primary', 'raft:destination:x',
+       1, 'completed', '2026-08-08T08:05:00.000Z', '2026-08-08T08:06:00.000Z'),
+      ('effect-held', 'turn-1', 'message', '{"text":"hi"}', 'raft-primary', 'raft:destination:x',
+       2, 'reconciliation_required', '2026-08-08T08:05:00.000Z', NULL);
+    INSERT INTO delivery_attempts (id, effect_id, segment_id, attempt_number, status,
+                                   idempotency_key, lease_owner, fencing_token,
+                                   lease_expires_at, started_at, ended_at, remote_id, error)
+    VALUES
+      ('attempt-held-unknown', 'effect-held', 'segment-1', 1, 'unknown', 'effect-held:1',
+       'owner-1', 2, '2026-08-08T08:05:30.000Z', '2026-08-08T08:05:00.000Z',
+       '2026-08-08T08:05:01.000Z', NULL, 'Raft CLI command failed: EACCES'),
+      ('attempt-delivered-unknown', 'effect-delivered', 'segment-1', 1, 'unknown', 'effect-delivered:1',
+       'owner-1', 3, '2026-08-08T08:05:30.000Z', '2026-08-08T08:05:00.000Z',
+       '2026-08-08T08:05:01.000Z', NULL, 'Raft CLI command failed: EACCES'),
+      ('attempt-delivered-ok', 'effect-delivered', 'segment-1', 2, 'delivered', 'effect-delivered:2',
+       'owner-2', 4, '2026-08-08T08:06:30.000Z', '2026-08-08T08:06:00.000Z',
+       '2026-08-08T08:06:01.000Z', 'remote-1', NULL);
+  `);
+  database.close();
+
+  const host = await openLoomHost({ root, machineTimeZone: "UTC" });
+  t.after(() => host.stop());
+  await host.start();
+  await eventually(() => host.status().state === "running");
+
+  const report = await readLoomStatus(resolveInstanceLayout(root).statusSocketPath);
+  assert.ok("runId" in report);
+  assert.equal(report.runtime.deliveriesNeedingAttention, 1);
+  assert.deepEqual(report.runtime.deliveriesNeedingAttentionItems, [{
+    id: "attempt-held-unknown",
+    attempt: 1,
+    error: "Raft CLI command failed: EACCES",
+  }]);
+});
+
 test("accepts channel Input only through a running Host", async t => {
   const root = await preparedInstanceRoot();
   const host = await openLoomHost({ root, machineTimeZone: "UTC" });
