@@ -632,7 +632,8 @@ test("maintains changed Thread material through the assembled Instance", async t
   assert.equal(provider.bodies()[4]?.reasoning_effort, "max");
   assert.equal(instance.status().runtime.activities[0]?.status, "recorded");
   assert.equal(instance.status().runtime.threadMaintenance[0]?.status, "completed");
-  assert.equal(instance.status().runtime.threadMaintenance[0]?.attempts, 1);
+  // attempt_count now counts consecutive real failures; success clears it.
+  assert.equal(instance.status().runtime.threadMaintenance[0]?.attempts, 0);
   assert.equal(instance.status().runtime.threadMaintenance[0]?.result?.outcome, "no_change");
 
   await instance.runOnce(now);

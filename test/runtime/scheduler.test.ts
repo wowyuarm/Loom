@@ -985,7 +985,7 @@ test("does not let later Thread maintenance block an earlier Reflection day", as
     await runtime.advance();
     await runtime.closeActivity();
     await runtime.advance();
-    assert.deepEqual(await runtime.advance(), { disposition: "thread_maintenance_failed" });
+    assert.equal((await runtime.advance()).disposition, "thread_maintenance_failed");
 
     now = new Date("2026-08-06T03:00:00.000Z");
     const result = await runtime.runMemoryReflection({ ...reflectionOptions, observedAt: now });
@@ -1349,7 +1349,7 @@ test("keeps failed Thread maintenance pending across restart", async () => {
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "thread_maintenance_failed",
-    nextRunAt: "2026-07-21T17:45:00.000Z",
+    nextRunAt: "2026-07-21T17:31:00.000Z",
   });
   assert.equal(orientationCalls, 1);
   const activityId = firstRuntime.status().activities[0]?.id;
@@ -1380,7 +1380,8 @@ test("keeps failed Thread maintenance pending across restart", async () => {
     assert.deepEqual(await scheduler.runOnce(now), { disposition: "idle" });
     assert.deepEqual(maintained, [activityId]);
     assert.equal(recovered.status().threadMaintenance[0]?.status, "completed");
-    assert.equal(recovered.status().threadMaintenance[0]?.attempts, 2);
+    // Success clears the consecutive-failure count.
+    assert.equal(recovered.status().threadMaintenance[0]?.attempts, 0);
     assert.equal(recovered.status().threadMaintenance[0]?.lastError, undefined);
   } finally {
     recovered.close();

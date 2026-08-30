@@ -639,7 +639,7 @@ export type AdvanceResult =
   | { disposition: "activity_recorded" }
   | { disposition: "activity_recording_failed"; nextRunAt?: string }
   | { disposition: "thread_maintenance_completed" }
-  | { disposition: "thread_maintenance_failed" }
+  | { disposition: "thread_maintenance_failed"; nextRunAt?: string }
   | { disposition: "agent_work_deferred" }
   | { disposition: "cognitive_organ_intervention_required" }
   | { disposition: "busy" };

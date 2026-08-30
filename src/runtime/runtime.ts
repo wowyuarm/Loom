@@ -302,20 +302,9 @@ interface ActiveOrientation {
 
 interface ActiveCognitiveOrgan {
   organ: CognitiveOrganName;
-  /** Legacy execution-ledger organ (grace window + fenced attempt); domain-row organs are false. */
-  executionLedger: boolean;
-  /** Ledger work id; defined exactly when executionLedger is true. */
-  workId?: string;
   markCancelled(): void;
   cancel: (reason: string) => Promise<void>;
   run: Promise<unknown>;
-}
-
-interface CognitiveOrganClaim {
-  workId: string;
-  work: CognitiveWorkRecord;
-  attempt: CognitiveAttemptRecord;
-  agentRunId: string;
 }
 
 type ThreadMaintenanceReadiness =
@@ -368,8 +357,6 @@ class SqliteRuntime implements Runtime {
   #opportunityRunning = false;
   #activeOrientation: ActiveOrientation | undefined;
   #activeCognitiveOrgan: ActiveCognitiveOrgan | undefined;
-  /** In-flight cancel decision; the run path awaits it before deriving its outcome. */
-  #cancelSettling: Promise<void> | undefined;
   #heartbeat: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RuntimeOptions) {
@@ -407,7 +394,6 @@ class SqliteRuntime implements Runtime {
       cognitiveOrganAttempts: workId => this.#cognitiveOrgan.attempts(workId),
     });
     this.#reconcileExpiredActivityClose();
-    this.#reconcileExpiredThreadMaintenance();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileOrphanedAgentRuns();
@@ -865,7 +851,6 @@ class SqliteRuntime implements Runtime {
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileExpiredActivityClose();
-    this.#reconcileExpiredThreadMaintenance();
     this.#expireAfterChatContinuation(options.observedAt ?? this.#now());
     if (this.#hasRunningTurn()) return { disposition: "busy" };
 
@@ -1646,120 +1631,6 @@ class SqliteRuntime implements Runtime {
   }
 
   /**
-   * Claim one Cognitive Organ budget cycle for a domain entry point.
-   * Returns the running attempt, or the retry_wait deadline when the previous
-   * attempt is still backing off, or nothing when the organ is held (grace
-   * window / intervention_required / blocked) — the entry point must not start.
-   */
-  #beginCognitiveOrganAttempt(
-    organ: CognitiveOrganName,
-    domainRef: string,
-  ): { claim?: CognitiveOrganClaim; nextAttemptAt?: string } {
-    const now = this.#now();
-    const revisionId = this.#revisions?.current().id ?? "unpinned";
-    const previous = this.#cognitiveOrgan.currentWork(organ);
-    if (previous) {
-      if (previous.status === "retry_wait") {
-        // Retries continue the same immutable domain input only: a newer
-        // domainRef must start a fresh budget cycle instead of consuming the
-        // old work's retry quota with different input.
-        if (previous.domainRef === domainRef) {
-          if (previous.nextAttemptAt && Date.parse(previous.nextAttemptAt) > now.getTime()) {
-            return { nextAttemptAt: previous.nextAttemptAt };
-          }
-          const attempt = this.#cognitiveOrgan.beginNextAttempt(previous.id, revisionId);
-          if (!attempt) return {};
-          return { claim: { workId: previous.id, work: previous, attempt, agentRunId: attempt.id } };
-        }
-        // Different domain input: leave the old work in retry_wait and fall
-        // through to start a fresh work cycle for the new input.
-      } else if (previous.status === "running" || previous.status === "intervention_required"
-        || previous.status === "blocked") {
-        // A work requeued by an operator is created running but has no active
-        // attempt: the organ entry point claims it through the normal path
-        // (domain preconditions were checked before this call) and runs its
-        // first attempt. Like retry_wait, the immutable domain input must
-        // still be the current one: a requeued successor whose domainRef no
-        // longer matches must not be executed against different input.
-        if (previous.status === "running" && previous.requeuedFrom && !this.#activeCognitiveOrgan
-          && previous.domainRef === domainRef) {
-          const attempt = this.#cognitiveOrgan.attempts(previous.id)[0];
-          if (attempt) {
-            return { claim: { workId: previous.id, work: previous, attempt, agentRunId: attempt.id } };
-          }
-        }
-        return {};
-      }
-    }
-    const begun = this.#cognitiveOrgan.begin(organ, domainRef, revisionId);
-    return {
-      claim: {
-        workId: begun.work.id,
-        work: begun.work,
-        attempt: begun.attempt,
-        agentRunId: begun.attempt.id,
-      },
-    };
-  }
-
-  /**
-   * Run one Cognitive Organ attempt inside a shared budget cycle. Fencing is
-   * the ledger's: a late completion/failure against a cancelled or terminal
-   * attempt is a no-op. The outcome is derived from the ledger work state, so
-   * the domain entry point reacts to what actually happened.
-   */
-  async #runCognitiveOrgan<Result>(
-    claim: CognitiveOrganClaim,
-    options: {
-      cancel: (reason: string) => Promise<void>;
-      run: () => Promise<Result>;
-      transcriptRef?: (result: Result) => string | undefined;
-      resultRef?: (result: Result) => string | undefined;
-    },
-  ): Promise<CognitiveOrganRunOutcome<Result>> {
-    let result: Result | undefined;
-    const runPromise = (async () => {
-      try {
-        result = await options.run();
-        const transcriptRef = options.transcriptRef?.(result);
-        const resultRef = options.resultRef?.(result);
-        this.#cognitiveOrgan.completeAttempt(claim.workId, {
-          ...(transcriptRef ? { transcriptRef } : {}),
-          ...(resultRef ? { resultRef } : {}),
-        });
-      } catch (error) {
-        this.#cognitiveOrgan.failAttempt(claim.workId, {
-          failureCategory: agentFailureCategory(error),
-          error: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
-    })();
-    const active: ActiveCognitiveOrgan = {
-      organ: claim.work.organ,
-      executionLedger: true,
-      workId: claim.workId,
-      markCancelled: () => {},
-      cancel: options.cancel,
-      run: runPromise,
-    };
-    this.#activeCognitiveOrgan = active;
-    try {
-      await runPromise;
-    } catch {
-      // The attempt is already failed in the ledger; outcome reflects its state.
-    } finally {
-      if (this.#activeCognitiveOrgan === active) this.#activeCognitiveOrgan = undefined;
-    }
-    // A cancel may be settling in parallel (same event loop tick): its
-    // decision (cancelled vs intervention_required) must land before the
-    // outcome is derived, or a released organ would read the work as still
-    // running and report a spurious failure.
-    if (this.#cancelSettling) await this.#cancelSettling;
-    return this.#cognitiveOrganOutcome<Result>(claim.workId, result);
-  }
-
-  /**
    * Run one organ attempt against its domain row: no ledger, no grace window.
    * A cancel is an in-process abort — the run wrapper observes the
    * cancellation and the caller writes nothing, so the row stays as it was
@@ -1776,7 +1647,6 @@ class SqliteRuntime implements Runtime {
     const runPromise = options.run();
     const active: ActiveCognitiveOrgan = {
       organ,
-      executionLedger: false,
       markCancelled: () => {
         cancelled = true;
       },
@@ -1794,158 +1664,15 @@ class SqliteRuntime implements Runtime {
     }
   }
 
-  /// Drive one Cognitive Organ budget cycle for a domain entry point that has
-  /// already passed its own readiness gate. This owns the parts the four loops
-  /// share (ledger begin, no-claim waiting/busy/idle mapping, guard acquisition
-  /// and release, and run/outcome dispatch) and delegates the genuine domain
-  /// differences to the caller-supplied `acquire`, `settle`, and `release`.
-  ///
-  /// `acquire` is deliberately synchronous: the domain claim must be taken and
-  /// the agent run started in the same synchronous tick as `#runCognitiveOrgan`
-  /// setting the active organ, so a human Input arriving in a microtask window
-  /// still sees an active organ and can send a cancel. Awaiting the claim here
-  /// would insert a scheduling gap and break cancel semantics.
-  async #driveCognitiveOrgan<Guard, Result, Settled>(driver: {
-    organ: CognitiveOrganName;
-    domainRef: string;
-    claimLostMessage: string;
-    noClaim: (nextAttemptAt: string | undefined) => Settled;
-    claimLost: () => Settled;
-    acquire: (claim: CognitiveOrganClaim) => Guard | undefined;
-    release: (guard: Guard) => void;
-    cancel: (guard: Guard, reason: string) => Promise<void>;
-    run: (guard: Guard) => Promise<Result>;
-    transcriptRef: (result: Result) => string | undefined;
-    resultRef: (result: Result) => string | undefined;
-    settle: (guard: Guard, outcome: CognitiveOrganRunOutcome<Result>) => Settled;
-  }): Promise<Settled> {
-    const begun = this.#beginCognitiveOrganAttempt(driver.organ, driver.domainRef);
-    if (!begun.claim) return driver.noClaim(begun.nextAttemptAt);
-    const claim = begun.claim;
-    const guard = driver.acquire(claim);
-    if (guard === undefined) {
-      // Domain claim lost to a concurrent path (should not happen under the
-      // single-writer gate): close the budget cycle as interrupted.
-      this.#cognitiveOrgan.failAttempt(claim.workId, {
-        failureCategory: "interrupted",
-        error: driver.claimLostMessage,
-      });
-      return driver.claimLost();
-    }
-    try {
-      const outcome = await this.#runCognitiveOrgan(claim, {
-        cancel: reason => driver.cancel(guard, reason),
-        run: () => driver.run(guard),
-        transcriptRef: driver.transcriptRef,
-        resultRef: driver.resultRef,
-      });
-      return driver.settle(guard, outcome);
-    } finally {
-      driver.release(guard);
-    }
-  }
-
-  #cognitiveOrganOutcome<Result>(
-    workId: string,
-    result: Result | undefined,
-  ): CognitiveOrganRunOutcome<Result> {
-    const work = this.#cognitiveOrgan.work(workId);
-    if (!work) {
-      return {
-        disposition: "failed",
-        failureCategory: undefined,
-        error: "Cognitive work record disappeared",
-        nextAttemptAt: undefined,
-        blocked: true,
-      };
-    }
-    switch (work.status) {
-      case "completed":
-        return { disposition: "completed", result: result! };
-      case "cancelled":
-        return { disposition: "cancelled" };
-      case "intervention_required":
-        return { disposition: "intervention_required" };
-      case "retry_wait":
-        return {
-          disposition: "failed",
-          failureCategory: work.lastFailureCategory,
-          error: work.lastError ?? "Attempt failed",
-          nextAttemptAt: work.nextAttemptAt,
-          blocked: false,
-        };
-      case "blocked":
-        return {
-          disposition: "failed",
-          failureCategory: work.lastFailureCategory,
-          error: work.lastError ?? "Attempts exhausted",
-          nextAttemptAt: undefined,
-          blocked: true,
-        };
-      case "running":
-        return {
-          disposition: "failed",
-          failureCategory: undefined,
-          error: "Attempt did not settle",
-          nextAttemptAt: undefined,
-          blocked: true,
-        };
-    }
-  }
-
-  /**
-   * Cancel the active Cognitive Organ attempt and close the grace window:
-   * released within the grace period -> cancelled terminal state; otherwise
-   * persisted as intervention_required (blocks parallel starts until a human
-   * handles it). The incoming foreground Input stays durable in the inputs
-   * table either way.
-   */
   async #cancelActiveCognitiveOrgan(reason: string): Promise<void> {
     const active = this.#activeCognitiveOrgan;
     if (!active) return;
-    if (!active.executionLedger) {
-      // Domain-row organ: a cancel is an in-process abort. The run wrapper
-      // observes the cancellation and writes nothing; there is no grace race
-      // and no persisted claim to settle. The foreground turn waits for the
-      // release at its own admission gate, not here.
-      active.markCancelled();
-      void active.cancel(reason).catch(() => {});
-      return;
-    }
-    this.#cognitiveOrgan.cancel(active.workId!, reason);
-    // Deliver the cancel to the organ so it can release its work; the grace
-    // race below still decides released vs intervention_required. A failing
-    // domain cancel must not crash the input path — the grace window is the
-    // backstop.
-    void active.cancel(reason).catch(() => {
-      // The persisted grace window, not the domain cancel callback, decides
-      // whether this work becomes cancelled or intervention_required.
-    });
-    const settling = (async () => {
-      const released = await new Promise<boolean>(resolve => {
-        let settled = false;
-        const finish = (didRelease: boolean) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          resolve(didRelease);
-        };
-        const timeout = setTimeout(() => finish(false), this.#cognitiveOrganPolicy.cancelGraceMs);
-        timeout.unref();
-        void active.run.then(() => finish(true), () => finish(true));
-      });
-      if (released) {
-        this.#cognitiveOrgan.finishCancelled(active.workId!);
-      } else {
-        this.#cognitiveOrgan.markInterventionRequired(active.workId!, `${reason}: cancel grace expired`);
-      }
-    })();
-    this.#cancelSettling = settling;
-    try {
-      await settling;
-    } finally {
-      if (this.#cancelSettling === settling) this.#cancelSettling = undefined;
-    }
+    // A cancel is an in-process abort. The run wrapper observes the
+    // cancellation and writes nothing; there is no grace race and no
+    // persisted claim to settle. The foreground turn waits for the release
+    // at its own admission gate, not here.
+    active.markCancelled();
+    void active.cancel(reason).catch(() => {});
   }
 
   #hasHeldCognitiveOrganWork(): boolean {
@@ -2379,21 +2106,14 @@ class SqliteRuntime implements Runtime {
       LIMIT 1
     `).get(reflectionDay);
     if (unsettledActivity) return false;
+    // A thread row still inside its retry budget gates the same day's
+    // Reflection; once its budget is exhausted (needs_human) the Thread lane
+    // has run and must not starve Reflection.
     const unsettledThread = this.#database.prepare(`
       SELECT 1 FROM thread_maintenance tm
       WHERE tm.activity_id IN (SELECT DISTINCT segment_id FROM turns WHERE recording_day = ?)
         AND tm.status <> 'completed'
-        AND NOT EXISTS (
-          SELECT 1 FROM cognitive_work w
-          WHERE w.organ = 'thread-maintainer'
-            AND w.domain_ref = 'activity:' || tm.activity_id
-            AND w.status = 'blocked'
-            AND w.rowid = (
-              SELECT MAX(rowid) FROM cognitive_work w2
-              WHERE w2.organ = 'thread-maintainer'
-                AND w2.domain_ref = 'activity:' || tm.activity_id
-            )
-        )
+        AND tm.needs_human = 0
       LIMIT 1
     `).get(reflectionDay);
     return !unsettledThread;
@@ -3071,13 +2791,11 @@ class SqliteRuntime implements Runtime {
         WHERE status = 'running'
           AND (
             agent_name IN (
-              'orientation', 'attention-maintainer', 'memory-reflector', 'life-recorder'
+              'orientation', 'attention-maintainer', 'memory-reflector',
+              'life-recorder', 'thread-maintainer'
             )
             OR (agent_name = 'main-agent' AND id NOT IN (
               SELECT id FROM turns WHERE status = 'running'
-            ))
-            OR (agent_name = 'thread-maintainer' AND NOT EXISTS (
-              SELECT 1 FROM thread_maintenance WHERE status = 'running'
             ))
           )
       `).run(now.toISOString());
@@ -3139,351 +2857,152 @@ class SqliteRuntime implements Runtime {
     });
   }
 
- #reconcileExpiredThreadMaintenance(): void {
-    if (!this.#threadMaintenance) return;
-    this.#transaction(() => {
-      const now = this.#now();
-      const expired = this.#database.prepare(`
-        SELECT activity_id, fencing_token,
-               (SELECT id FROM agent_runs
-                WHERE agent_name = 'thread-maintainer' AND status = 'running'
-                ORDER BY started_at DESC, id DESC LIMIT 1) AS agent_run_id
-        FROM thread_maintenance
-        WHERE status = 'running' AND lease_expires_at <= ?
-        ORDER BY created_at, activity_id
-      `).all(now.toISOString()) as unknown as Array<{
-        activity_id: string;
-        agent_run_id: string;
-        fencing_token: number;
-      }>;
-      for (const maintenance of expired) {
-        this.#database.prepare(`
+ #settleThreadMaintenance(
+    head: { activity_id: string; attempt_count: number; needs_human: number },
+    agentRunId: string,
+    outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: ThreadMaintenanceResult },
+  ): AdvanceResult {
+    if (!outcome.failure && !outcome.cancelled) {
+      const result = outcome.result!;
+      this.#transaction(() => {
+        const now = this.#now();
+        const changed = this.#database.prepare(`
           UPDATE thread_maintenance
-          SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-              lease_expires_at = NULL, last_error = 'maintenance lease expired'
-          WHERE activity_id = ? AND status = 'running' AND fencing_token = ?
-        `).run(maintenance.activity_id, maintenance.fencing_token);
-        this.#finishAgentRun(
-          maintenance.agent_run_id,
-          "interrupted",
-          "lease_expired",
-          now,
-          "runtime_interrupted",
-        );
+          SET status = 'completed', result_json = ?, last_error = NULL,
+              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, completed_at = ?
+          WHERE activity_id = ? AND status <> 'completed'
+        `).run(JSON.stringify(result), now.toISOString(), head.activity_id);
+        if (changed.changes !== 1) {
+          throw new Error(`Thread maintenance ${head.activity_id} no longer accepts completion`);
+        }
         this.#recordTransition(
           "thread_maintenance",
-          maintenance.activity_id,
-          "running",
+          head.activity_id,
           "pending",
-          "maintenance_lease_expired",
+          "completed",
+          result.outcome,
           now,
-          maintenance.fencing_token,
+          null,
         );
-      }
-    });
-  }
-
-  async #advanceThreadMaintenance(): Promise<AdvanceResult> {
-    if (!this.#threadMaintenance) return { disposition: "idle" };
-    const readiness = this.#threadMaintenanceReadiness();
-    if (readiness.disposition === "idle") return { disposition: "idle" };
-    if (readiness.disposition === "running") return { disposition: "busy" };
-    if (readiness.disposition === "waiting") return { disposition: "waiting", nextRunAt: readiness.nextRunAt };
-    const pending = readiness.pending;
-    return this.#driveCognitiveOrgan<{
-      activity: FrozenActivity;
-      observations: ThreadActivityObservation[];
-      agentRunId: string;
-      attemptNumber: number;
-      fencingToken: number;
-    }, ThreadMaintenanceResult, AdvanceResult>({
-      organ: "thread-maintainer",
-      domainRef: `activity:${pending.activity.segmentId}`,
-      claimLostMessage: "Thread maintenance domain claim lost",
-      noClaim: nextAttemptAt =>
-        nextAttemptAt
-          ? { disposition: "waiting", nextRunAt: nextAttemptAt }
-          // A blocked or backing-off Thread work item remains visible for an
-          // operator, but it must not monopolize the scheduler: Pulse, Reflection
-          // and Attention are independent maintenance lanes. Only an actually
-          // running attempt is a single-writer busy condition.
-          : this.#cognitiveOrgan.currentWork("thread-maintainer")?.status === "running"
-            ? { disposition: "busy" }
-            : { disposition: "idle" },
-      claimLost: () => ({ disposition: "busy" }),
-      acquire: claim => {
-        const claimed = this.#claimPendingThreadMaintenance(claim.agentRunId, pending.activity.segmentId);
-        if (!claimed) return undefined;
-        this.#activeThreadMaintenanceId = claimed.activity.segmentId;
-        this.#startHeartbeat("thread_maintenance", claimed.activity.segmentId, claimed.fencingToken);
-        return claimed;
-      },
-      release: claimed => {
-        this.#stopHeartbeat();
-        if (this.#activeThreadMaintenanceId === claimed.activity.segmentId) {
-          this.#activeThreadMaintenanceId = undefined;
-        }
-      },
-      cancel: (_claimed, reason) => this.#threadMaintenance!.cancel?.(reason) ?? Promise.resolve(),
-      run: claimed => {
-        const observedAt = this.#now();
-        return this.#threadMaintenance!.maintain({
-          observedAt: observedAt.toISOString(),
-          localTime: this.#timePolicy.formatLocalTime(observedAt),
-          activity: claimed.activity,
-          observations: claimed.observations,
-        });
-      },
-      transcriptRef: result => organTranscriptRef("thread-maintainer", result.runId),
-      resultRef: result => result.changedPaths[0],
-      settle: (claimed, outcome) => this.#settleThreadMaintenance(claimed, outcome),
-    });
-  }
-
-  #settleThreadMaintenance(
-    claimed: {
-      activity: FrozenActivity;
-      observations: ThreadActivityObservation[];
-      agentRunId: string;
-      attemptNumber: number;
-      fencingToken: number;
-    },
-    outcome: CognitiveOrganRunOutcome<ThreadMaintenanceResult>,
-  ): AdvanceResult {
-    switch (outcome.disposition) {
-      case "completed":
-        this.#finishThreadMaintenance(claimed, outcome.result);
-        return { disposition: "thread_maintenance_completed" };
-      case "cancelled":
-        this.#releaseThreadMaintenance(claimed, "cancelled");
-        return { disposition: "busy" };
-      case "intervention_required":
-        // Domain lease is left running; a human must resolve the held work.
-        this.#finishAgentRun(claimed.agentRunId, "interrupted", "intervention_required", this.#now(), "cancelled");
-        return { disposition: "busy" };
-      case "failed":
-        this.#failThreadMaintenance(claimed, new Error(outcome.error));
-        return { disposition: "thread_maintenance_failed" };
+        this.#finishAgentRun(agentRunId, "succeeded", result.outcome, now);
+      });
+      return { disposition: "thread_maintenance_completed" };
     }
+    if (outcome.cancelled) {
+      // Human preemption: write nothing — the row stays due and the same
+      // head retries once the foreground is done.
+      this.#finishAgentRun(agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+      return { disposition: "busy" };
+    }
+    const error = outcome.failure!.error;
+    const message = error instanceof Error ? error.message : String(error);
+    const budget = failureBudget(this.#now(), {
+      attempts: head.attempt_count,
+      needsHuman: head.needs_human === 1,
+    }, {
+      class: organFailureClass(error),
+      error: message,
+      quotaResetAt: quotaResetAt(error),
+    });
+    this.#transaction(() => {
+      this.#database.prepare(`
+        UPDATE thread_maintenance
+        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, last_error = ?
+        WHERE activity_id = ? AND status <> 'completed'
+      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, message.slice(0, 2_000), head.activity_id);
+      this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
+    });
+    return {
+      disposition: "thread_maintenance_failed",
+      ...(budget.nextEligibleAt ? { nextRunAt: budget.nextEligibleAt } : {}),
+    };
   }
 
-  #pendingThreadMaintenances(): Array<{ activity: FrozenActivity }> {
-    const rows = this.#database.prepare(`
-      SELECT thread_maintenance.activity_id, activities.frozen_activity_json
+  /** The FIFO head: the first pending row over the activity sequence. */
+  #headThreadMaintenance(): {
+    activity_id: string;
+    activity: FrozenActivity;
+    observations: ThreadActivityObservation[];
+    attempt_count: number;
+    needs_human: number;
+    next_eligible_at: string | null;
+  } | undefined {
+    const next = this.#database.prepare(`
+      SELECT thread_maintenance.activity_id, thread_maintenance.observations_json,
+             thread_maintenance.attempt_count, thread_maintenance.needs_human,
+             thread_maintenance.next_eligible_at, activities.frozen_activity_json
       FROM thread_maintenance
       JOIN activities ON activities.id = thread_maintenance.activity_id
       WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
       ORDER BY activities.sequence
-    `).all() as unknown as Array<{
+      LIMIT 1
+    `).get() as unknown as {
       activity_id: string;
+      observations_json: string;
+      attempt_count: number;
+      needs_human: number;
+      next_eligible_at: string | null;
       frozen_activity_json: string;
-    }>;
-    return rows.map(row => ({ activity: JSON.parse(row.frozen_activity_json) as FrozenActivity }));
+    } | undefined;
+    if (!next) return undefined;
+    return {
+      activity_id: next.activity_id,
+      activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
+      observations: JSON.parse(next.observations_json) as ThreadActivityObservation[],
+      attempt_count: next.attempt_count,
+      needs_human: next.needs_human,
+      next_eligible_at: next.next_eligible_at,
+    };
   }
-
-  /** Release a cancelled maintenance back to pending without recording a failure. */
-  #releaseThreadMaintenance(
-    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
-    reason: string,
-  ): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const changed = this.#database.prepare(`
-        UPDATE thread_maintenance
-        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, last_error = NULL
-        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) return;
-      this.#finishAgentRun(claimed.agentRunId, "interrupted", reason, now, "cancelled");
-      this.#recordTransition(
-        "thread_maintenance",
-        claimed.activity.segmentId,
-        "running",
-        "pending",
-        `maintenance_${reason}`,
-        now,
-        claimed.fencingToken,
-      );
-    });
-  }
-
-  #claimPendingThreadMaintenance(agentRunId: string, activityId: string): {
-    activity: FrozenActivity;
-    observations: ThreadActivityObservation[];
-    agentRunId: string;
-    attemptNumber: number;
-    fencingToken: number;
-  } | undefined {
-    return this.#transaction(() => {
-      const next = this.#database.prepare(`
-        SELECT thread_maintenance.activity_id, thread_maintenance.observations_json,
-               thread_maintenance.attempt_count, activities.frozen_activity_json
-        FROM thread_maintenance
-        JOIN activities ON activities.id = thread_maintenance.activity_id
-        WHERE thread_maintenance.status = 'pending' AND activities.status = 'recorded'
-          AND thread_maintenance.activity_id = ?
-      `).get(activityId) as unknown as {
-        activity_id: string;
-        observations_json: string;
-        attempt_count: number;
-        frozen_activity_json: string;
-      } | undefined;
-      if (!next) return undefined;
-      const token = this.#database.prepare(`
-        UPDATE runtime_counters SET value = value + 1
-        WHERE name = 'fencing_token'
-        RETURNING value
-      `).get() as unknown as { value: number };
-      const now = this.#now();
-      const attemptNumber = next.attempt_count + 1;
-      const changed = this.#database.prepare(`
-        UPDATE thread_maintenance
-        SET status = 'running', attempt_count = ?, lease_owner = ?, fencing_token = ?,
-            lease_expires_at = ?
-        WHERE activity_id = ? AND status = 'pending' AND attempt_count = ?
-      `).run(
-        attemptNumber,
-        this.#ownerId,
-        token.value,
-        new Date(now.getTime() + this.#leaseDurationMs).toISOString(),
-        next.activity_id,
-        next.attempt_count,
-      );
-      if (changed.changes !== 1) return undefined;
-      this.#startAgentRun(agentRunId, "thread-maintainer", now);
-      this.#recordTransition(
-        "thread_maintenance",
-        next.activity_id,
-        "pending",
-        "running",
-        "maintenance_claimed",
-        now,
-        token.value,
-      );
-      return {
-        activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
-        observations: JSON.parse(next.observations_json) as ThreadActivityObservation[],
-        agentRunId,
-        attemptNumber,
-        fencingToken: token.value,
-      };
-    });
-  }
-
-  #finishThreadMaintenance(
-    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
-    result: ThreadMaintenanceResult,
-  ): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const changed = this.#database.prepare(`
-        UPDATE thread_maintenance
-        SET status = 'completed', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, result_json = ?, last_error = NULL, completed_at = ?
-        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        JSON.stringify(result),
-        now.toISOString(),
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) {
-        throw new Error(`Thread maintenance ${claimed.activity.segmentId} no longer accepts completion`);
-      }
-      this.#finishAgentRun(claimed.agentRunId, "succeeded", result.outcome, now);
-      this.#recordTransition(
-        "thread_maintenance",
-        claimed.activity.segmentId,
-        "running",
-        "completed",
-        result.outcome,
-        now,
-        claimed.fencingToken,
-      );
-    });
-  }
-
-  #failThreadMaintenance(
-    claimed: { activity: FrozenActivity; agentRunId: string; attemptNumber: number; fencingToken: number },
-    error: unknown,
-  ): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const detail = error instanceof Error ? error.message : String(error);
-      const changed = this.#database.prepare(`
-        UPDATE thread_maintenance
-        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, last_error = ?
-        WHERE activity_id = ? AND status = 'running' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        detail,
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) return;
-      this.#finishAgentRun(
-        claimed.agentRunId,
-        "failed",
-        undefined,
-        now,
-        agentFailureCategory(error),
-      );
-      this.#recordTransition(
-        "thread_maintenance",
-        claimed.activity.segmentId,
-        "running",
-        "pending",
-        `maintenance_failed:${detail}`,
-        now,
-        claimed.fencingToken,
-      );
-    });
-  }
-
   #hasRunnableThreadMaintenance(): boolean {
-    const readiness = this.#threadMaintenanceReadiness();
-    return readiness.disposition === "running" || readiness.disposition === "claimable";
+    const head = this.#headThreadMaintenance();
+    if (!head) return false;
+    if (head.next_eligible_at) {
+      const eligibleAt = Date.parse(head.next_eligible_at);
+      if (Number.isFinite(eligibleAt) && eligibleAt > this.#now().getTime()) return false;
+    }
+    return true;
   }
 
-  #threadMaintenanceReadiness(): ThreadMaintenanceReadiness {
-    const pending = this.#pendingThreadMaintenances();
-    const work = this.#cognitiveOrgan.currentWork("thread-maintainer");
-    if (work?.status === "running") {
-      const head = pending[0];
-      if (work.requeuedFrom && !this.#activeCognitiveOrgan && head
-        && `activity:${head.activity.segmentId}` === work.domainRef) {
-        return { disposition: "claimable", pending: head };
+  async #advanceThreadMaintenance(): Promise<AdvanceResult> {
+    if (!this.#threadMaintenance) return { disposition: "idle" };
+    if (this.#activeThreadMaintenanceId) return { disposition: "busy" };
+    const head = this.#headThreadMaintenance();
+    if (!head) return { disposition: "idle" };
+    if (head.next_eligible_at) {
+      const eligibleAt = Date.parse(head.next_eligible_at);
+      if (Number.isFinite(eligibleAt) && eligibleAt > this.#now().getTime()) {
+        return { disposition: "waiting", nextRunAt: head.next_eligible_at };
       }
-      return { disposition: "running" };
     }
-    if (work?.status === "blocked" || work?.status === "intervention_required") return { disposition: "idle" };
-    if (work?.status === "retry_wait") {
-      const head = pending[0];
-      // Thread Maintenance owns one FIFO queue. A later Activity never
-      // overtakes a retrying head, so its original attempt budget survives.
-      if (head && `activity:${head.activity.segmentId}` === work.domainRef
-        && work.nextAttemptAt && Date.parse(work.nextAttemptAt) > this.#now().getTime()) {
-        return { disposition: "waiting", nextRunAt: work.nextAttemptAt };
+
+    const agentRunId = this.#nextId();
+    this.#activeThreadMaintenanceId = head.activity_id;
+    try {
+      // Register the run in the same synchronous tick as the in-process
+      // claim, so an arriving human Input still sees an active organ and can
+      // abort it. The attempt budget is not touched until the outcome exists.
+      this.#transaction(() => {
+        this.#startAgentRun(agentRunId, "thread-maintainer", this.#now());
+      });
+      const outcome = await this.#runDomainRowOrgan("thread-maintainer", {
+        cancel: reason => this.#threadMaintenance!.cancel?.(reason) ?? Promise.resolve(),
+        run: () => {
+          const observedAt = this.#now();
+          return this.#threadMaintenance!.maintain({
+            observedAt: observedAt.toISOString(),
+            localTime: this.#timePolicy.formatLocalTime(observedAt),
+            activity: head.activity,
+            observations: head.observations,
+          });
+        },
+      });
+      return this.#settleThreadMaintenance(head, agentRunId, outcome);
+    } finally {
+      if (this.#activeThreadMaintenanceId === head.activity_id) {
+        this.#activeThreadMaintenanceId = undefined;
       }
-      if (head && `activity:${head.activity.segmentId}` === work.domainRef) {
-        return { disposition: "claimable", pending: head };
-      }
-      return { disposition: "idle" };
     }
-    return pending[0] ? { disposition: "claimable", pending: pending[0] } : { disposition: "idle" };
   }
 
   async #advanceActivityRecording(): Promise<AdvanceResult> {

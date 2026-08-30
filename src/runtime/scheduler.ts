@@ -562,7 +562,8 @@ function deferredResult(
       return {
         disposition: "deferred",
         reason: result.disposition,
-        nextRunAt: new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+        nextRunAt: result.nextRunAt
+          ?? new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
       };
     case "delivery_not_sent":
       return {

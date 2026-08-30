@@ -102,6 +102,13 @@ function receiptFor(activity: FrozenActivity, runId: string): Awaited<ReturnType
  * recording; resolves once the recorder has begun (its record() call
  * resolved `started`).
  */
+
+function threadRow(db: DatabaseSync, activityId: string): Record<string, unknown> {
+  return db.prepare(
+    "SELECT status, attempt_count, needs_human, next_eligible_at, last_error FROM thread_maintenance WHERE activity_id = ?",
+  ).get(activityId) as Record<string, unknown>;
+}
+
 async function startRecording(
   runtime: ReturnType<typeof openRuntime>,
   started: Promise<void>,
@@ -904,91 +911,6 @@ test("requeue refuses unknown ids and empty ids", async t => {
   );
   assert.throws(() => runtime.requeueCognitiveOrganWork("  "), /requires a work id/);
 });
-test("requeue refuses stale Thread work whose domain moved on", async t => {
-  // Thread Maintainer: the activity's maintenance row completed elsewhere.
-  {
-    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-thread-"));
-    let now = new Date("2026-07-19T12:00:00.000Z");
-    const threadHang = deferred<{ outcome: "no_change"; runId: string; changedPaths: string[] }>();
-    const threadStarted = deferred<void>();
-    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
-    const first = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async activity => receiptFor(activity, "record-day-one"),
-        cancel: async () => {},
-      },
-      threadMaintenance: {
-        observationsFor: () => [
-          { turnId: "turn-1", threadPath: "threads/t.md", relation: "changed", paths: ["threads/t.md"] },
-        ],
-        maintain: async () => {
-          threadStarted.resolve();
-          return threadHang.promise;
-        },
-        cancel: async () => {},
-      },
-      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      now: () => now,
-    });
-    await first.acceptInput({
-      source: "test",
-      sourceId: "day-one",
-      kind: "interaction",
-      payload: { text: "day one" },
-    });
-    await first.advance();
-    await first.closeActivity();
-    await first.advance();
-    const threadRun = first.advance();
-    await threadStarted.promise;
-    await first.acceptInput({
-      source: "test", sourceId: "interrupt-held-thread", kind: "interaction", payload: { text: "interrupt" },
-    });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(
-      first.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status,
-      "intervention_required",
-    );
-    first.close();
-    // threadRun intentionally stays unsettled: the maintainer never released.
-
-    // The maintenance row completed elsewhere while held.
-    let db = new DatabaseSync(path.join(root, "runtime.db"));
-    db.prepare(`UPDATE thread_maintenance SET status = 'completed' WHERE status <> 'completed'`).run();
-    db.close();
-    const recovered = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async activity => receiptFor(activity, "record-day-one"),
-        cancel: async () => {},
-      },
-      threadMaintenance: {
-        observationsFor: () => [
-          { turnId: "turn-1", threadPath: "threads/t.md", relation: "changed", paths: ["threads/t.md"] },
-        ],
-        maintain: async () => ({ outcome: "no_change", runId: "thread", changedPaths: [] }),
-        cancel: async () => {},
-      },
-      now: () => now,
-    });
-    t.after(() => recovered.close());
-    const held = recovered.status().cognitiveOrganWork
-      .find(entry => entry.organ === "thread-maintainer")!;
-    assert.equal(held.status, "intervention_required");
-    assert.throws(
-      () => recovered.requeueCognitiveOrganWork(held.workId),
-      /thread maintenance is already completed/,
-    );
-  }
-});
-
 test("emits agent.run.started/finished for a Cognitive Organ run", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-run-events-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
@@ -1197,28 +1119,42 @@ test("a retrying head defers the later thread row and retries the same head on i
 
   const failed = await runtime.advance();
   assert.equal(failed.disposition, "thread_maintenance_failed");
+  assert.equal(failed.nextRunAt, "2026-07-19T11:01:01.000Z");
   assert.deepEqual(maintainLog, [head]);
-  const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.equal(work.status, "retry_wait");
-  assert.equal(work.attemptCount, 1);
-  assert.equal(work.domainRef, `activity:${head}`);
+
+  // The failure lives on the head row itself.
+  {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    const row = threadRow(db, head);
+    db.close();
+    assert.equal(row.attempt_count, 1);
+    assert.equal(row.needs_human, 0);
+    assert.equal(row.next_eligible_at, failed.nextRunAt);
+    assert.equal(row.last_error, "provider unavailable");
+  }
 
   // While the head backs off, the later row must not overtake it.
   assert.equal((await runtime.advance()).disposition, "waiting");
   assert.deepEqual(maintainLog, [head]);
   assert.equal(runtime.status().threadMaintenance.find(row => row.activityId === tail)?.status, "pending");
 
-  // Once the backoff elapses the same head retries on the same work.
-  now = new Date(Date.parse(work.nextAttemptAt!) + 1);
+  // Once the backoff elapses the same head retries on its own row.
+  now = new Date(Date.parse(failed.nextRunAt!) + 1);
   assert.equal((await runtime.advance()).disposition, "thread_maintenance_completed");
   assert.deepEqual(maintainLog, [head, head]);
-  assert.equal(runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.attemptCount, 2);
+  {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    const row = threadRow(db, head);
+    db.close();
+    assert.equal(row.status, "completed");
+    assert.equal(row.attempt_count, 0);
+  }
 
   assert.equal((await runtime.advance()).disposition, "thread_maintenance_completed");
   assert.deepEqual(maintainLog, [head, head, tail]);
 });
 
-test("a blocked head keeps the later row pending until requeue restores the head", async t => {
+test("a needs_human head keeps the later row pending until the cooldown retry heals it", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-organ-thread-blocked-head-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
   const maintainLog: string[] = [];
@@ -1245,26 +1181,32 @@ test("a blocked head keeps the later row pending until requeue restores the head
 
   const [head, tail] = await seedTwoPendingThreads(runtime, ms => { now = new Date(now.getTime() + ms); });
 
+  let lastNextRunAt = "";
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.equal((await runtime.advance()).disposition, "thread_maintenance_failed");
-    const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-    if (attempt < 2) {
-      assert.equal(work.status, "retry_wait");
-      now = new Date(Date.parse(work.nextAttemptAt!) + 1);
-    }
+    const failed = await runtime.advance();
+    assert.equal(failed.disposition, "thread_maintenance_failed");
+    lastNextRunAt = failed.nextRunAt!;
+    if (attempt < 2) now = new Date(Date.parse(lastNextRunAt) + 1);
   }
-  assert.equal(runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status, "blocked");
+  {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    const row = threadRow(db, head);
+    db.close();
+    assert.equal(row.attempt_count, 3);
+    assert.equal(row.needs_human, 1);
+    assert.equal(row.next_eligible_at, lastNextRunAt);
+  }
   assert.deepEqual(maintainLog, [head, head, head]);
   assert.equal(runtime.status().threadMaintenance.find(row => row.activityId === tail)?.status, "pending");
 
-  // A blocked head is not runnable: the scheduler reports idle and the later
-  // row must not be claimed instead.
-  assert.deepEqual(await runtime.advance(), { disposition: "idle" });
+  // The needs_human head is a waiting deadline, not busy work: nothing runs
+  // and the later row must not be claimed instead.
+  assert.equal((await runtime.advance()).disposition, "waiting");
   assert.deepEqual(maintainLog, [head, head, head]);
   assert.equal(runtime.status().threadMaintenance.find(row => row.activityId === tail)?.status, "pending");
 
-  const blockedWork = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.deepEqual(runtime.requeueCognitiveOrganWork(blockedWork.workId), { disposition: "requeued" });
+  // The daily mechanical cooldown retry heals the head without a human.
+  now = new Date(lastNextRunAt);
   assert.equal((await runtime.advance()).disposition, "thread_maintenance_completed");
   assert.deepEqual(maintainLog, [head, head, head, head]);
   assert.equal(runtime.status().threadMaintenance.find(row => row.activityId === head)?.status, "completed");
@@ -1302,26 +1244,29 @@ test("a retrying thread head survives a restart with its budget and backoff", as
   await first.advance();
   await first.closeActivity();
   await first.advance(); // recording
-  assert.equal((await first.advance()).disposition, "thread_maintenance_failed");
-  const before = first.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.equal(before.status, "retry_wait");
-  assert.equal(before.attemptCount, 1);
+  const failed = await first.advance();
+  assert.equal(failed.disposition, "thread_maintenance_failed");
+  const backoffUntil = failed.nextRunAt!;
   first.close();
 
   const recovered = openRuntime(options(false));
   t.after(() => recovered.close());
-  const work = recovered.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.equal(work.status, "retry_wait");
-  assert.equal(work.attemptCount, 1);
-  assert.equal(work.domainRef, before.domainRef);
+  // The row's budget and backoff survive the restart.
+  {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    const row = threadRow(db, maintainLog[0]!);
+    db.close();
+    assert.equal(row.attempt_count, 1);
+    assert.equal(row.needs_human, 0);
+    assert.equal(row.next_eligible_at, backoffUntil);
+  }
 
   // Backoff survives the restart: still waiting, no premature retry.
   assert.equal((await recovered.advance()).disposition, "waiting");
-  assert.deepEqual(maintainLog, [work.domainRef.slice("activity:".length)]);
+  assert.deepEqual(maintainLog, [maintainLog[0]]);
 
-  now = new Date(Date.parse(work.nextAttemptAt!) + 1);
+  now = new Date(Date.parse(backoffUntil) + 1);
   assert.equal((await recovered.advance()).disposition, "thread_maintenance_completed");
-  assert.equal(recovered.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.attemptCount, 2);
 });
 
 test("a blocked thread head does not starve Reflection for the same recording day", async t => {
@@ -1370,16 +1315,18 @@ test("a blocked thread head does not starve Reflection for the same recording da
     agentWork: "allow",
   })).disposition, "waiting");
 
-  // Thread exhausts its attempts into blocked.
+  // Thread exhausts its attempts into needs_human cooldown.
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.equal((await runtime.advance()).disposition, "thread_maintenance_failed");
-    const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-    if (attempt < 2) now = new Date(Date.parse(work.nextAttemptAt!) + 1);
+    const failed = await runtime.advance();
+    assert.equal(failed.disposition, "thread_maintenance_failed");
+    if (attempt < 2) now = new Date(Date.parse(failed.nextRunAt!) + 1);
   }
-  assert.equal(
-    runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status,
-    "blocked",
-  );
+  {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    const row = threadRow(db, runtime.status().threadMaintenance[0]!.activityId);
+    db.close();
+    assert.equal(row.needs_human, 1);
+  }
 
   // The same recording day's Reflection must not be starved by the blocked
   // Thread lane: it runs and completes while the thread row stays pending.
@@ -1394,94 +1341,6 @@ test("a blocked thread head does not starve Reflection for the same recording da
   assert.equal(reflection.reflectionDay, "2026-07-19");
   assert.equal(reflectCalls, 1);
   assert.equal(runtime.status().threadMaintenance[0]?.status, "pending");
-  assert.equal(runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")?.status, "blocked");
-});
-
-test("a requeued thread head gates Reflection until the successor completes", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-organ-thread-requeue-reflection-"));
-  let now = new Date("2026-07-19T11:00:00.000Z");
-  const threadCalls: string[] = [];
-  let reflectCalls = 0;
-  const runtime = openRuntime({
-    root,
-    timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-    execution: completingExecution,
-    activityLifecycle: activityLifecycle(),
-    activityRecorder: {
-      record: async activity => receiptFor(activity, "record"),
-      cancel: async () => {},
-    },
-    threadMaintenance: {
-      observationsFor: activity => threadObservation(activity),
-      maintain: async ({ activity }) => {
-        threadCalls.push(activity.segmentId);
-        if (threadCalls.length < 4) throw new Error("workspace not writable");
-        return { outcome: "no_change", runId: `run-${threadCalls.length}`, changedPaths: [] };
-      },
-      cancel: async () => {},
-    },
-    memoryReflection: {
-      reflect: async () => {
-        reflectCalls += 1;
-        return { outcome: "no_change", runId: "reflection-after-requeue", changedMaterials: [] };
-      },
-      cancel: async () => {},
-    },
-    now: () => now,
-  });
-  t.after(() => runtime.close());
-
-  await runtime.acceptInput({ source: "test", sourceId: "requeued-thread-day", kind: "interaction", payload: { text: "one" } });
-  await runtime.advance(); // turn
-  await runtime.closeActivity();
-  await runtime.advance(); // recording
-
-  // Establish the Reflection schedule for the recording day before it is due.
-  assert.equal((await runtime.runMemoryReflection({
-    observedAt: now,
-    delayMs: 0,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  })).disposition, "waiting");
-
-  // Thread exhausts its attempts into blocked.
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    assert.equal((await runtime.advance()).disposition, "thread_maintenance_failed");
-    const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-    if (attempt < 2) now = new Date(Date.parse(work.nextAttemptAt!) + 1);
-  }
-  const blockedWork = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.equal(blockedWork.status, "blocked");
-
-  // Requeue creates a running successor; the blocked history row stays.
-  assert.deepEqual(runtime.requeueCognitiveOrganWork(blockedWork.workId), { disposition: "requeued" });
-  const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "thread-maintainer")!;
-  assert.equal(work.status, "running");
-  assert.equal(work.requeuedFrom, blockedWork.workId);
-
-  // While the successor is runnable the same-day Reflection must stay gated,
-  // but the durable dependency is idle rather than active busy work.
-  now = new Date("2026-07-20T04:00:01.000Z");
-  assert.equal((await runtime.runMemoryReflection({
-    observedAt: now,
-    delayMs: 0,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  })).disposition, "idle");
-  assert.equal(reflectCalls, 0);
-
-  // The successor completes the Thread work, then Reflection is released.
-  assert.equal((await runtime.advance()).disposition, "thread_maintenance_completed");
-  assert.equal(runtime.status().threadMaintenance[0]?.status, "completed");
-  const released = await runtime.runMemoryReflection({
-    observedAt: now,
-    delayMs: 0,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  });
-  assert.equal(released.disposition, "completed");
-  assert.equal(released.reflectionDay, "2026-07-19");
-  assert.equal(reflectCalls, 1);
 });
 
 test("a foreground Input submitted immediately after an organ starts is cancelled (no claim→run scheduling gap)", async t => {
