@@ -4,9 +4,13 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] attention_maintenance、memory_reflection 域表具备统一预算字段（已有的 attempt_count/next_run_after/last_error 统一语义，补 needs_human）
-- [ ] activities、thread_maintenance 域行可表达同一字段组（按各自域形态承接）
-- [ ] 转移引擎实现 spec 锁定的五种转移（success / fail / park / abort / cooldown-retry）且无 IO 副作用，可单测
-- [ ] 全部现有测试保持绿色
+## Result
+
+完成于 organ-lanes 分支提交 `bf5a9c2`。organ-budget 引擎 + schema v21（域行预算列）。
+
+- [x] attention_maintenance、memory_reflection 域表具备统一预算字段（已有的 attempt_count/next_run_after/last_error 统一语义，补 needs_human）
+- [x] activities、thread_maintenance 域行可表达同一字段组（按各自域形态承接）
+- [x] 转移引擎实现 spec 锁定的五种转移（success / fail / park / abort / cooldown-retry）且无 IO 副作用，可单测
+- [x] 全部现有测试保持绿色

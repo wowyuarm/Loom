@@ -4,10 +4,14 @@
 
 **Blocked by:** 02, 03, 04, 05, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 循环对任意输入序列不产生秒级轮询（测试断言每次唤醒都有 deadline 或 wake 依据）
-- [ ] 五个 wake 源各自触发提前唤醒（行为测试）
-- [ ] foreground Input 优先语义保持（pending input 时 organ defer、在跑 organ abort）
-- [ ] SIGTERM 收敛：在跑 run 被中止后进程退出，无连锁启动
-- [ ] scheduler 测试由新循环测试替换；全部现有其余测试绿色
+## Result
+
+完成于 organ-lanes 分支提交 `2f5876d`。scheduler 不再产生 busy；driver 删除 1s 轮询；所有路径带截止时间。
+
+- [x] 循环对任意输入序列不产生秒级轮询（测试断言每次唤醒都有 deadline 或 wake 依据）
+- [x] 五个 wake 源各自触发提前唤醒（行为测试）
+- [x] foreground Input 优先语义保持（pending input 时 organ defer、在跑 organ abort）
+- [x] SIGTERM 收敛：在跑 run 被中止后进程退出，无连锁启动
+- [x] scheduler 测试由新循环测试替换；全部现有其余测试绿色

@@ -4,10 +4,14 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] orientation 真失败退避 / 3 次封顶 / needs_human 冷却 / 配额 park / abort 全链路（预算载体为 pulse schedule 行）
-- [ ] fair-split 语义不变（现有 proactive scheduling 测试保持绿色或等价改写）
-- [ ] after-chat continuation 行为不变
-- [ ] orientation 的 needs_human 仅在 status 可见，不产生任何机械上报
-- [ ] 全部现有测试保持绿色
+## Result
+
+完成于 organ-lanes 分支提交 `df50c46`。pulse 预算落 pulse 行；退避取代固定 retry delay。
+
+- [x] orientation 真失败退避 / 3 次封顶 / needs_human 冷却 / 配额 park / abort 全链路（预算载体为 pulse schedule 行）
+- [x] fair-split 语义不变（现有 proactive scheduling 测试保持绿色或等价改写）
+- [x] after-chat continuation 行为不变
+- [x] orientation 的 needs_human 仅在 status 可见，不产生任何机械上报
+- [x] 全部现有测试保持绿色

@@ -4,8 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 与 02 相同的预算/abort/park/隔离验收（预算载体为 activity 域行）
-- [ ] FIFO：队首不被越过；队首冷却时后续不前移且可解释
-- [ ] 全部现有测试保持绿色
+## Result
+
+完成于 organ-lanes 分支提交 `e1f03b6`。recording 预算落 activity 行；activity_attempts/lease 弃用；quota park 语义落地。
+
+- [x] 与 02 相同的预算/abort/park/隔离验收（预算载体为 activity 域行）
+- [x] FIFO：队首不被越过；队首冷却时后续不前移且可解释
+- [x] 全部现有测试保持绿色

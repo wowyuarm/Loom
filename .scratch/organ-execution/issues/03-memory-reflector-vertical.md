@@ -4,8 +4,12 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] 与 02 相同的四条预算/abort/park/隔离验收
-- [ ] 同日 Reflection 等待 Thread 维护完成的既有边界保持（回归覆盖）
-- [ ] 全部现有测试保持绿色
+## Result
+
+完成于 organ-lanes 分支提交 `9f82066`。reflection 脱离台账；同日 gate 改为行上 needs_human 语义。
+
+- [x] 与 02 相同的四条预算/abort/park/隔离验收
+- [x] 同日 Reflection 等待 Thread 维护完成的既有边界保持（回归覆盖）
+- [x] 全部现有测试保持绿色
