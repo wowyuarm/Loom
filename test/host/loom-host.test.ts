@@ -61,7 +61,7 @@ test("serves content-free live status with Channel state only", async t => {
     pendingInputs: 0,
     pendingEffects: 0,
     deliveriesNeedingAttention: 0,
-    integrityWarnings: [],
+    deliveriesNeedingAttentionItems: [],    integrityWarnings: [],
   });
   assert.deepEqual(report.agents.map(agent => ({ name: agent.name, state: agent.state })), [
     { name: "main-agent", state: "never_run" },

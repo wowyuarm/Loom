@@ -166,6 +166,13 @@ class DefaultLoomHost implements LoomHost {
         pendingInputs: runtime.inputs.filter(input => input.status === "pending").length,
         pendingEffects: runtime.effects.filter(effect => effect.status === "pending").length,
         deliveriesNeedingAttention: runtime.deliveries.filter(delivery => delivery.status === "unknown").length,
+        deliveriesNeedingAttentionItems: runtime.deliveries
+          .filter(delivery => delivery.status === "unknown")
+          .map(delivery => ({
+            id: delivery.id,
+            attempt: delivery.attempt,
+            ...(delivery.error ? { error: delivery.error } : {}),
+          })),
         ...(runtime.oldestPendingOrganAgeMs !== undefined
           ? { oldestPendingOrganAgeMs: runtime.oldestPendingOrganAgeMs }
           : {}),

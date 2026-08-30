@@ -72,6 +72,7 @@ export interface LiveLoomStatusReport {
     pendingInputs: number;
     pendingEffects: number;
     deliveriesNeedingAttention: number;
+    deliveriesNeedingAttentionItems: Array<{ id: string; attempt: number; error?: string }>;
     oldestPendingOrganAgeMs?: number;
     activityOverdueSince?: string;
     activityOverdueReason?: CloseActivityBusyReason;

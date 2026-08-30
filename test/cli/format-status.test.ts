@@ -15,6 +15,7 @@ const base: Extract<LoomStatusReport, { runId: string }> = {
     pendingInputs: 0,
     pendingEffects: 0,
     deliveriesNeedingAttention: 0,
+    deliveriesNeedingAttentionItems: [],
     integrityWarnings: [],
   },
   agents: [],

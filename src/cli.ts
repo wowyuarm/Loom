@@ -177,6 +177,9 @@ export function formatStatus(report: LoomStatusReport, since?: string): string {
     `Runtime: active turn ${report.runtime.activeTurn ? "yes" : "no"}; ${report.runtime.pendingInputs} pending Inputs; ${report.runtime.pendingEffects} pending Effects; ${report.runtime.deliveriesNeedingAttention} Deliveries need attention`,
     "Agents:",
   ];
+  for (const item of report.runtime.deliveriesNeedingAttentionItems ?? []) {
+    lines.push(`  Delivery ${item.id} (attempt ${item.attempt})${item.error ? `: ${item.error}` : ""}`);
+  }
   if (report.runtime.oldestPendingOrganAgeMs !== undefined) {
     lines.splice(3, 0, `Oldest pending organ work: ${Math.floor(report.runtime.oldestPendingOrganAgeMs / 1_000)}s`);
   }

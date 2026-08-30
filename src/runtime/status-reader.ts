@@ -227,8 +227,14 @@ export class RuntimeStatusReader {
         SELECT next_run_after AS pending_at FROM attention_maintenance WHERE next_run_after <= ?
         UNION ALL
         SELECT next_run_after AS pending_at FROM memory_reflection WHERE next_run_after <= ?
+        UNION ALL
+        SELECT next_pulse_after AS pending_at FROM proactive_pulse WHERE next_pulse_after <= ?
       )
-    `).get(statusObservedAt.toISOString(), statusObservedAt.toISOString()) as unknown as {
+    `).get(
+      statusObservedAt.toISOString(),
+      statusObservedAt.toISOString(),
+      statusObservedAt.toISOString(),
+    ) as unknown as {
       pending_at: string | null;
     };
     const integrityWarnings = this.#database.prepare(`
