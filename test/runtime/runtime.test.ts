@@ -25,7 +25,6 @@ import {
   type TurnRequest,
 } from "../../src/runtime/index.js";
 import type { OperationalEvent } from "../../src/operational-events.js";
-import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 
 interface TestExecutionState {
   generation: number;

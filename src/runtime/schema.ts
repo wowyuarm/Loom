@@ -22,6 +22,8 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
   if (overdueMigrated.user_version === 19) migrateVersion19(database);
   const budgetMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
   if (budgetMigrated.user_version === 20) migrateVersion20(database);
+  const ledgerMigrated = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  if (ledgerMigrated.user_version === 21) migrateVersion21(database);
   database.exec(`
     PRAGMA journal_mode = WAL;
     PRAGMA synchronous = FULL;
@@ -193,20 +195,6 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
       recorded_at TEXT
     ) STRICT;
 
-    CREATE TABLE IF NOT EXISTS activity_attempts (
-      id TEXT PRIMARY KEY,
-      activity_id TEXT NOT NULL REFERENCES activities(id),
-      attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
-      status TEXT NOT NULL CHECK (status IN ('recording', 'recorded', 'failed', 'interrupted')),
-      lease_owner TEXT NOT NULL,
-      fencing_token INTEGER NOT NULL,
-      started_at TEXT NOT NULL,
-      ended_at TEXT,
-      error TEXT,
-      receipt_json TEXT,
-      UNIQUE (activity_id, attempt_number)
-    ) STRICT;
-
     CREATE TABLE IF NOT EXISTS proactive_pulse (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       last_pulse_at TEXT,
@@ -288,7 +276,7 @@ export function initializeRuntimeSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS agent_runs_by_agent_and_time
     ON agent_runs (agent_name, started_at DESC, id DESC);
 
-    PRAGMA user_version = 21;
+    PRAGMA user_version = 22;
   `);
   if (backfillAgentRuns) backfillExistingAgentRuns(database);
 }
@@ -320,6 +308,110 @@ function migrateVersion20(database: DatabaseSync): void {
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
+  }
+}
+
+function migrateVersion21(database: DatabaseSync): void {
+  const foreignKeys = database.prepare("PRAGMA foreign_keys").get() as unknown as { foreign_keys: number };
+  if (foreignKeys.foreign_keys === 1) database.exec("PRAGMA foreign_keys = OFF");
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    const tableExists = (table: string): boolean =>
+      database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+      ).get(table) !== undefined;
+
+    // Release stale execution claims left by the removed ledger: the domain
+    // rows are the only queue, so a leftover claim is simply still due.
+    if (tableExists("activities")) {
+      database.exec(`
+        UPDATE activities SET status = 'pending'
+        WHERE status = 'recording'
+      `);
+    }
+    if (tableExists("thread_maintenance")) {
+      database.exec(`
+        UPDATE thread_maintenance SET status = 'pending'
+        WHERE status = 'running'
+      `);
+    }
+
+    // Map terminal ledger states onto the domain rows they gated, then drop
+    // the ledger: a blocked or intervention-required organ becomes a
+    // needs_human row; every other execution fact is already carried by (or
+    // dropped from) the domain layer.
+    const hasLedger = tableExists("cognitive_work");
+    if (hasLedger && tableExists("attention_maintenance")) {
+      database.exec(`
+        UPDATE attention_maintenance SET needs_human = 1
+        WHERE singleton = 1 AND EXISTS (
+          SELECT 1 FROM cognitive_work
+          WHERE organ = 'attention-maintainer' AND status IN ('blocked', 'intervention_required')
+        )
+      `);
+    }
+    if (hasLedger) {
+      if (tableExists("memory_reflection")) {
+        database.exec(`
+          UPDATE memory_reflection SET needs_human = 1
+          WHERE singleton = 1 AND EXISTS (
+            SELECT 1 FROM cognitive_work
+            WHERE organ = 'memory-reflector' AND status IN ('blocked', 'intervention_required')
+          )
+        `);
+      }
+      if (tableExists("proactive_pulse")) {
+        database.exec(`
+          UPDATE proactive_pulse SET needs_human = 1
+          WHERE singleton = 1 AND EXISTS (
+            SELECT 1 FROM cognitive_work
+            WHERE organ = 'orientation' AND status IN ('blocked', 'intervention_required')
+          )
+        `);
+      }
+      if (tableExists("activities")) {
+        database.exec(`
+          UPDATE activities SET needs_human = 1
+          WHERE status <> 'recorded' AND (
+            EXISTS (SELECT 1 FROM cognitive_work WHERE organ = 'life-recorder' AND status IN ('blocked', 'intervention_required'))
+            OR id IN (
+              SELECT substr(domain_ref, 10) FROM cognitive_work
+              WHERE organ = 'life-recorder' AND domain_ref LIKE 'activity:%'
+                AND status IN ('blocked', 'intervention_required')
+            )
+          )
+        `);
+      }
+      if (tableExists("thread_maintenance")) {
+        database.exec(`
+          UPDATE thread_maintenance SET needs_human = 1
+          WHERE status <> 'completed' AND (
+            EXISTS (SELECT 1 FROM cognitive_work WHERE organ = 'thread-maintainer' AND status IN ('blocked', 'intervention_required'))
+            OR activity_id IN (
+              SELECT substr(domain_ref, 10) FROM cognitive_work
+              WHERE organ = 'thread-maintainer' AND domain_ref LIKE 'activity:%'
+                AND status IN ('blocked', 'intervention_required')
+            )
+          )
+        `);
+      }
+      if (tableExists("cognitive_attempts")) database.exec("DROP TABLE cognitive_attempts");
+      database.exec("DROP TABLE cognitive_work");
+    }
+    if (tableExists("activity_attempts")) {
+      database.exec("DROP TABLE activity_attempts");
+    }
+    const violation = database.prepare("PRAGMA foreign_key_check").get();
+    if (violation) {
+      throw new Error("Runtime Store has an invalid foreign key after ledger removal");
+    }
+    database.exec("PRAGMA user_version = 22");
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    if (foreignKeys.foreign_keys === 1) database.exec("PRAGMA foreign_keys = ON");
   }
 }
 
@@ -560,15 +652,14 @@ function backfillExistingAgentRuns(database: DatabaseSync): void {
       CASE
         WHEN status = 'recorded' THEN 'succeeded'
         WHEN status = 'recording' THEN 'running'
-        WHEN status = 'interrupted' THEN 'interrupted'
         ELSE 'failed'
       END,
-      started_at,
-      ended_at,
+      created_at,
+      recorded_at,
       CASE WHEN status = 'recorded' THEN 'recorded' ELSE NULL END,
-      CASE WHEN error IS NULL THEN NULL ELSE 'unknown' END
-    FROM activity_attempts
-    ORDER BY started_at, id;
+      CASE WHEN last_error IS NULL THEN NULL ELSE 'unknown' END
+    FROM activities
+    ORDER BY created_at, id;
     INSERT OR IGNORE INTO agent_runs (
       id, agent_name, status, started_at, ended_at, outcome, failure_category
     )

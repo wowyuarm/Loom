@@ -17,7 +17,8 @@ import {
   type RuntimeInput,
   type RuntimeInputOutcome,
   type RequeueInputResult,
-  type RequeueCognitiveOrganWorkResult,
+  type OrganRecoveryResult,
+  type CognitiveOrganName,
   type OutboundDelivery,
   type RuntimeStatus,
   type RuntimeOperationalStatus,
@@ -98,7 +99,8 @@ export interface LoomInstance {
   inputOutcome(inputId: string): RuntimeInputOutcome;
   requeueInput(inputId: string): RequeueInputResult;
   /** Create a successor budget cycle for blocked / intervention_required Cognitive Organ work. */
-  requeueCognitiveOrganWork(workId: string): RequeueCognitiveOrganWorkResult;
+  approveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult;
+  resolveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult;
   runOnce(observedAt: Date, signal?: AbortSignal): Promise<LoomInstanceRunResult>;
   formOpportunity(): Promise<LoomInstanceOpportunityResult>;
   status(): LoomInstanceStatus;
@@ -152,8 +154,12 @@ class AssembledLoomInstance implements LoomInstance {
     return this.runtime.requeueInput(inputId);
   }
 
-  requeueCognitiveOrganWork(workId: string): RequeueCognitiveOrganWorkResult {
-    return this.runtime.requeueCognitiveOrganWork(workId);
+  approveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult {
+    return this.runtime.approveOrganWork(organ);
+  }
+
+  resolveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult {
+    return this.runtime.resolveOrganWork(organ);
   }
 
   async runOnce(observedAt: Date, signal?: AbortSignal): Promise<LoomInstanceRunResult> {

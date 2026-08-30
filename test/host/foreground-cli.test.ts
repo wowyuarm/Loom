@@ -12,7 +12,6 @@ import { openLoomHost } from "../../src/host/index.js";
 import { initializeLoomInstance } from "../../src/instance/index.js";
 import { openRuntime } from "../../src/runtime/index.js";
 import { createTimePolicy } from "../../src/configuration/index.js";
-import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 
 test("initializes the default ~/.loom Instance through the foreground CLI", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-"));

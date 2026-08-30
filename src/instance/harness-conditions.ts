@@ -1,5 +1,5 @@
 import type { InteractionChannelStatus } from "../channels/channel.js";
-import type { CognitiveOrganName } from "../runtime/cognitive-organ-execution.js";
+import type { CognitiveOrganName } from "../runtime/index.js";
 import type { RuntimeStatus } from "../runtime/index.js";
 
 /**
@@ -105,20 +105,20 @@ export function createHarnessConditionSource(
       const presented = new Set(options.store.presentedRefs());
       const conditions: HarnessCondition[] = [];
       const pendingRefs: string[] = [];
-      for (const work of options.runtimeStatus().cognitiveOrganWork) {
-        if (work.status !== "blocked") continue;
-        const causeRef = normalizedCause(work.lastFailureCategory);
-        const ref = `organ-blocked:${work.organ}:${work.domainRef}:${causeRef}`;
-        // The stable cause is part of the identity: the same work blocked
+      for (const lane of options.runtimeStatus().organLanes) {
+        if (lane.state !== "needs_human") continue;
+        const causeRef = normalizedCause(lane.cause);
+        const ref = `organ-blocked:${lane.organ}:${causeRef}`;
+        // The stable cause is part of the identity: the same lane blocked
         // again for a different cause is a new degradation, not the old one
         // repeating. The aggregated ref is the dedup identity.
         if (presented.has(ref)) continue;
         conditions.push({
           ref,
-          capability: ORGAN_CAPABILITIES[work.organ] ?? work.organ,
+          capability: ORGAN_CAPABILITIES[lane.organ] ?? lane.organ,
           impact: BLOCKED_ORGAN_IMPACT,
-          // Provable failure time when available; never the work creation time.
-          ...(work.lastFailureAt ? { since: work.lastFailureAt } : {}),
+          // Provable failure time when available; never the row creation time.
+          ...(lane.since ? { since: lane.since } : {}),
         });
         pendingRefs.push(ref);
       }

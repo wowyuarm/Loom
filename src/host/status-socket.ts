@@ -29,19 +29,14 @@ export interface LoomAgentStatus {
   history?: Array<NonNullable<LoomAgentStatus["latest"]>>;
 }
 
-export interface LoomCognitiveOrganWorkStatus {
-  workId: string;
+export interface LoomOrganLaneStatus {
   organ: string;
-  domainRef: string;
-  status: string;
-  attemptCount: number;
-  createdAt: string;
-  nextAttemptAt?: string;
-  requeuedFrom?: string;
-  lastCancelReason?: string;
-  lastFailureCategory?: string;
-  transcriptRef?: string;
-  resultRef?: string;
+  state: "running" | "due" | "waiting" | "needs_human";
+  nextRunAt?: string;
+  reason?: string;
+  cause?: string;
+  since?: string;
+  attempts?: number;
 }
 
 export interface LoomIntegrationStatus {
@@ -84,7 +79,7 @@ export interface LiveLoomStatusReport {
     integrityWarnings: Array<{ kind: string; count: number }>;
   };
   agents: LoomAgentStatus[];
-  cognitiveOrganWork: LoomCognitiveOrganWorkStatus[];
+  organLanes: LoomOrganLaneStatus[];
   channels: LoomIntegrationStatus[];
   integrations: LoomIntegrationStatus[];
 }
@@ -103,13 +98,13 @@ export type LoomStatusReport = LiveLoomStatusReport | UnavailableLoomStatusRepor
 type StatusRequest =
   | { type: "status"; since?: string }
   | { type: "requeue_input"; inputId: string }
-  | { type: "requeue_cognitive_organ"; workId: string }
+  | { type: "requeue_cognitive_organ"; organ: string; action: "approve" | "resolve" }
   | { type: "retry_ingress"; channelId: string; itemId?: string }
   | { type: "history"; after?: string; limit?: number };
 type StatusResponse =
   | { ok: true; type: "status"; report: LiveLoomStatusReport }
   | { ok: true; type: "requeue_input"; disposition: "requeued" | "not_blocked" }
-  | { ok: true; type: "requeue_cognitive_organ"; disposition: "requeued" }
+  | { ok: true; type: "requeue_cognitive_organ"; disposition: "approved" | "resolved" }
   | { ok: true; type: "retry_ingress"; retried: number }
   | { ok: true; type: "history"; page: InteractionViewPage }
   | { ok: false; error: string };
@@ -124,7 +119,8 @@ export function createLoomStatusServer(options: {
   socketPath: string;
   read(since?: string): LiveLoomStatusReport;
   requeueInput(inputId: string): "requeued" | "not_blocked";
-  requeueCognitiveOrganWork(workId: string): void;
+  approveOrganWork(organ: string): "approved" | "resolved";
+  resolveOrganWork(organ: string): "approved" | "resolved";
   retryChannelIngress(channelId: string, itemId?: string): Promise<number>;
   interactionView(viewOptions?: InteractionViewOptions): InteractionViewPage;
 }): LoomStatusServer {
@@ -174,8 +170,14 @@ export function createLoomStatusServer(options: {
                 disposition: options.requeueInput(request.inputId),
               });
             } else if (request.type === "requeue_cognitive_organ") {
-              options.requeueCognitiveOrganWork(request.workId);
-              writeResponse(socket, { ok: true, type: "requeue_cognitive_organ", disposition: "requeued" });
+              const disposition = request.action === "approve"
+                ? options.approveOrganWork(request.organ)
+                : options.resolveOrganWork(request.organ);
+              writeResponse(socket, {
+                ok: true,
+                type: "requeue_cognitive_organ",
+                disposition: disposition === "approved" ? "approved" : "resolved",
+              });
             } else if (request.type === "history") {
               writeResponse(socket, {
                 ok: true,
@@ -350,20 +352,22 @@ export async function requeueLoomInput(
   return response.disposition;
 }
 
-export async function requeueLoomCognitiveOrganWork(
+export async function requestOrganRecovery(
   socketPath: string,
-  workId: string,
-): Promise<"requeued"> {
-  if (!workId.trim()) throw new Error("Loom requeue-organ requires a Cognitive Organ work id");
+  organ: string,
+  action: "approve" | "resolve",
+): Promise<"approved" | "resolved"> {
+  if (!organ.trim()) throw new Error("Loom organ-approve requires an organ name");
   let response: Extract<StatusResponse, { ok: true }>;
   try {
     response = await sendStatusRequest(socketPath, {
       type: "requeue_cognitive_organ",
-      workId: workId.trim(),
+      organ: organ.trim(),
+      action,
     });
   } catch (error) {
     if (error instanceof Error && isUnavailable(error)) {
-      throw new Error("Loom Host is not running; start it with `loom run` before requeueing Cognitive Organ work");
+      throw new Error("Loom Host is not running; start it with `loom run` first");
     }
     throw error;
   }
@@ -386,10 +390,17 @@ function parseStatusRequest(source: string): StatusRequest {
     return { type: "requeue_input", inputId: request.inputId.trim() };
   }
   if (request.type === "requeue_cognitive_organ") {
-    if (typeof request.workId !== "string" || !request.workId.trim()) {
-      throw new Error("Loom requeue-organ requires a Cognitive Organ work id");
+    if (typeof request.organ !== "string" || !request.organ.trim()) {
+      throw new Error("Loom organ-approve/organ-resolve requires an organ name");
     }
-    return { type: "requeue_cognitive_organ", workId: request.workId.trim() };
+    if (request.action !== "approve" && request.action !== "resolve") {
+      throw new Error("Loom organ-approve/organ-resolve requires action approve or resolve");
+    }
+    return {
+      type: "requeue_cognitive_organ",
+      organ: request.organ.trim(),
+      action: request.action,
+    };
   }
   if (request.type === "retry_ingress") {
     if (typeof request.channelId !== "string" || !request.channelId.trim()) {

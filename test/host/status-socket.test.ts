@@ -17,7 +17,10 @@ test("status socket sanitizes non-recovery failures and surfaces recovery errors
     requeueInput() {
       throw new Error("boom: Input is not blocked");
     },
-    requeueCognitiveOrganWork() {
+    approveOrganWork() {
+      throw new Error("boom: work is held");
+    },
+    resolveOrganWork() {
       throw new Error("boom: work is held");
     },
     retryChannelIngress: async () => 0,
@@ -46,7 +49,8 @@ test("status socket sanitizes non-recovery failures and surfaces recovery errors
   assert.equal(input.error, "boom: Input is not blocked");
   const organ = await send(path.join(root, "status.sock"), {
     type: "requeue_cognitive_organ",
-    workId: "attention-maintainer-1",
+    organ: "attention-maintainer",
+    action: "approve",
   });
   assert.equal(organ.ok, false);
   assert.equal(organ.error, "boom: work is held");

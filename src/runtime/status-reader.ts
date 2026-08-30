@@ -1,12 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
 
 import type {
-  CognitiveAttemptRecord,
-  CognitiveOrganName,
-  CognitiveWorkRecord,
-} from "./cognitive-organ-execution.js";
-import type {
   AttentionMaintenanceResult,
+  CognitiveOrganName,
   CloseActivityBusyReason,
   FrozenActivity,
   InputKind,
@@ -14,7 +10,7 @@ import type {
   LifeRecorderReceipt,
   MemoryReflectionResult,
   RuntimeAfterChatContinuationStatus,
-  RuntimeCognitiveOrganWorkStatus,
+  RuntimeOrganLaneStatus,
   RuntimeDeliveryStatus,
   RuntimeEffectStatus,
   RuntimeInputStatus,
@@ -66,6 +62,8 @@ interface ActivityRow {
   frozen_activity_json: string;
   status: "pending" | "recording" | "recorded";
   attempt_count: number;
+  needs_human: number;
+  next_eligible_at: string | null;
   fencing_token: number | null;
   receipt_json: string | null;
   last_error: string | null;
@@ -97,6 +95,7 @@ interface PulseRow {
   last_pulse_at: string | null;
   next_pulse_after: string;
   consecutive_failures: number;
+  needs_human: number;
   last_error: string | null;
 }
 
@@ -105,6 +104,8 @@ interface ThreadMaintenanceRow {
   observations_json: string;
   status: "pending" | "running" | "completed";
   attempt_count: number;
+  needs_human: number;
+  next_eligible_at: string | null;
   fencing_token: number | null;
   result_json: string | null;
   last_error: string | null;
@@ -116,6 +117,7 @@ interface AttentionMaintenanceRow {
   cursor_sequence: number;
   window_end_sequence: number | null;
   attempt_count: number;
+  needs_human: number;
   last_result_json: string | null;
   last_error: string | null;
 }
@@ -124,6 +126,7 @@ interface MemoryReflectionRow {
   next_day: string;
   next_run_after: string;
   attempt_count: number;
+  needs_human: number;
   last_completed_day: string | null;
   last_result_json: string | null;
   last_error: string | null;
@@ -148,14 +151,8 @@ interface AfterChatContinuationRow {
 export interface RuntimeStatusReaderOptions {
   database: DatabaseSync;
   now: () => Date;
-  /** Organs executed through the shared Cognitive Organ ledger, in display order. */
+  /** Organs driven through domain-row lanes, in display order. */
   organs: readonly CognitiveOrganName[];
-  /** Latest work record for an organ, or undefined when it has no work. */
-  cognitiveOrganWork: (organ: CognitiveOrganName) => CognitiveWorkRecord | undefined;
-  /** Local (bounded) work id for a raw work UUID; undefined when unresolvable. */
-  cognitiveOrganLocalId: (workId: string) => string | undefined;
-  /** Attempt records of a work, newest last. */
-  cognitiveOrganAttempts: (workId: string) => readonly CognitiveAttemptRecord[];
 }
 
 /**
@@ -167,17 +164,11 @@ export class RuntimeStatusReader {
   readonly #database: DatabaseSync;
   readonly #now: () => Date;
   readonly #organs: readonly CognitiveOrganName[];
-  readonly #cognitiveOrganWork: (organ: CognitiveOrganName) => CognitiveWorkRecord | undefined;
-  readonly #cognitiveOrganLocalId: (workId: string) => string | undefined;
-  readonly #cognitiveOrganAttempts: (workId: string) => readonly CognitiveAttemptRecord[];
 
   constructor(options: RuntimeStatusReaderOptions) {
     this.#database = options.database;
     this.#now = options.now;
     this.#organs = options.organs;
-    this.#cognitiveOrganWork = options.cognitiveOrganWork;
-    this.#cognitiveOrganLocalId = options.cognitiveOrganLocalId;
-    this.#cognitiveOrganAttempts = options.cognitiveOrganAttempts;
   }
 
   readStatus(): RuntimeStatus {
@@ -211,14 +202,14 @@ export class RuntimeStatusReader {
     const activeSegment = this.#readActiveSegment();
     const activityRows = this.#database.prepare(`
       SELECT id, opened_at, closed_at, frozen_activity_json, status, attempt_count,
-             fencing_token, receipt_json, last_error
+             needs_human, next_eligible_at, fencing_token, receipt_json, last_error
       FROM activities
       ORDER BY sequence
     `).all() as unknown as ActivityRow[];
     const pulse = this.#readPulseSchedule();
     const threadMaintenanceRows = this.#database.prepare(`
-      SELECT activity_id, observations_json, status, attempt_count, fencing_token,
-             result_json, last_error
+      SELECT activity_id, observations_json, status, attempt_count, needs_human,
+             next_eligible_at, fencing_token, result_json, last_error
       FROM thread_maintenance
       ORDER BY created_at, activity_id
     `).all() as unknown as ThreadMaintenanceRow[];
@@ -336,10 +327,7 @@ export class RuntimeStatusReader {
           : {}),
         ...(row.last_error ? { lastError: row.last_error } : {}),
       })),
-      cognitiveOrganWork: this.#organs
-        .map(organ => this.#cognitiveOrganWork(organ))
-        .filter((work): work is NonNullable<typeof work> => work !== undefined)
-        .map(work => this.#cognitiveOrganWorkStatus(work)),
+      organLanes: this.#organLanes(),
       ...(attentionMaintenance ? {
         attentionMaintenance: {
           ...(attentionMaintenance.last_completed_at
@@ -423,7 +411,7 @@ export class RuntimeStatusReader {
 
   #readPulseSchedule(): PulseRow | undefined {
     return this.#database.prepare(`
-      SELECT last_pulse_at, next_pulse_after, consecutive_failures, last_error
+      SELECT last_pulse_at, next_pulse_after, consecutive_failures, needs_human, last_error
       FROM proactive_pulse WHERE singleton = 1
     `).get() as unknown as PulseRow | undefined;
   }
@@ -440,14 +428,14 @@ export class RuntimeStatusReader {
   #readAttentionSchedule(): AttentionMaintenanceRow | undefined {
     return this.#database.prepare(`
       SELECT last_completed_at, next_run_after, cursor_sequence, window_end_sequence,
-             attempt_count, last_result_json, last_error
+             attempt_count, needs_human, last_result_json, last_error
       FROM attention_maintenance WHERE singleton = 1
     `).get() as unknown as AttentionMaintenanceRow | undefined;
   }
 
   #readMemoryReflectionSchedule(): MemoryReflectionRow | undefined {
     return this.#database.prepare(`
-      SELECT next_day, next_run_after, attempt_count, last_completed_day,
+      SELECT next_day, next_run_after, attempt_count, needs_human, last_completed_day,
              last_result_json, last_error
       FROM memory_reflection WHERE singleton = 1
     `).get() as unknown as MemoryReflectionRow | undefined;
@@ -489,47 +477,131 @@ export class RuntimeStatusReader {
   }
 
   /**
-   * Operator-facing work summary. Deliberately omits the raw error text and
-   * exposes only bounded identifiers (local work id, domain ref, failure
-   * category) so status output cannot leak model/Workspace/credential content.
+   * Four-state projection per organ lane, derived from the domain rows and
+   * the running agent runs. A lane with no pending domain work is absent.
+   * Deliberately bounded: the reason is the row's stored error message
+   * (already content-free at write time) and `since` is a provable failure
+   * time from the agent run history.
    */
-  #cognitiveOrganWorkStatus(work: CognitiveWorkRecord): RuntimeCognitiveOrganWorkStatus {
-    // Local ids are the only exposed work identifiers; an unresolvable one is
-    // corrupt state and fails closed instead of leaking a raw work UUID.
-    const workId = this.#cognitiveOrganLocalId(work.id);
-    if (!workId) {
-      throw new Error(`Cognitive organ work ${work.id} is not addressable by a local work id`);
+  #organLanes(): RuntimeOrganLaneStatus[] {
+    const now = this.#now().getTime();
+    const lastFailureByOrgan = new Map<string, { ended_at: string; failure_category: string | null }>();
+    const failureRows = this.#database.prepare(`
+      SELECT agent_name, ended_at, failure_category
+      FROM agent_runs
+      WHERE status = 'failed' AND ended_at IS NOT NULL
+      ORDER BY started_at, id
+    `).all() as unknown as Array<{ agent_name: string; ended_at: string; failure_category: string | null }>;
+    for (const row of failureRows) {
+      lastFailureByOrgan.set(row.agent_name, { ended_at: row.ended_at, failure_category: row.failure_category });
     }
-    const requeuedFrom = work.requeuedFrom
-      ? this.#cognitiveOrganLocalId(work.requeuedFrom)
-      : undefined;
-    if (work.requeuedFrom && !requeuedFrom) {
-      throw new Error(`Cognitive organ work ${work.id} references an unresolvable predecessor`);
-    }
-    // The current attempt is the most recently started one (highest attempt
-    // number): for a retried or completed work its transcript and result
-    // references live on that record, not the first attempt.
-    const attempt = this.#cognitiveOrganAttempts(work.id).at(-1);
-    return {
-      workId,
-      organ: work.organ,
-      domainRef: work.domainRef,
-      status: work.status,
-      attemptCount: work.attemptCount,
-      createdAt: work.createdAt,
-      ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
-      ...(requeuedFrom ? { requeuedFrom } : {}),
-      ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
-      ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
-      // When the last attempt failed (blocked/retry_wait), its ended_at is the
-      // provable time the degradation entered: the attempt failed at that
-      // moment. Never the work creation time.
-      ...(attempt?.status === "failed" && attempt.endedAt
-        ? { lastFailureAt: attempt.endedAt }
-        : {}),
-      ...(attempt?.transcriptRef ? { transcriptRef: attempt.transcriptRef } : {}),
-      ...(attempt?.resultRef ? { resultRef: attempt.resultRef } : {}),
+    const runningOrgans = new Set(
+      (this.#database.prepare(`
+        SELECT DISTINCT agent_name FROM agent_runs WHERE status = 'running'
+      `).all() as unknown as Array<{ agent_name: string }>).map(row => row.agent_name),
+    );
+
+    const lanes: RuntimeOrganLaneStatus[] = [];
+    const push = (
+      organ: RuntimeOrganLaneStatus["organ"],
+      row: {
+        attempts: number;
+        needsHuman: boolean;
+        nextEligibleAt: string | null;
+        lastError: string | null;
+      } | undefined,
+    ): void => {
+      if (!row) return;
+      if (row.needsHuman) {
+        const lastFailure = lastFailureByOrgan.get(organ);
+        lanes.push({
+          organ,
+          state: "needs_human",
+          ...(row.nextEligibleAt ? { nextRunAt: row.nextEligibleAt } : {}),
+          ...(row.lastError ? { reason: row.lastError } : {}),
+          ...(lastFailure?.failure_category ? { cause: lastFailure.failure_category } : {}),
+          ...(lastFailure ? { since: lastFailure.ended_at } : {}),
+          attempts: row.attempts,
+        });
+        return;
+      }
+      if (runningOrgans.has(organ)) {
+        lanes.push({ organ, state: "running" });
+        return;
+      }
+      if (row.nextEligibleAt && Date.parse(row.nextEligibleAt) > now) {
+        lanes.push({ organ, state: "waiting", nextRunAt: row.nextEligibleAt, attempts: row.attempts });
+        return;
+      }
+      lanes.push({ organ, state: "due" });
     };
+
+    const attention = this.#readAttentionSchedule();
+    if (attention) {
+      push("attention-maintainer", {
+        attempts: attention.attempt_count,
+        needsHuman: attention.needs_human === 1,
+        nextEligibleAt: attention.next_run_after,
+        lastError: attention.last_error,
+      });
+    }
+    const reflection = this.#readMemoryReflectionSchedule();
+    if (reflection) {
+      push("memory-reflector", {
+        attempts: reflection.attempt_count,
+        needsHuman: reflection.needs_human === 1,
+        nextEligibleAt: reflection.next_run_after,
+        lastError: reflection.last_error,
+      });
+    }
+    const pulse = this.#readPulseSchedule();
+    if (pulse) {
+      push("orientation", {
+        attempts: pulse.consecutive_failures,
+        needsHuman: pulse.needs_human === 1,
+        nextEligibleAt: pulse.next_pulse_after,
+        lastError: pulse.last_error,
+      });
+    }
+    const recorderHead = this.#database.prepare(`
+      SELECT attempt_count, needs_human, next_eligible_at, last_error
+      FROM activities WHERE status <> 'recorded'
+      ORDER BY sequence LIMIT 1
+    `).get() as unknown as {
+      attempt_count: number;
+      needs_human: number;
+      next_eligible_at: string | null;
+      last_error: string | null;
+    } | undefined;
+    if (recorderHead) {
+      push("life-recorder", {
+        attempts: recorderHead.attempt_count,
+        needsHuman: recorderHead.needs_human === 1,
+        nextEligibleAt: recorderHead.next_eligible_at,
+        lastError: recorderHead.last_error,
+      });
+    }
+    const threadHead = this.#database.prepare(`
+      SELECT tm.attempt_count, tm.needs_human, tm.next_eligible_at, tm.last_error
+      FROM thread_maintenance tm
+      JOIN activities ON activities.id = tm.activity_id
+      WHERE tm.status <> 'completed' AND activities.status = 'recorded'
+      ORDER BY activities.sequence LIMIT 1
+    `).get() as unknown as {
+      attempt_count: number;
+      needs_human: number;
+      next_eligible_at: string | null;
+      last_error: string | null;
+    } | undefined;
+    if (threadHead) {
+      push("thread-maintainer", {
+        attempts: threadHead.attempt_count,
+        needsHuman: threadHead.needs_human === 1,
+        nextEligibleAt: threadHead.next_eligible_at,
+        lastError: threadHead.last_error,
+      });
+    }
+    return lanes;
   }
 }
 

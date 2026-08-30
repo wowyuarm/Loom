@@ -9,7 +9,7 @@ import {
   openLoomHost,
   readLoomInteractionHistory,
   readLoomStatus,
-  requeueLoomCognitiveOrganWork,
+  requestOrganRecovery,
   requeueLoomInput,
   retryLoomChannelIngress,
   type LoomStatusReport,
@@ -28,7 +28,8 @@ async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
   if (command !== "init" && command !== "run" && command !== "history"
     && command !== "status" && command !== "validate-config" && command !== "requeue"
-    && command !== "requeue-organ" && command !== "retry-ingress") {
+    && command !== "organ-approve" && command !== "organ-resolve"
+    && command !== "retry-ingress") {
     throw new Error(usage());
   }
   const root = readRoot(args, command);
@@ -71,12 +72,17 @@ async function main(argv: string[]): Promise<void> {
     console.log(`Requeued Input ${inputId}`);
     return;
   }
-  if (command === "requeue-organ") {
+  if (command === "organ-approve" || command === "organ-resolve") {
     const remaining = remainingArguments(args, "--root");
-    if (remaining.length !== 1 || !remaining[0]!.trim()) throw new Error(usage("requeue-organ"));
-    const workId = remaining[0]!.trim();
-    await requeueLoomCognitiveOrganWork(resolveInstanceLayout(root).statusSocketPath, workId);
-    console.log(`Requeued Cognitive Organ work ${workId}`);
+    if (remaining.length !== 1 || !remaining[0]!.trim()) throw new Error(usage(command));
+    const organ = remaining[0]!.trim();
+    const action = command === "organ-approve" ? "approve" : "resolve";
+    const disposition = await requestOrganRecovery(
+      resolveInstanceLayout(root).statusSocketPath,
+      organ,
+      action,
+    );
+    console.log(`${organ}: ${disposition}`);
     return;
   }
   if (command === "retry-ingress") {
@@ -202,17 +208,13 @@ export function formatStatus(report: LoomStatusReport, since?: string): string {
     const retry = agent.nextRunAt ? `, next ${agent.nextRunAt}` : "";
     lines.push(`  ${agentLabel(agent.name)}: ${agent.state}${latestAt ? ` at ${latestAt}` : ""}${outcome}${retry}`);
   }
-  lines.push("Cognitive Organ Work:");
-  if (report.cognitiveOrganWork.length === 0) lines.push("  None");
-  for (const work of report.cognitiveOrganWork) {
-    const requeued = work.requeuedFrom ? `, requeued from ${work.requeuedFrom}` : "";
-    const next = work.nextAttemptAt ? `, next ${work.nextAttemptAt}` : "";
-    const failure = work.lastFailureCategory ? `, last failure ${work.lastFailureCategory}` : "";
-    const transcript = work.transcriptRef ? `, transcript ${work.transcriptRef}` : "";
-    const result = work.resultRef ? `, result ${work.resultRef}` : "";
-    lines.push(
-      `  ${work.workId}: ${work.status}, attempt ${work.attemptCount}${requeued}${next}${failure}${transcript}${result}`,
-    );
+  lines.push("Organ Lanes:");
+  if (report.organLanes.length === 0) lines.push("  None");
+  for (const lane of report.organLanes) {
+    const next = lane.nextRunAt ? `, next ${lane.nextRunAt}` : "";
+    const cause = lane.cause ? `, cause ${lane.cause}` : "";
+    const reason = lane.reason ? `, ${lane.reason}` : "";
+    lines.push(`  ${lane.organ}: ${lane.state}${next}${cause}${reason}`);
   }
   lines.push("Channels:");
   if (report.channels.length === 0) lines.push("  None enabled");
@@ -266,7 +268,7 @@ function writeOperationalEvent(event: OperationalEvent): void {
 }
 
 type LoomCommand = "init" | "run" | "history" | "status" | "validate-config" | "requeue"
-  | "requeue-organ" | "retry-ingress";
+  | "organ-approve" | "organ-resolve" | "retry-ingress";
 
 function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
@@ -291,7 +293,8 @@ function readRoot(args: string[], command: LoomCommand): string {
   }
   const remaining = remainingArguments(args, name);
   if (command !== "init" && command !== "status" && command !== "requeue"
-    && command !== "requeue-organ" && command !== "retry-ingress" && remaining.length > 0) {
+    && command !== "organ-approve" && command !== "organ-resolve"
+    && command !== "retry-ingress" && remaining.length > 0) {
     throw new Error(`Unknown argument: ${remaining[0]}`);
   }
   return value;
@@ -309,8 +312,11 @@ function usage(command?: LoomCommand): string {
   }
   if (command === "validate-config") return "Usage: loom validate-config [--root <instance-root>]";
   if (command === "requeue") return "Usage: loom requeue [--root <instance-root>] <input-id>";
-  if (command === "requeue-organ") {
-    return "Usage: loom requeue-organ [--root <instance-root>] <work-id>";
+  if (command === "organ-approve") {
+    return "Usage: loom organ-approve [--root <instance-root>] <organ>";
+  }
+  if (command === "organ-resolve") {
+    return "Usage: loom organ-resolve [--root <instance-root>] <organ>";
   }
   if (command === "retry-ingress") {
     return "Usage: loom retry-ingress [--root <instance-root>] <channel-id> [item-id]";
@@ -327,7 +333,8 @@ function usage(command?: LoomCommand): string {
     "  loom status [--root <instance-root>] [--json] [--since <ISO-timestamp>]",
     "  loom validate-config [--root <instance-root>]",
     "  loom requeue [--root <instance-root>] <input-id>",
-    "  loom requeue-organ [--root <instance-root>] <work-id>",
+    "  loom organ-approve [--root <instance-root>] <organ>",
+    "  loom organ-resolve [--root <instance-root>] <organ>",
     "  loom retry-ingress [--root <instance-root>] <channel-id> [item-id]",
     "",
     "The default Instance Root is ~/.loom.",

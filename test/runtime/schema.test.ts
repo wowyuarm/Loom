@@ -109,7 +109,7 @@ test("upgrades version 19 active_segment with overdue columns (issue #4)", async
   assert.ok(columns.includes("overdue_reason_json"));
   assert.ok(columns.includes("next_overdue_check_at"));
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 21);
+  assert.equal(version.user_version, 22);
   const row = database.prepare(
     "SELECT overdue_since FROM active_segment WHERE id = 'segment-1'",
   ).get() as { overdue_since: string | null };
@@ -194,10 +194,76 @@ test("upgrades version 20 organ domain rows with budget columns", async () => {
   assert.ok(columnsOf("memory_reflection").includes("needs_human"));
   assert.ok(columnsOf("proactive_pulse").includes("needs_human"));
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 21);
+  assert.equal(version.user_version, 22);
   const row = database.prepare(
     "SELECT next_eligible_at, needs_human FROM activities WHERE id = 'activity-1'",
   ).get() as { next_eligible_at: string | null; needs_human: number };
   assert.equal(row.next_eligible_at, null);
   assert.equal(row.needs_human, 0);
+});
+
+test("upgrades version 21 by mapping blocked ledger work to needs_human rows", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-schema-v21-"));
+  const database = new DatabaseSync(path.join(root, "runtime.db"));
+  database.exec(`
+    CREATE TABLE activities (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+      id TEXT NOT NULL UNIQUE,
+      opened_at TEXT NOT NULL,
+      closed_at TEXT NOT NULL,
+      recording_day TEXT NOT NULL,
+      frozen_activity_json TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'recording', 'recorded')),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      next_eligible_at TEXT,
+      needs_human INTEGER NOT NULL DEFAULT 0 CHECK (needs_human IN (0, 1)),
+      lease_owner TEXT,
+      fencing_token INTEGER,
+      lease_expires_at TEXT,
+      receipt_json TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      recorded_at TEXT
+    ) STRICT;
+    CREATE TABLE cognitive_work (
+      id TEXT PRIMARY KEY,
+      organ TEXT NOT NULL,
+      domain_ref TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0
+    ) STRICT;
+    CREATE TABLE cognitive_attempts (
+      id TEXT PRIMARY KEY,
+      work_id TEXT NOT NULL REFERENCES cognitive_work(id),
+      attempt_number INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL
+    ) STRICT;
+    INSERT INTO activities (id, opened_at, closed_at, recording_day, frozen_activity_json, status, created_at)
+    VALUES ('activity-1', '2026-08-20T08:00:00.000Z', '2026-08-20T08:10:00.000Z', '2026-08-20', '{}', 'recording', '2026-08-20T08:10:00.000Z');
+    INSERT INTO cognitive_work (id, organ, domain_ref, status, created_at, attempt_count)
+    VALUES ('work-1', 'life-recorder', 'recording', 'blocked', '2026-08-20T08:10:00.000Z', 3);
+    INSERT INTO cognitive_attempts (id, work_id, attempt_number, status, started_at)
+    VALUES ('attempt-1', 'work-1', 1, 'failed', '2026-08-20T08:10:00.000Z');
+    PRAGMA user_version = 21;
+  `);
+
+  initializeRuntimeSchema(database);
+
+  const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
+  assert.equal(version.user_version, 22);
+  // The stale recording claim is released and the blocked work lands as
+  // needs_human on the domain row; the ledger tables are gone.
+  const row = database.prepare(
+    "SELECT status, needs_human FROM activities WHERE id = 'activity-1'",
+  ).get() as Record<string, unknown>;
+  assert.equal(row.status, "pending");
+  assert.equal(row.needs_human, 1);
+  for (const table of ["cognitive_work", "cognitive_attempts", "activity_attempts"]) {
+    const exists = database.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+    ).get(table);
+    assert.equal(exists, undefined);
+  }
 });

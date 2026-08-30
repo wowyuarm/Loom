@@ -18,7 +18,6 @@ import {
 } from "../../src/runtime/index.js";
 import type { OperationalEvent } from "../../src/operational-events.js";
 import { createTimePolicy } from "../../src/configuration/index.js";
-import { COGNITIVE_ORGAN_POLICY } from "../../src/runtime/cognitive-organ-execution.js";
 import { PiCognitiveOrganTurnLimitError } from "../../src/agents/session/index.js";
 
 function deferred<T>(): {
@@ -120,20 +119,6 @@ async function startRecording(
   return { organRun };
 }
 
-function readLedger(db: DatabaseSync): {
-  work: Record<string, unknown>;
-  attempts: Array<Record<string, unknown>>;
-} {
-  // Newest work first: single-writer tests may hold an older completed work
-  // alongside the held one.
-  const work = db.prepare("SELECT * FROM cognitive_work ORDER BY created_at DESC, rowid DESC").all() as Array<
-    Record<string, unknown>
-  >;
-  const attempts = db.prepare("SELECT * FROM cognitive_attempts ORDER BY attempt_number").all() as Array<
-    Record<string, unknown>
-  >;
-  return { work: work[0]!, attempts };
-}
 
 test("a foreground input aborts the running attention organ; the turn waits for release", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-foreground-abort-"));
@@ -606,15 +591,11 @@ test("a quota-parked recorder yields the scheduler and never burns attempt budge
   const row = db.prepare(
     "SELECT status, attempt_count, needs_human, next_eligible_at FROM activities LIMIT 1",
   ).get() as Record<string, unknown>;
-  const ledgerRows = db.prepare(
-    "SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'life-recorder'",
-  ).get() as Record<string, number>;
   db.close();
   assert.equal(row.status, "pending");
   assert.equal(row.attempt_count, 0);
   assert.equal(row.needs_human, 0);
   assert.equal(row.next_eligible_at, "2026-07-19T23:00:00.000Z");
-  assert.equal(ledgerRows.n, 0);
 });
 test("exhausted attention failures enter needs_human cooldown instead of busy", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-blocked-attention-"));
@@ -684,12 +665,7 @@ test("exhausted attention failures enter needs_human cooldown instead of busy", 
   assert.equal(row.attempt_count, 3);
   assert.equal(row.needs_human, 1);
   assert.equal(row.last_error, "grounding failed");
-  // Attention no longer owns execution-ledger work.
-  const ledgerRows = db.prepare(`
-    SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'attention-maintainer'
-  `).get() as Record<string, number>;
   db.close();
-  assert.equal(ledgerRows.n, 0);
 });
 
 test("a retried attention window picks up activities that arrived during the backoff", async t => {
@@ -796,11 +772,7 @@ test("a retried attention window picks up activities that arrived during the bac
   assert.equal(row.last_error, null);
   assert.equal(row.cursor_sequence, 2);
   assert.equal(row.window_end_sequence, null);
-  const ledgerRows = db.prepare(`
-    SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'attention-maintainer'
-  `).get() as Record<string, number>;
   db.close();
-  assert.equal(ledgerRows.n, 0);
 });
 
 test("a retry continues the same reflection day on the same work", async t => {
@@ -885,16 +857,12 @@ test("a retry continues the same reflection day on the same work", async t => {
     SELECT next_day, attempt_count, needs_human, last_error, next_run_after
     FROM memory_reflection WHERE singleton = 1
   `).get() as Record<string, unknown>;
-  const ledgerRows = db.prepare(
-    "SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'memory-reflector'",
-  ).get() as Record<string, number>;
   db.close();
   assert.equal(row.next_day, "2026-07-20");
   assert.equal(row.attempt_count, 0);
   assert.equal(row.needs_human, 0);
   assert.equal(row.last_error, null);
   assert.equal(row.next_run_after, "2026-07-21T03:00:00.000Z");
-  assert.equal(ledgerRows.n, 0);
 });
 
 test("requeue refuses unknown ids and empty ids", async t => {
@@ -907,10 +875,13 @@ test("requeue refuses unknown ids and empty ids", async t => {
   t.after(() => runtime.close());
 
   assert.throws(
-    () => runtime.requeueCognitiveOrganWork("life-recorder-999999"),
-    /Unknown cognitive organ work life-recorder-999999/,
+    () => runtime.approveOrganWork("life-recorder"),
+    /life-recorder is not waiting for a human/,
   );
-  assert.throws(() => runtime.requeueCognitiveOrganWork("  "), /requires a work id/);
+  assert.throws(
+    () => runtime.resolveOrganWork("life-recorder"),
+    /life-recorder is not waiting for a human/,
+  );
 });
 test("emits agent.run.started/finished for a Cognitive Organ run", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-run-events-"));
@@ -1371,7 +1342,6 @@ test("a foreground Input submitted immediately after an organ starts is cancelle
       reflect: async () => ({ outcome: "no_change", runId: "reflection", changedMaterials: [] }),
       cancel: async () => {},
     },
-    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 10_000 },
     now: () => now,
   });
   t.after(() => runtime.close());
@@ -1433,4 +1403,67 @@ test("a foreground Input submitted immediately after an organ starts is cancelle
     runtime.status().inputs.find(input => input.id === human.inputId)?.status,
     "pending",
   );
+});
+
+test("approve re-runs a needs_human lane; resolve moves past it", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-approve-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  let attentionCalls = 0;
+  let failAttention = true;
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, `record-${activity.segmentId}`),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        attentionCalls += 1;
+        if (failAttention) throw new Error("grounding failed");
+        return { outcome: "no_change", runId: `attention-${attentionCalls}`, path: "attention.md" };
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "approve-day", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+
+  const options = { initialDelayMs: 1, cadenceMs: 60_000, retryDelayMs: 30_000, agentWork: "allow" as const };
+  // Establish and fail three times into needs_human.
+  assert.equal((await runtime.runAttentionMaintenance({ ...options, observedAt: now })).disposition, "waiting");
+  now = new Date("2026-07-19T11:00:00.001Z");
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const failed = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+    assert.equal(failed.disposition, "failed");
+    now = new Date(Date.parse(failed.nextRunAt!) + 1);
+  }
+
+  // Not in needs_human: both recovery verbs are rejected for other organs.
+  assert.throws(() => runtime.approveOrganWork("life-recorder"), /not waiting for a human/);
+
+  // approve clears the flag, resets the budget and makes the lane due now;
+  // the same input then succeeds — the failure was transient.
+  assert.deepEqual(runtime.approveOrganWork("attention-maintainer"), { disposition: "approved" });
+  failAttention = false;
+  const approved = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+  assert.equal(approved.disposition, "completed");
+  assert.equal(attentionCalls, 4);
+
+  // A resolve on a healthy lane is rejected: the verbs act on needs_human only.
+  assert.throws(() => runtime.resolveOrganWork("attention-maintainer"), /not waiting for a human/);
+  const db = new DatabaseSync(path.join(root, "runtime.db"));
+  const row = db.prepare(
+    "SELECT needs_human, attempt_count, last_error FROM attention_maintenance WHERE singleton = 1",
+  ).get() as Record<string, unknown>;
+  db.close();
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.last_error, null);
 });

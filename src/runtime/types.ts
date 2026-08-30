@@ -1,5 +1,11 @@
 import type { TimePolicy } from "../configuration/index.js";
-import type { CognitiveOrganName } from "./cognitive-organ-execution.js";
+export type CognitiveOrganName =
+  | "orientation"
+  | "life-recorder"
+  | "attention-maintainer"
+  | "memory-reflector"
+  | "thread-maintainer"
+  | "tool-trace-compactor";
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type InputKind = "interaction" | "opportunity" | "continuation";
@@ -531,7 +537,7 @@ export interface RuntimeStatus {
   };
   activities: RuntimeActivityStatus[];
   threadMaintenance: RuntimeThreadMaintenanceStatus[];
-  cognitiveOrganWork: RuntimeCognitiveOrganWorkStatus[];
+  organLanes: RuntimeOrganLaneStatus[];
   attentionMaintenance?: RuntimeAttentionMaintenanceStatus;
   memoryReflection?: RuntimeMemoryReflectionStatus;
   proactivePulse?: RuntimePulseStatus;
@@ -548,28 +554,25 @@ export interface RuntimeIntegrityWarning {
 }
 
 /**
- * Bounded operator-facing summary of one Cognitive Organ budget cycle.
- * Deliberately excludes raw error text; failureCategory is a stable enum and
- * domainRef is an internal identifier without message/Workspace content.
+ * Operator-facing state of one organ lane, derived from its domain row and
+ * the running agent runs. Every lane is always in exactly one of the four
+ * states; a lane with no pending domain work is simply absent.
  */
-export interface RuntimeCognitiveOrganWorkStatus {
-  /** Stable opaque local id (`organ-<rowid>`), usable with requeue-organ. */
-  workId: string;
+export type RuntimeOrganLaneState = "running" | "due" | "waiting" | "needs_human";
+
+export interface RuntimeOrganLaneStatus {
   organ: CognitiveOrganName;
-  domainRef: string;
-  status: "running" | "retry_wait" | "blocked" | "cancelled" | "completed" | "intervention_required";
-  attemptCount: number;
-  createdAt: string;
-  nextAttemptAt?: string;
-  requeuedFrom?: string;
-  lastCancelReason?: string;
-  lastFailureCategory?: string;
-  /** Provable time the current degradation entered: last failed attempt ended. */
-  lastFailureAt?: string;
-  /** Transcript reference produced by the current attempt, when completed. */
-  transcriptRef?: string;
-  /** Result reference produced by the current attempt, when completed. */
-  resultRef?: string;
+  state: RuntimeOrganLaneState;
+  /** Wake deadline: the backoff/park/cooldown end for waiting, the row's due time. */
+  nextRunAt?: string;
+  /** Row's last error for needs_human; a stable message, never raw content. */
+  reason?: string;
+  /** Stable failure category of the last failed run (the condition identity). */
+  cause?: string;
+  /** When the current degradation was last observed (last failed agent run). */
+  since?: string;
+  /** Consecutive real failures carried by the domain row. */
+  attempts?: number;
 }
 
 export type RuntimeAgentName =
@@ -621,7 +624,7 @@ export interface RuntimeOptions {
   /** Model Runtime Revision provider; the revision id is fixed per Cognitive Organ attempt. */
   revisions?: { current(): { id: string } };
   /** Cognitive Organ execution policy; defaults to the module constant. */
-  cognitiveOrganPolicy?: import("./cognitive-organ-execution.js").CognitiveOrganPolicy;
+
 }
 
 export interface AdvanceOptions {
@@ -739,14 +742,15 @@ export type RunOpportunityPulseResult =
   | { disposition: "agent_work_deferred"; nextRunAt: string }
   | { disposition: "failed"; nextRunAt: string; error: string };
 
-export interface RequeueCognitiveOrganWorkResult {
-  disposition: "requeued";
+export interface OrganRecoveryResult {
+  disposition: "approved" | "resolved";
 }
 
 export interface Runtime {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   requeueInput(inputId: string): RequeueInputResult;
-  requeueCognitiveOrganWork(localWorkId: string): RequeueCognitiveOrganWorkResult;
+  approveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult;
+  resolveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult;
   formOpportunity(): Promise<FormOpportunityResult>;
   runOpportunityPulse(options: RunOpportunityPulseOptions): Promise<RunOpportunityPulseResult>;
   /**

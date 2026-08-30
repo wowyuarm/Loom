@@ -18,7 +18,7 @@ const base: Extract<LoomStatusReport, { runId: string }> = {
     integrityWarnings: [],
   },
   agents: [],
-  cognitiveOrganWork: [],
+  organLanes: [],
   channels: [],
   integrations: [],
 };

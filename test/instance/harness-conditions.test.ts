@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { RuntimeCognitiveOrganWorkStatus, RuntimeStatus } from "../../src/runtime/index.js";
+import type { RuntimeOrganLaneStatus, RuntimeStatus } from "../../src/runtime/index.js";
 import {
   createHarnessConditionSource,
   type HarnessConditionStore,
@@ -30,22 +30,20 @@ function runtimeStatus(overrides: Partial<RuntimeStatus> = {}): RuntimeStatus {
     deliveries: [],
     activities: [],
     threadMaintenance: [],
-    cognitiveOrganWork: [],
+    organLanes: [],
     integrityWarnings: [],
     ...overrides,
   };
 }
 
-function blockedWork(overrides: Partial<RuntimeCognitiveOrganWorkStatus> = {}): RuntimeCognitiveOrganWorkStatus {
+function needsHumanLane(overrides: Partial<RuntimeOrganLaneStatus> = {}): RuntimeOrganLaneStatus {
   return {
-    workId: "thread-maintainer-12",
     organ: "thread-maintainer",
-    domainRef: "activity:741b2ac7-8473-4b8e-923d-1d79cde4aa59",
-    status: "blocked",
-    attemptCount: 3,
-    createdAt: "2026-08-11T09:40:28.288Z",
-    lastFailureCategory: "turn_limit",
-    lastFailureAt: "2026-08-11T09:55:00.000Z",
+    state: "needs_human",
+    attempts: 3,
+    reason: "Thread maintenance exceeded the 50-turn Pi limit",
+    cause: "turn_limit",
+    since: "2026-08-11T09:55:00.000Z",
     ...overrides,
   };
 }
@@ -53,7 +51,7 @@ function blockedWork(overrides: Partial<RuntimeCognitiveOrganWorkStatus> = {}): 
 test("capture projects a blocked organ work as a narrow condition", async () => {
   const store = new MemoryStore();
   const source = createHarnessConditionSource({
-    runtimeStatus: () => runtimeStatus({ cognitiveOrganWork: [blockedWork()] }),
+    runtimeStatus: () => runtimeStatus({ organLanes: [needsHumanLane()] }),
     channelStatuses: () => ({}),
     store,
     now: () => new Date("2026-08-11T10:00:00.000Z"),
@@ -62,7 +60,7 @@ test("capture projects a blocked organ work as a narrow condition", async () => 
   assert.ok(evidence);
   assert.equal(evidence.conditions.length, 1);
   const condition = evidence.conditions[0]!;
-  assert.equal(condition.ref, "organ-blocked:thread-maintainer:activity:741b2ac7-8473-4b8e-923d-1d79cde4aa59:turn_limit");
+  assert.equal(condition.ref, "organ-blocked:thread-maintainer:turn_limit");
   assert.equal(condition.capability, "Thread maintenance");
   assert.equal(condition.impact, "blocked after retries exhausted");
   assert.equal(condition.impact, "blocked after retries exhausted");
@@ -96,15 +94,9 @@ test("retrying and non-blocked work are excluded", async () => {
   const store = new MemoryStore();
   const source = createHarnessConditionSource({
     runtimeStatus: () => runtimeStatus({
-      cognitiveOrganWork: [
-        blockedWork(),
-        blockedWork({
-          workId: "life-recorder-4",
-          organ: "life-recorder",
-          domainRef: "activity:other-1111",
-          status: "retry_wait",
-          lastFailureCategory: "provider",
-        }),
+      organLanes: [
+        needsHumanLane(),
+        { organ: "life-recorder", state: "waiting", nextRunAt: "2026-08-11T10:30:00.000Z" },
       ],
     }),
     channelStatuses: () => ({
@@ -119,13 +111,13 @@ test("retrying and non-blocked work are excluded", async () => {
   const evidence = await source.capture();
   assert.ok(evidence);
   assert.equal(evidence.conditions.length, 1);
-  assert.equal(evidence.conditions[0]!.ref, "organ-blocked:thread-maintainer:activity:741b2ac7-8473-4b8e-923d-1d79cde4aa59:turn_limit");
+  assert.equal(evidence.conditions[0]!.ref, "organ-blocked:thread-maintainer:turn_limit");
 });
 
 test("already presented refs are not captured again until marked", async () => {
   const store = new MemoryStore();
   const source = createHarnessConditionSource({
-    runtimeStatus: () => runtimeStatus({ cognitiveOrganWork: [blockedWork()] }),
+    runtimeStatus: () => runtimeStatus({ organLanes: [needsHumanLane()] }),
     channelStatuses: () => ({}),
     store,
     now: () => new Date("2026-08-11T10:00:00.000Z"),
@@ -141,7 +133,7 @@ test("a new ref is captured after a different ref was presented", async () => {
   let organ: "thread-maintainer" | "memory-reflector" = "thread-maintainer";
   const source = createHarnessConditionSource({
     runtimeStatus: () => runtimeStatus({
-      cognitiveOrganWork: [blockedWork({ organ, domainRef: `activity:${organ}-activity` })],
+      organLanes: [needsHumanLane({ organ })],
     }),
     channelStatuses: () => ({}),
     store,
@@ -161,7 +153,7 @@ test("the same organ blocked again for a different cause is presentable once mor
   let failureCategory = "turn_limit";
   const source = createHarnessConditionSource({
     runtimeStatus: () => runtimeStatus({
-      cognitiveOrganWork: [blockedWork({ lastFailureCategory: failureCategory, lastFailureAt: "2026-08-11T09:55:00.000Z" })],
+      organLanes: [needsHumanLane({ cause: failureCategory })],
     }),
     channelStatuses: () => ({}),
     store,
@@ -254,7 +246,7 @@ test("unknown organ failure categories fold to unknown in ref and impact", async
   const store = new MemoryStore();
   const source = createHarnessConditionSource({
     runtimeStatus: () => runtimeStatus({
-      cognitiveOrganWork: [blockedWork({ lastFailureCategory: "weird_custom_cause", lastFailureAt: "2026-08-11T09:55:00.000Z" })],
+      organLanes: [needsHumanLane({ cause: "weird_custom_cause" })],
     }),
     channelStatuses: () => ({}),
     store,
@@ -281,11 +273,11 @@ test("capture returns undefined when nothing is active", async () => {
 test("capture returns undefined when the only active refs are already presented", async () => {
   const store = new MemoryStore();
   store.markPresented(
-    "organ-blocked:thread-maintainer:activity:741b2ac7-8473-4b8e-923d-1d79cde4aa59:turn_limit",
+    "organ-blocked:thread-maintainer:turn_limit",
     new Date("2026-08-11T09:00:00.000Z"),
   );
   const source = createHarnessConditionSource({
-    runtimeStatus: () => runtimeStatus({ cognitiveOrganWork: [blockedWork()] }),
+    runtimeStatus: () => runtimeStatus({ organLanes: [needsHumanLane()] }),
     channelStatuses: () => ({}),
     store,
     now: () => new Date("2026-08-11T10:00:00.000Z"),
@@ -317,7 +309,7 @@ test("prototype properties are not treated as known causes", async () => {
   const store = new MemoryStore();
   const source = createHarnessConditionSource({
     runtimeStatus: () => runtimeStatus({
-      cognitiveOrganWork: [blockedWork({ lastFailureCategory: "constructor", lastFailureAt: "2026-08-11T09:55:00.000Z" })],
+      organLanes: [needsHumanLane({ cause: "constructor" })],
     }),
     channelStatuses: () => ({}),
     store,

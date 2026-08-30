@@ -14,16 +14,7 @@ import {
   successBudget,
   type OrganBudgetFields,
 } from "./organ-budget.js";
-import {
-  CognitiveOrganExecution,
-  COGNITIVE_ORGAN_POLICY,
-  type CognitiveAttemptRecord,
-  type CognitiveOrganName,
-  type CognitiveOrganPolicy,
-  type CognitiveWorkRecord,
-} from "./cognitive-organ-execution.js";
-
-/** Organs the Runtime executes through the shared Cognitive Organ ledger. */
+/** Organs driven through domain-row lanes by the Runtime. */
 const RUNTIME_COGNITIVE_ORGANS: readonly CognitiveOrganName[] = [
   "life-recorder",
   "attention-maintainer",
@@ -72,13 +63,14 @@ import type {
   RuntimeInput,
   RuntimeInputOutcome,
   RequeueInputResult,
-  RequeueCognitiveOrganWorkResult,
+  OrganRecoveryResult,
+  RuntimeOrganLaneStatus,
   RuntimeInputStatus,
   RuntimeOptions,
   RuntimeStatus,
+  CognitiveOrganName,
   RuntimeAgentName,
   RuntimeAgentRunSummary,
-  RuntimeCognitiveOrganWorkStatus,
   RuntimeOperationalStatus,
   InteractionContext,
   ThreadActivityObservation,
@@ -344,8 +336,6 @@ class SqliteRuntime implements Runtime {
   readonly #leaseDurationMs: number;
   readonly #observe: OperationalEventObserver | undefined;
   readonly #revisions: { current(): { id: string } } | undefined;
-  readonly #cognitiveOrganPolicy: CognitiveOrganPolicy;
-  readonly #cognitiveOrgan: CognitiveOrganExecution;
   readonly #statusReader: RuntimeStatusReader;
   #pendingOperationalEvents: OperationalEvent[] | undefined;
   #active: ActiveExecution | undefined;
@@ -378,27 +368,16 @@ class SqliteRuntime implements Runtime {
     this.#leaseDurationMs = options.leaseDurationMs ?? 30_000;
     this.#observe = options.observe;
     this.#revisions = options.revisions;
-    this.#cognitiveOrganPolicy = options.cognitiveOrganPolicy ?? COGNITIVE_ORGAN_POLICY;
     initializeRuntimeSchema(this.#database);
-    this.#cognitiveOrgan = new CognitiveOrganExecution({
-      database: this.#database,
-      policy: this.#cognitiveOrganPolicy,
-      now: this.#now,
-      nextId: this.#nextId,
-    });
     this.#statusReader = new RuntimeStatusReader({
       database: this.#database,
       now: this.#now,
       organs: RUNTIME_COGNITIVE_ORGANS,
-      cognitiveOrganWork: organ => this.#cognitiveOrgan.currentWork(organ),
-      cognitiveOrganLocalId: workId => this.#cognitiveOrgan.localIdOf(workId),
-      cognitiveOrganAttempts: workId => this.#cognitiveOrgan.attempts(workId),
     });
     this.#reconcileExpiredActivityClose();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileOrphanedAgentRuns();
-    this.#cognitiveOrgan.reconcile(this.#now());
   }
 
   async acceptInput(input: RuntimeInput): Promise<AcceptedInput> {
@@ -893,9 +872,6 @@ class SqliteRuntime implements Runtime {
       // While Cognitive Organ work is held for human intervention no parallel
       // Workspace writer may run. This is durable operator-held state, not an
       // active computation that warrants ProcessDriver polling.
-      if (this.#hasHeldCognitiveOrganWork()) {
-        return { disposition: "cognitive_organ_intervention_required" };
-      }
       if (this.#activeCognitiveOrgan) {
         // An organ run is still unwinding after a foreground abort: the
         // single Workspace writer must release before the Turn starts. The
@@ -1682,105 +1658,184 @@ class SqliteRuntime implements Runtime {
     void active.cancel(reason).catch(() => {});
   }
 
-  #hasHeldCognitiveOrganWork(): boolean {
-    return this.#cognitiveOrgan.hasInterventionRequired();
+  /**
+   * Human recovery for a needs_human lane. `approve` clears the flag and the
+   * budget so the same domain item re-runs; `resolve` accepts the gap and
+   * moves the lane past the stuck unit. Both are no-ops (rejected) when the
+   * lane is not in needs_human.
+   */
+  approveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult {
+    const cleared = this.#clearNeedsHuman(organ);
+    if (!cleared) throw new Error(`${organ} is not waiting for a human`);
+    this.#reDueOrganAfterApproval(organ);
+    return { disposition: "approved" } as const;
   }
 
-  /**
-   * Manual recovery: create a successor budget cycle for a blocked or
-   * intervention_required work. Only the ledger is touched; the successor is
-   * executed by the organ's normal claim path on its next entry, so domain
-   * preconditions (pending/FIFO/lease) still decide the work. Rejected when
-   * the work is unknown, not recoverable, still has an active attempt, or its
-   * domain input has already moved on (stale/superseded).
-   */
-  requeueCognitiveOrganWork(localId: string): RequeueCognitiveOrganWorkResult {
-    if (!localId.trim()) throw new Error("Loom requeue-organ requires a work id");
-    const work = this.#cognitiveOrgan.resolveLocalId(localId);
-    if (!work) throw new Error(`Unknown cognitive organ work ${localId}`);
-    if (this.#activeCognitiveOrgan) {
-      throw new Error(
-        `Cognitive organ work ${localId} has an active attempt; resolve the intervention before requeue`,
-      );
+  resolveOrganWork(organ: CognitiveOrganName): OrganRecoveryResult {
+    if (!this.#clearNeedsHuman(organ)) {
+      throw new Error(`${organ} is not waiting for a human`);
     }
-    this.#assertOrganRequeueEligible(work, localId);
-    this.#cognitiveOrgan.requeue(work.id, this.#revisions?.current().id ?? "unpinned");
-    return { disposition: "requeued" } as const;
-  }
-
-  /**
-   * Requeue eligibility per organ: the work's immutable domain input must
-   * still be what the organ's entry point will next act on. Requeuing against
-   * moved-on input would create a successor that can never run — rejected
-   * explicitly instead of creating work and waiting for the entry point to
-   * discover it.
-   */
-  #assertOrganRequeueEligible(work: CognitiveWorkRecord, localId: string): void {
-    switch (work.organ) {
-      case "life-recorder": {
-        // The recording domain is a single FIFO queue of unrecorded
-        // activities; the successor will claim the first one.
-        const pending = this.#database.prepare(`
-          SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1
-        `).get();
-        if (!pending) {
-          throw new Error(
-            `Cognitive organ work ${localId} is stale: no Activity awaits recording`,
-          );
-        }
-        return;
-      }
+    switch (organ) {
       case "attention-maintainer": {
-        const schedule = this.#readAttentionSchedule();
-        const windowEnd = schedule?.window_end_sequence ?? this.#latestActivitySequence();
-        if (work.domainRef !== `window:${windowEnd}`) {
-          throw new Error(
-            `Cognitive organ work ${localId} is superseded by a newer attention window`,
-          );
-        }
-        return;
+        // Accept the stuck window: the cursor moves past it and the next
+        // cadence runs on fresh work.
+        this.#transaction(() => {
+          this.#database.prepare(`
+            UPDATE attention_maintenance
+            SET cursor_sequence = COALESCE(window_end_sequence, cursor_sequence),
+                window_end_sequence = NULL
+            WHERE singleton = 1
+          `).run();
+        });
+        break;
       }
       case "memory-reflector": {
-        const schedule = this.#readMemoryReflectionSchedule();
-        if (!schedule || work.domainRef !== `day:${schedule.next_day}`) {
-          throw new Error(
-            `Cognitive organ work ${localId} is superseded by a newer reflection day`,
+        // Accept the stuck day: the schedule advances to the next day.
+        this.#transaction(() => {
+          this.#database.prepare(`
+            UPDATE memory_reflection
+            SET next_day = ?, next_run_after = ?
+            WHERE singleton = 1
+          `).run(
+            this.#timePolicy.nextRecordingDay(
+              this.#readMemoryReflectionSchedule()?.next_day
+                ?? this.#timePolicy.recordingDay(this.#now()),
+            ),
+            this.#now().toISOString(),
           );
-        }
-        return;
+        });
+        break;
       }
       case "thread-maintainer": {
-        const activitySegmentId = work.domainRef.startsWith("activity:")
-          ? work.domainRef.slice("activity:".length)
-          : "";
-        if (!activitySegmentId) {
-          throw new Error(`Cognitive organ work ${localId} has an invalid thread domain ref`);
+        // Accept the gap: the stuck head is marked completed as skipped so
+        // the FIFO can move on.
+        const head = this.#headThreadMaintenance();
+        const held = head
+          ? { activity_id: head.activity_id }
+          : this.#database.prepare(`
+              SELECT activity_id FROM thread_maintenance
+              WHERE needs_human = 1 AND status <> 'completed'
+              ORDER BY activity_id LIMIT 1
+            `).get() as unknown as { activity_id: string } | undefined;
+        const activityId = held?.activity_id;
+        if (activityId) {
+          this.#transaction(() => {
+            this.#database.prepare(`
+              UPDATE thread_maintenance
+              SET status = 'completed', result_json = ?, completed_at = ?
+              WHERE activity_id = ? AND status <> 'completed'
+            `).run(JSON.stringify({ outcome: "skipped" }), this.#now().toISOString(), activityId);
+            this.#recordTransition(
+              "thread_maintenance",
+              activityId,
+              "pending",
+              "completed",
+              "resolved_skipped",
+              this.#now(),
+              null,
+            );
+          });
         }
-        const pending = this.#database.prepare(`
-          SELECT 1
-          FROM thread_maintenance
-          JOIN activities ON activities.id = thread_maintenance.activity_id
-          WHERE thread_maintenance.status <> 'completed'
-            AND json_extract(activities.frozen_activity_json, '$.segmentId') = ?
-          LIMIT 1
-        `).get(activitySegmentId);
-        if (!pending) {
-          throw new Error(
-            `Cognitive organ work ${localId} is superseded: thread maintenance is already completed`,
-          );
-        }
-        return;
+        break;
       }
+      case "life-recorder":
       case "orientation":
       case "tool-trace-compactor":
-        // These organs have no separate domain queue whose head can become
-        // stale; the shared work ledger is their complete requeue authority.
-        return;
-      default:
-        return assertNever(work.organ);
+        // No separable "skip": a recording or pulse gap is accepted simply by
+        // clearing the flag; the next due unit is real work again.
+        break;
     }
+    return { disposition: "resolved" } as const;
   }
 
+  /** Clear the needs_human flag and the budget fields on the organ's row(s). */
+  #clearNeedsHuman(organ: CognitiveOrganName): boolean {
+    let cleared = false;
+    this.#transaction(() => {
+      const clear = (statement: string): void => {
+        const changed = this.#database.prepare(statement).run();
+        if (changed.changes > 0) cleared = true;
+      };
+      switch (organ) {
+        case "attention-maintainer":
+          clear(`
+            UPDATE attention_maintenance
+            SET needs_human = 0, attempt_count = 0, last_error = NULL
+            WHERE singleton = 1 AND needs_human = 1
+          `);
+          break;
+        case "memory-reflector":
+          clear(`
+            UPDATE memory_reflection
+            SET needs_human = 0, attempt_count = 0, last_error = NULL
+            WHERE singleton = 1 AND needs_human = 1
+          `);
+          break;
+        case "orientation":
+          clear(`
+            UPDATE proactive_pulse
+            SET needs_human = 0, consecutive_failures = 0, last_error = NULL
+            WHERE singleton = 1 AND needs_human = 1
+          `);
+          break;
+        case "life-recorder":
+          clear(`
+            UPDATE activities
+            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, last_error = NULL
+            WHERE needs_human = 1 AND status <> 'recorded'
+          `);
+          break;
+        case "thread-maintainer":
+          clear(`
+            UPDATE thread_maintenance
+            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, last_error = NULL
+            WHERE needs_human = 1 AND status <> 'completed'
+          `);
+          break;
+        case "tool-trace-compactor":
+          break;
+      }
+    });
+    return cleared;
+  }
+
+  /** Make the approved item immediately due on its own lane. */
+  #reDueOrganAfterApproval(organ: CognitiveOrganName): void {
+    const now = this.#now().toISOString();
+    this.#transaction(() => {
+      switch (organ) {
+        case "attention-maintainer":
+          this.#database.prepare(`
+            UPDATE attention_maintenance SET next_run_after = ? WHERE singleton = 1
+          `).run(now);
+          break;
+        case "memory-reflector":
+          this.#database.prepare(`
+            UPDATE memory_reflection SET next_run_after = ? WHERE singleton = 1
+          `).run(now);
+          break;
+        case "orientation":
+          this.#database.prepare(`
+            UPDATE proactive_pulse SET next_pulse_after = ? WHERE singleton = 1
+          `).run(now);
+          break;
+        case "life-recorder":
+          this.#database.prepare(`
+            UPDATE activities SET next_eligible_at = NULL
+            WHERE needs_human = 0 AND status <> 'recorded'
+          `).run();
+          break;
+        case "thread-maintainer":
+          this.#database.prepare(`
+            UPDATE thread_maintenance SET next_eligible_at = NULL
+            WHERE needs_human = 0 AND status <> 'completed'
+          `).run();
+          break;
+        case "tool-trace-compactor":
+          break;
+      }
+    });
+  }
   #agentRetryAt(name: RuntimeAgentName): string | undefined {
     if (name === "orientation") {
       const pulse = this.#readPulseSchedule();
@@ -2062,8 +2117,7 @@ class SqliteRuntime implements Runtime {
       && !this.#hasPendingInput()
       && !this.#hasPendingDeliveryWork()
       && !this.#hasRunnableActivityRecording()
-      && !this.#hasRunnableThreadMaintenance()
-      && !this.#hasHeldCognitiveOrganWork();
+      && !this.#hasRunnableThreadMaintenance();
   }
 
   #isCognitiveOrganIdle(): boolean {
@@ -2075,8 +2129,7 @@ class SqliteRuntime implements Runtime {
       && !this.#attentionMaintenanceRunning
       && !this.#memoryReflectionRunning
       && !this.#hasRunningTurn()
-      && !this.#hasPendingInput()
-      && !this.#hasHeldCognitiveOrganWork();
+      && !this.#hasPendingInput();
   }
 
   #readMemoryReflectionSchedule(): MemoryReflectionRow | undefined {

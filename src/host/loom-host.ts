@@ -31,6 +31,7 @@ import {
 import { openConfiguredWebAccess, type WebAccessIntegration } from "../integrations/web/index.js";
 import { loadNmemConnectionConfiguration } from "../integrations/nmem/index.js";
 import type {
+  CognitiveOrganName,
   AcceptedInput,
   InteractionViewOptions,
   InteractionViewPage,
@@ -45,7 +46,7 @@ import {
 import { LOOM_VERSION } from "../version.js";
 import {
   createLoomStatusServer,
-  type LoomCognitiveOrganWorkStatus,
+  type LoomOrganLaneStatus,
   type LiveLoomStatusReport,
   type LoomIntegrationStatus,
   type LoomModelStatus,
@@ -57,8 +58,10 @@ export interface LoomHost {
   acceptInput(input: RuntimeInput): Promise<AcceptedInput>;
   interactionView(options?: InteractionViewOptions): InteractionViewPage;
   requeueInput(inputId: string): RequeueInputResult;
-  /** Create a successor budget cycle for blocked / intervention_required Cognitive Organ work. */
-  requeueCognitiveOrganWork(workId: string): void;
+  /** Clear a needs_human organ lane so the same item re-runs. */
+  approveOrganWork(organ: LoomOrganLaneStatus["organ"]): void;
+  /** Accept the gap on a needs_human organ lane and move past the stuck unit. */
+  resolveOrganWork(organ: LoomOrganLaneStatus["organ"]): void;
   /** Move failed ingress items on one channel back to pending without a restart. */
   retryChannelIngress(channelId: string, itemId?: string): Promise<number>;
   wake(): void;
@@ -118,7 +121,8 @@ class DefaultLoomHost implements LoomHost {
       socketPath: options.statusSocketPath,
       read: since => this.#operatorStatus(since),
       requeueInput: inputId => this.requeueInput(inputId).disposition,
-      requeueCognitiveOrganWork: workId => this.requeueCognitiveOrganWork(workId),
+      approveOrganWork: organ => this.approveOrganWork(organ as LoomOrganLaneStatus["organ"]),
+      resolveOrganWork: organ => this.resolveOrganWork(organ as LoomOrganLaneStatus["organ"]),
       retryChannelIngress: (channelId, itemId) => this.retryChannelIngress(channelId, itemId),
       interactionView: options => this.interactionView(options),
     });
@@ -180,20 +184,7 @@ class DefaultLoomHost implements LoomHost {
         }] : [],
       },
       agents: agentStatus.agents.map(agent => operatorAgentStatus(agent, status.driver)),
-      cognitiveOrganWork: runtime.cognitiveOrganWork.map(work => ({
-        workId: work.workId,
-        organ: work.organ,
-        domainRef: work.domainRef,
-        status: work.status,
-        attemptCount: work.attemptCount,
-        createdAt: work.createdAt,
-        ...(work.nextAttemptAt ? { nextAttemptAt: work.nextAttemptAt } : {}),
-        ...(work.requeuedFrom ? { requeuedFrom: work.requeuedFrom } : {}),
-        ...(work.lastCancelReason ? { lastCancelReason: work.lastCancelReason } : {}),
-        ...(work.lastFailureCategory ? { lastFailureCategory: work.lastFailureCategory } : {}),
-        ...(work.transcriptRef ? { transcriptRef: work.transcriptRef } : {}),
-        ...(work.resultRef ? { resultRef: work.resultRef } : {}),
-      } satisfies LoomCognitiveOrganWorkStatus)),
+      organLanes: runtime.organLanes,
       channels: operatorChannelStatuses(status),
       integrations: operatorIntegrationStatuses(status),
     };
@@ -228,12 +219,22 @@ class DefaultLoomHost implements LoomHost {
     return result;
   }
 
-  requeueCognitiveOrganWork(workId: string): void {
+  approveOrganWork(organ: LoomOrganLaneStatus["organ"]): "approved" | "resolved" {
     if (this.#state !== "running") {
-      throw new Error(`Loom Host cannot requeue Cognitive Organ work while ${this.#state}`);
+      throw new Error(`Loom Host cannot approve organ work while ${this.#state}`);
     }
-    this.#instance.requeueCognitiveOrganWork(workId);
+    const result = this.#instance.approveOrganWork(organ as CognitiveOrganName);
     this.#driver.wake();
+    return result.disposition;
+  }
+
+  resolveOrganWork(organ: LoomOrganLaneStatus["organ"]): "approved" | "resolved" {
+    if (this.#state !== "running") {
+      throw new Error(`Loom Host cannot resolve organ work while ${this.#state}`);
+    }
+    const result = this.#instance.resolveOrganWork(organ as CognitiveOrganName);
+    this.#driver.wake();
+    return result.disposition;
   }
 
   retryChannelIngress(channelId: string, itemId?: string): Promise<number> {
