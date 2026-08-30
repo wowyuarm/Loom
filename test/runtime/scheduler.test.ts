@@ -1148,7 +1148,7 @@ test("retries pending Activity recording through Scheduler after restart", async
   assert.deepEqual(await firstScheduler.runOnce(now), {
     disposition: "deferred",
     reason: "activity_recording_failed",
-    nextRunAt: "2026-07-21T14:45:00.000Z",
+    nextRunAt: "2026-07-21T14:31:00.000Z",
   });
   const activityId = firstRuntime.status().activities[0]?.id;
   assert.ok(activityId);

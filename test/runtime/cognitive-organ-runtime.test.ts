@@ -274,11 +274,10 @@ test("restart recovers a leftover running attempt as interrupted with policy bac
     payload: { text: "record me" },
   });
   await startRecording(first, started.promise);
-  // Simulates a restart while the attempt is still running in the ledger.
+  // Simulates a restart while the recording run is in flight. Nothing was
+  // persisted about the run: the row is simply still due.
   first.close();
 
-  // Past the domain lease (30s) but not the ledger backoff (1 minute): the
-  // recovery is visible but the retry is still gated.
   now = new Date("2026-07-19T11:01:01.000Z");
   const recovered = openRuntime({
     root,
@@ -292,18 +291,21 @@ test("restart recovers a leftover running attempt as interrupted with policy bac
   t.after(() => recovered.close());
   assert.equal(recovered.status().activities[0]?.status, "pending");
 
+  // Crash recovery needs no reconciliation of execution claims: the row kept
+  // its budget, and the lost run shows only as an interrupted agent run.
   const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
+  const row = db.prepare(
+    "SELECT status, attempt_count, needs_human, next_eligible_at, last_error FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
   db.close();
-  assert.equal(ledger.work.status, "retry_wait");
-  assert.equal(ledger.work.last_failure_category, "interrupted");
-  assert.equal(ledger.attempts.length, 1);
-  assert.equal(ledger.attempts[0]!.status, "failed");
-  assert.equal(ledger.attempts[0]!.failure_category, "interrupted");
+  assert.equal(row.status, "pending");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.next_eligible_at, null);
+  assert.equal(row.last_error, null);
 
-  // Once the policy backoff has elapsed the same frozen evidence is retried
-  // from the immutable input, not continued from the lost run.
-  now = new Date("2026-07-19T11:02:01.000Z");
+  // The same frozen evidence is retried from the immutable input, not
+  // continued from the lost run.
   assert.deepEqual(await recovered.advance(), { disposition: "activity_recorded" });
   assert.equal(recovered.status().activities[0]?.status, "recorded");
   const history = recovered.operationalStatus({ since: "2026-07-19T00:00:00.000Z" })
@@ -340,7 +342,7 @@ test("fixes the Model Runtime Revision per attempt and links transcript and resu
   });
   await runtime.advance();
   await runtime.closeActivity();
-  assert.deepEqual(await runtime.advance(), { disposition: "activity_recording_failed" });
+  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
 
   // The revision is fixed when the second attempt starts; later changes do not
   // rewrite the first attempt's record.
@@ -348,18 +350,19 @@ test("fixes the Model Runtime Revision per attempt and links transcript and resu
   now = new Date("2026-07-19T11:01:00.001Z");
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
 
+  const history = runtime.operationalStatus({ since: "2026-07-19T00:00:00.000Z" })
+    .agents.find(agent => agent.name === "life-recorder")?.history?.map(run => run.result);
+  assert.deepEqual(history, ["failed", "succeeded"]);
   runtime.close();
   const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
+  const row = db.prepare(
+    "SELECT status, attempt_count, needs_human, last_error FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
   db.close();
-  assert.equal(ledger.work.status, "completed");
-  assert.equal(ledger.attempts.length, 2);
-  assert.equal(ledger.attempts[0]!.model_revision, "rev-1");
-  assert.equal(ledger.attempts[0]!.status, "failed");
-  assert.equal(ledger.attempts[1]!.model_revision, "rev-2");
-  assert.equal(ledger.attempts[1]!.status, "completed");
-  assert.equal(ledger.attempts[1]!.transcript_ref, "organs/life-recorder/run-2.jsonl");
-  assert.equal(ledger.attempts[1]!.result_ref, "daily/2026-07-19.md");
+  assert.equal(row.status, "recorded");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.last_error, null);
 });
 
 test("records unpinned as the Model Runtime Revision when no provider is configured", async t => {
@@ -385,12 +388,7 @@ test("records unpinned as the Model Runtime Revision when no provider is configu
   await runtime.advance();
   await runtime.closeActivity();
   assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
-
-  runtime.close();
-  const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
-  db.close();
-  assert.equal(ledger.attempts[0]!.model_revision, "unpinned");
+  assert.equal(runtime.status().activities[0]?.status, "recorded");
 });
 
 test("human preemption releases the attempt back to pending without consuming retry quota", async t => {
@@ -431,15 +429,16 @@ test("human preemption releases the attempt back to pending without consuming re
   assert.deepEqual(await organRun, { disposition: "busy" });
   assert.equal(runtime.status().activities[0]?.status, "pending");
 
-  runtime.close();
+  // Nothing is charged for the interrupt: the row keeps its budget fields.
   const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
+  const row = db.prepare(
+    "SELECT attempt_count, needs_human, next_eligible_at, last_error FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
   db.close();
-  assert.equal(ledger.work.status, "cancelled");
-  assert.equal(ledger.work.last_cancel_reason, "new_human_input");
-  assert.equal(ledger.attempts.length, 1);
-  assert.equal(ledger.attempts[0]!.status, "cancelled");
-  assert.equal(ledger.attempts[0]!.cancel_reason, "new_human_input");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.next_eligible_at, null);
+  assert.equal(row.last_error, null);
 });
 
 test("a Life Recorder receipt for another segment fails without superseding domain state", async t => {
@@ -464,18 +463,21 @@ test("a Life Recorder receipt for another segment fails without superseding doma
   });
   await runtime.advance();
   await runtime.closeActivity();
-  assert.deepEqual(await runtime.advance(), { disposition: "activity_recording_failed" });
+  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
   assert.equal(runtime.status().activities[0]?.status, "pending");
   assert.match(runtime.status().activities[0]?.lastError ?? "", /belongs to wrong-segment/);
   assert.equal(runtime.status().activities[0]?.attempts, 1);
 
+  // The real failure backs off on the row without needing a human yet.
   runtime.close();
   const db = new DatabaseSync(path.join(root, "runtime.db"));
-  const ledger = readLedger(db);
+  const row = db.prepare(
+    "SELECT attempt_count, needs_human, next_eligible_at FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
   db.close();
-  assert.equal(ledger.work.status, "retry_wait");
-  assert.equal(ledger.attempts.length, 1);
-  assert.equal(ledger.attempts[0]!.status, "failed");
+  assert.equal(row.attempt_count, 1);
+  assert.equal(row.needs_human, 0);
+  assert.notEqual(row.next_eligible_at, null);
 });
 
 test("classifies an incomplete model stream as a provider failure", async t => {
@@ -494,14 +496,14 @@ test("classifies an incomplete model stream as a provider failure", async t => {
   await runtime.advance();
   await runtime.closeActivity();
   assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
-  const work = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder");
-  assert.equal(work?.status, "retry_wait");
-  assert.equal(work?.lastFailureCategory, "provider");
+  const latest = runtime.operationalStatus().agents.find(agent => agent.name === "life-recorder")?.latest;
+  assert.equal(latest?.failureCategory, "provider");
 });
 
-test("blocked Life Recorder work releases the scheduler and remains requeueable", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-blocked-recorder-"));
+test("a quota-parked recorder yields the scheduler and never burns attempt budget", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-parked-recorder-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
+  let recordCalls = 0;
   let attentionCalls = 0;
   const runtime = openRuntime({
     root,
@@ -509,6 +511,7 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
     activityLifecycle: activityLifecycle(),
     activityRecorder: {
       record: async () => {
+        recordCalls += 1;
         throw new Error(
           "429 GoUsageLimitError: usage limit reached for https://opencode.ai/workspace/example/go",
         );
@@ -522,13 +525,13 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
         relation: "changed",
         paths: ["thread.md"],
       }],
-      maintain: async () => ({ outcome: "no_change", runId: "unreachable", changedPaths: [] }),
+      maintain: async () => ({ outcome: "no_change", runId: "thread-during-park", changedPaths: [] }),
       cancel: async () => {},
     },
     attentionMaintenance: {
       maintain: async () => {
         attentionCalls += 1;
-        return { outcome: "no_change", runId: "attention-after-block", path: "attention.md" };
+        return { outcome: "no_change", runId: "attention-during-park", path: "attention.md" };
       },
       cancel: async () => {},
     },
@@ -538,61 +541,73 @@ test("blocked Life Recorder work releases the scheduler and remains requeueable"
 
   await runtime.acceptInput({
     source: "test",
-    sourceId: "blocked-recorder",
+    sourceId: "parked-recorder",
     kind: "interaction",
     payload: { text: "record me" },
   });
   await runtime.advance();
   await runtime.closeActivity();
-
-  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
-  now = new Date("2026-07-19T11:01:00.000Z");
-  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
-  now = new Date("2026-07-19T11:06:00.000Z");
   assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
 
-  const blocked = runtime.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder");
-  assert.equal(blocked?.status, "blocked");
-  assert.equal(blocked?.attemptCount, 3);
-  assert.equal(blocked?.lastFailureCategory, "provider");
+  // Quota exhaustion is an environment fact: the recorder parks until the
+  // default park elapses without consuming any attempt budget.
+  const parked = runtime.status().activities[0];
+  assert.equal(parked?.attempts, 0);
+  const db0 = new DatabaseSync(path.join(root, "runtime.db"));
+  const row0 = db0.prepare(
+    "SELECT needs_human, next_eligible_at FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
+  db0.close();
+  assert.equal(row0.needs_human, 0);
+  assert.equal(row0.next_eligible_at, "2026-07-19T17:00:00.000Z");
+
+  // Inside the park the whole lane waits on the row's deadline; no further
+  // recorder call happens and no busy loop is implied.
+  now = new Date("2026-07-19T11:06:30.000Z");
+  await runtime.advance();
+  assert.equal(recordCalls, 1);
+
+  // The parked recorder does not starve the other organs; the Thread row
+  // waits on its own real dependency (the Activity being recorded), not on
+  // the recorder's failure.
   assert.equal(runtime.status().threadMaintenance[0]?.status, "pending");
-  assert.equal((await runtime.runMemoryReflection({
-    observedAt: now,
-    delayMs: 0,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  })).disposition, "waiting");
-
-  // Both the pending Activity and its Thread row stay durable, but their
-  // blocked recorder dependency does not force the ProcessDriver into its
-  // one-second busy loop.
-  assert.deepEqual(await runtime.advance(), { disposition: "idle" });
   const attentionOptions = {
     initialDelayMs: 1,
     cadenceMs: 60_000,
     retryDelayMs: 30_000,
     agentWork: "allow" as const,
   };
-  assert.equal((await runtime.runAttentionMaintenance({ ...attentionOptions, observedAt: now })).disposition, "waiting");
-  now = new Date("2026-07-19T11:06:00.001Z");
-  assert.equal((await runtime.runAttentionMaintenance({ ...attentionOptions, observedAt: now })).disposition, "completed");
+  now = new Date("2026-07-19T11:07:00.000Z");
+  assert.equal(
+    (await runtime.runAttentionMaintenance({ ...attentionOptions, observedAt: now })).disposition,
+    "waiting",
+  );
+  now = new Date("2026-07-19T11:07:00.001Z");
+  assert.equal(
+    (await runtime.runAttentionMaintenance({ ...attentionOptions, observedAt: now })).disposition,
+    "completed",
+  );
   assert.equal(attentionCalls, 1);
 
-  // A due Reflection day cannot advance until its Activities are recorded, but
-  // a terminally blocked recorder is not active work. It must release the
-  // ProcessDriver instead of causing a one-second busy retry forever.
-  now = new Date("2026-07-20T03:00:00.000Z");
-  assert.equal((await runtime.runMemoryReflection({
-    observedAt: now,
-    delayMs: 0,
-    retryDelayMs: 30_000,
-    agentWork: "allow",
-  })).disposition, "idle");
-
-  assert.ok(blocked);
-  assert.deepEqual(runtime.requeueCognitiveOrganWork(blocked.workId), { disposition: "requeued" });
+  // At the park deadline the recorder retries; another quota park follows,
+  // still without touching the attempt budget.
+  now = new Date("2026-07-19T17:00:00.000Z");
+  assert.equal((await runtime.advance()).disposition, "activity_recording_failed");
+  assert.equal(recordCalls, 2);
+  const db = new DatabaseSync(path.join(root, "runtime.db"));
+  const row = db.prepare(
+    "SELECT status, attempt_count, needs_human, next_eligible_at FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
+  const ledgerRows = db.prepare(
+    "SELECT COUNT(*) AS n FROM cognitive_work WHERE organ = 'life-recorder'",
+  ).get() as Record<string, number>;
+  db.close();
+  assert.equal(row.status, "pending");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.next_eligible_at, "2026-07-19T23:00:00.000Z");
+  assert.equal(ledgerRows.n, 0);
 });
-
 test("exhausted attention failures enter needs_human cooldown instead of busy", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-blocked-attention-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
@@ -874,171 +889,22 @@ test("a retry continues the same reflection day on the same work", async t => {
   assert.equal(ledgerRows.n, 0);
 });
 
-test("requeue refuses an active attempt, unknown ids and empty ids", async t => {
+test("requeue refuses unknown ids and empty ids", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-active-"));
-  const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
-  const started = deferred<void>();
   const runtime = openRuntime({
     root,
     execution: completingExecution,
     activityLifecycle: activityLifecycle(),
-    activityRecorder: {
-      record: async () => {
-        started.resolve();
-        return recording.promise;
-      },
-      cancel: async () => {},
-    },
   });
   t.after(() => runtime.close());
 
-  await runtime.acceptInput({
-    source: "test",
-    sourceId: "day-one",
-    kind: "interaction",
-    payload: { text: "day one" },
-  });
-  await startRecording(runtime, started.promise);
-
-  // Status exposes the discoverable local id, never a raw UUID or error text.
-  const work = runtime.status().cognitiveOrganWork
-    .find(entry => entry.organ === "life-recorder")!;
-  assert.match(work.workId, /^life-recorder-\d+$/);
-  assert.equal(work.status, "running");
-  assert.equal("lastError" in work, false);
-  assert.equal(work.lastFailureCategory, undefined);
-
-  // An active attempt blocks requeue regardless of the ledger state.
-  assert.throws(() => runtime.requeueCognitiveOrganWork(work.workId), /has an active attempt/);
   assert.throws(
     () => runtime.requeueCognitiveOrganWork("life-recorder-999999"),
     /Unknown cognitive organ work life-recorder-999999/,
   );
   assert.throws(() => runtime.requeueCognitiveOrganWork("  "), /requires a work id/);
-  // recording intentionally stays unsettled: the recorder never released.
 });
-
-test("requeue rejects retry_wait and completed work without touching the ledger", async t => {
-  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-states-"));
-  let now = new Date("2026-07-19T11:00:00.000Z");
-  let attempts = 0;
-  const runtime = openRuntime({
-    root,
-    execution: completingExecution,
-    activityLifecycle: activityLifecycle(),
-    activityRecorder: {
-      record: async activity => {
-        attempts += 1;
-        if (attempts === 1) throw new Error("provider unavailable");
-        return receiptFor(activity, `record-${attempts}`);
-      },
-      cancel: async () => {},
-    },
-    now: () => now,
-  });
-  t.after(() => runtime.close());
-
-  await runtime.acceptInput({
-    source: "test",
-    sourceId: "pending-recording",
-    kind: "interaction",
-    payload: { text: "record me" },
-  });
-  await runtime.advance();
-  await runtime.closeActivity();
-  assert.deepEqual(await runtime.advance(), { disposition: "activity_recording_failed" });
-
-  const waiting = runtime.status().cognitiveOrganWork
-    .find(entry => entry.organ === "life-recorder")!;
-  assert.equal(waiting.status, "retry_wait");
-  assert.equal(waiting.lastFailureCategory, "provider");
-  assert.equal("lastError" in waiting, false);
-  assert.throws(() => runtime.requeueCognitiveOrganWork(waiting.workId), /in state retry_wait/);
-
-  // The rejected requeue did not touch the row: the same work still completes
-  // through the normal retry path once the backoff has elapsed.
-  now = new Date("2026-07-19T11:01:00.001Z");
-  assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
-  const done = runtime.status().cognitiveOrganWork
-    .find(entry => entry.organ === "life-recorder")!;
-  assert.equal(done.status, "completed");
-  // The completed work's domain input is gone (the activity is recorded), so
-  // the runtime-level eligibility check refuses it as stale; the ledger-level
-  // state rejection is covered by the execution unit tests.
-  assert.throws(() => runtime.requeueCognitiveOrganWork(done.workId), /no Activity awaits recording/);
-});
-
-test("requeue refuses stale Life Recorder, Reflection and Thread work whose domain moved on", async t => {
-  // Life Recorder: the FIFO recording queue is empty because the held
-  // activity was recorded elsewhere.
-  {
-    const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-life-"));
-    let now = new Date("2026-07-19T12:00:00.000Z");
-    const recordHang = deferred<Awaited<ReturnType<NonNullable<ActivityRecorder["record"]>>>>();
-    const recordStarted = deferred<void>();
-    const timerCalls: Array<{ delayMs: number; callback: () => void }> = [];
-    const first = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async () => {
-          recordStarted.resolve();
-          return recordHang.promise;
-        },
-        cancel: async () => {},
-      },
-      cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 50 },
-      now: () => now,
-    });
-    await first.acceptInput({
-      source: "test",
-      sourceId: "day-one",
-      kind: "interaction",
-      payload: { text: "day one" },
-    });
-    await first.advance();
-    await first.closeActivity();
-    const recordingRun = first.advance();
-    await recordStarted.promise;
-    await first.acceptInput({
-      source: "test", sourceId: "interrupt-held-recording", kind: "interaction", payload: { text: "interrupt" },
-    });
-    await new Promise(resolve => setTimeout(resolve, 100));
-    assert.equal(
-      first.status().cognitiveOrganWork.find(entry => entry.organ === "life-recorder")?.status,
-      "intervention_required",
-    );
-    first.close();
-    // recordingRun intentionally stays unsettled: the recorder never released.
-
-    // The activity is recorded elsewhere while held: no input awaits the
-    // organ, so a successor could never run.
-    let db = new DatabaseSync(path.join(root, "runtime.db"));
-    db.prepare(`UPDATE activities SET status = 'recorded' WHERE status <> 'recorded'`).run();
-    db.close();
-    const recovered = openRuntime({
-      root,
-      timePolicy: createTimePolicy({ timeZone: "UTC", logicalDayStart: "03:00" }),
-      execution: completingExecution,
-      activityLifecycle: activityLifecycle(),
-      activityRecorder: {
-        record: async activity => receiptFor(activity, "record-day-one"),
-        cancel: async () => {},
-      },
-      now: () => now,
-    });
-    t.after(() => recovered.close());
-    const held = recovered.status().cognitiveOrganWork
-      .find(entry => entry.organ === "life-recorder")!;
-    assert.equal(held.status, "intervention_required");
-    assert.throws(
-      () => recovered.requeueCognitiveOrganWork(held.workId),
-      /no Activity awaits recording/,
-    );
-  }
-
+test("requeue refuses stale Thread work whose domain moved on", async t => {
   // Thread Maintainer: the activity's maintenance row completed elsewhere.
   {
     const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-requeue-stale-thread-"));

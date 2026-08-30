@@ -407,7 +407,6 @@ class SqliteRuntime implements Runtime {
       cognitiveOrganAttempts: workId => this.#cognitiveOrgan.attempts(workId),
     });
     this.#reconcileExpiredActivityClose();
-    this.#reconcileExpiredActivityRecording();
     this.#reconcileExpiredThreadMaintenance();
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
@@ -866,7 +865,6 @@ class SqliteRuntime implements Runtime {
     this.#reconcileExpiredDeliveries();
     this.#reconcileExpiredTurns();
     this.#reconcileExpiredActivityClose();
-    this.#reconcileExpiredActivityRecording();
     this.#reconcileExpiredThreadMaintenance();
     this.#expireAfterChatContinuation(options.observedAt ?? this.#now());
     if (this.#hasRunningTurn()) return { disposition: "busy" };
@@ -2560,9 +2558,18 @@ class SqliteRuntime implements Runtime {
   }
 
   #hasRunnableActivityRecording(): boolean {
-    if (!this.#hasPendingActivityRecording()) return false;
-    const status = this.#cognitiveOrgan.currentWork("life-recorder")?.status;
-    return status === undefined || status === "running" || status === "completed" || status === "cancelled";
+    const head = this.#database.prepare(`
+      SELECT next_eligible_at FROM activities
+      WHERE status <> 'recorded'
+      ORDER BY sequence
+      LIMIT 1
+    `).get() as unknown as { next_eligible_at: string | null } | undefined;
+    if (!head) return false;
+    if (head.next_eligible_at) {
+      const eligibleAt = Date.parse(head.next_eligible_at);
+      if (Number.isFinite(eligibleAt) && eligibleAt > this.#now().getTime()) return false;
+    }
+    return true;
   }
 
   #hasPendingDeliveryWork(): boolean {
@@ -3063,12 +3070,11 @@ class SqliteRuntime implements Runtime {
             failure_category = 'runtime_interrupted'
         WHERE status = 'running'
           AND (
-            agent_name IN ('orientation', 'attention-maintainer', 'memory-reflector')
+            agent_name IN (
+              'orientation', 'attention-maintainer', 'memory-reflector', 'life-recorder'
+            )
             OR (agent_name = 'main-agent' AND id NOT IN (
               SELECT id FROM turns WHERE status = 'running'
-            ))
-            OR (agent_name = 'life-recorder' AND id NOT IN (
-              SELECT id FROM activity_attempts WHERE status = 'recording'
             ))
             OR (agent_name = 'thread-maintainer' AND NOT EXISTS (
               SELECT 1 FROM thread_maintenance WHERE status = 'running'
@@ -3133,58 +3139,7 @@ class SqliteRuntime implements Runtime {
     });
   }
 
-  #reconcileExpiredActivityRecording(): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const expired = this.#database.prepare(`
-        SELECT activities.id, activities.attempt_count, activities.fencing_token,
-               activity_attempts.id AS attempt_id
-        FROM activities
-        JOIN activity_attempts
-          ON activity_attempts.activity_id = activities.id
-         AND activity_attempts.attempt_number = activities.attempt_count
-        WHERE activities.status = 'recording' AND activities.lease_expires_at <= ?
-        ORDER BY activities.sequence
-      `).all(now.toISOString()) as unknown as Array<{
-        id: string;
-        attempt_id: string;
-        attempt_count: number;
-        fencing_token: number;
-      }>;
-      for (const activity of expired) {
-        this.#database.prepare(`
-          UPDATE activities
-          SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-              lease_expires_at = NULL, last_error = 'recording lease expired'
-          WHERE id = ? AND status = 'recording' AND fencing_token = ?
-        `).run(activity.id, activity.fencing_token);
-        this.#database.prepare(`
-          UPDATE activity_attempts
-          SET status = 'interrupted', ended_at = ?, error = 'recording lease expired'
-          WHERE activity_id = ? AND attempt_number = ? AND status = 'recording'
-            AND fencing_token = ?
-        `).run(now.toISOString(), activity.id, activity.attempt_count, activity.fencing_token);
-        this.#finishAgentRun(
-          activity.attempt_id,
-          "interrupted",
-          "lease_expired",
-          now,
-          "runtime_interrupted",
-        );
-        this.#recordTransition(
-          "activity",
-          activity.id,
-          "recording",
-          "pending",
-          "recording_lease_expired",
-          now,
-          activity.fencing_token,
-        );
-      }
-    });
-  }
-
-  #reconcileExpiredThreadMaintenance(): void {
+ #reconcileExpiredThreadMaintenance(): void {
     if (!this.#threadMaintenance) return;
     this.#transaction(() => {
       const now = this.#now();
@@ -3533,258 +3488,108 @@ class SqliteRuntime implements Runtime {
 
   async #advanceActivityRecording(): Promise<AdvanceResult> {
     if (!this.#activityRecorder) return { disposition: "idle" };
-    const pending = this.#database.prepare(`
-      SELECT 1 FROM activities WHERE status = 'pending' LIMIT 1
-    `).get();
-    if (!pending) {
-      const unfinished = this.#database.prepare(`
-        SELECT 1 FROM activities WHERE status <> 'recorded' LIMIT 1
-      `).get();
-      if (!unfinished) return { disposition: "idle" };
-      return this.#cognitiveOrgan.currentWork("life-recorder")?.status === "running"
-        ? { disposition: "busy" }
-        : { disposition: "idle" };
+    if (this.#activeActivityAttemptId) return { disposition: "busy" };
+    // FIFO: the first non-recorded Activity is the head. A head waiting in
+    // backoff or needs_human cooldown blocks later rows until its deadline.
+    const head = this.#database.prepare(`
+      SELECT id, frozen_activity_json, attempt_count, needs_human, next_eligible_at
+      FROM activities
+      WHERE status <> 'recorded'
+      ORDER BY sequence
+      LIMIT 1
+    `).get() as unknown as {
+      id: string;
+      frozen_activity_json: string;
+      attempt_count: number;
+      needs_human: number;
+      next_eligible_at: string | null;
+    } | undefined;
+    if (!head) return { disposition: "idle" };
+    if (head.next_eligible_at) {
+      const eligibleAt = Date.parse(head.next_eligible_at);
+      if (Number.isFinite(eligibleAt) && eligibleAt > this.#now().getTime()) {
+        return { disposition: "waiting", nextRunAt: head.next_eligible_at };
+      }
     }
-    return this.#driveCognitiveOrgan<{
-      activity: FrozenActivity;
-      attemptId: string;
-      attemptNumber: number;
-      fencingToken: number;
-    }, LifeRecorderReceipt, AdvanceResult>({
-      organ: "life-recorder",
-      domainRef: "recording",
-      claimLostMessage: "Activity recording domain claim lost",
-      noClaim: nextAttemptAt =>
-        nextAttemptAt
-          ? { disposition: "waiting", nextRunAt: nextAttemptAt }
-          : this.#cognitiveOrgan.currentWork("life-recorder")?.status === "running"
-            ? { disposition: "busy" }
-            : { disposition: "idle" },
-      claimLost: () => ({ disposition: "busy" }),
-      acquire: claim => {
-        const claimed = this.#claimPendingActivity(claim.agentRunId);
-        if (!claimed) return undefined;
-        this.#activeActivityAttemptId = claimed.attemptId;
-        this.#startHeartbeat("activity_recording", claimed.activity.segmentId, claimed.fencingToken);
-        return claimed;
-      },
-      release: claimed => {
-        this.#stopHeartbeat();
-        if (this.#activeActivityAttemptId === claimed.attemptId) this.#activeActivityAttemptId = undefined;
-      },
-      cancel: (_claimed, reason) => this.#activityRecorder!.cancel?.(reason) ?? Promise.resolve(),
-      run: async claimed => {
-        const receipt = await this.#activityRecorder!.record(claimed.activity);
-        if (receipt.segmentId !== claimed.activity.segmentId) {
-          throw new Error(`Recorder receipt belongs to ${receipt.segmentId}, not ${claimed.activity.segmentId}`);
-        }
-        return receipt;
-      },
-      transcriptRef: receipt => organTranscriptRef("life-recorder", receipt.runId),
-      resultRef: receipt => receipt.daily.path,
-      settle: (claimed, outcome) => this.#settleActivityRecording(claimed, outcome),
-    });
+
+    const activity = JSON.parse(head.frozen_activity_json) as FrozenActivity;
+    const agentRunId = this.#nextId();
+    this.#activeActivityAttemptId = agentRunId;
+    try {
+      // Register the run in the same synchronous tick as the in-process
+      // claim, so an arriving human Input still sees an active organ and can
+      // abort it. The attempt budget is not touched until the outcome exists:
+      // an aborted or crashed run writes nothing and the row stays due.
+      this.#transaction(() => {
+        this.#startAgentRun(agentRunId, "life-recorder", this.#now());
+      });
+      const outcome = await this.#runDomainRowOrgan("life-recorder", {
+        cancel: reason => this.#activityRecorder!.cancel?.(reason) ?? Promise.resolve(),
+        run: async () => {
+          const receipt = await this.#activityRecorder!.record(activity);
+          if (receipt.segmentId !== activity.segmentId) {
+            throw new Error(`Recorder receipt belongs to ${receipt.segmentId}, not ${activity.segmentId}`);
+          }
+          return receipt;
+        },
+      });
+      return this.#settleActivityRecording(head, agentRunId, outcome);
+    } finally {
+      if (this.#activeActivityAttemptId === agentRunId) this.#activeActivityAttemptId = undefined;
+    }
   }
 
   #settleActivityRecording(
-    claimed: { activity: FrozenActivity; attemptId: string; attemptNumber: number; fencingToken: number },
-    outcome: CognitiveOrganRunOutcome<LifeRecorderReceipt>,
+    head: { id: string; attempt_count: number; needs_human: number },
+    agentRunId: string,
+    outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: LifeRecorderReceipt },
   ): AdvanceResult {
-    switch (outcome.disposition) {
-      case "completed":
-        this.#finishActivityRecording(claimed, outcome.result);
-        return { disposition: "activity_recorded" };
-      case "cancelled":
-        this.#releaseActivityRecording(claimed, "cancelled");
-        return { disposition: "busy" };
-      case "intervention_required":
-        // Domain lease is left running; a human must resolve the held work.
-        this.#finishAgentRun(claimed.attemptId, "interrupted", "intervention_required", this.#now(), "cancelled");
-        return { disposition: "busy" };
-      case "failed":
-        this.#failActivityRecording(claimed, new Error(outcome.error));
-        return { disposition: "activity_recording_failed" };
+    if (!outcome.failure && !outcome.cancelled) {
+      const receipt = outcome.result!;
+      this.#transaction(() => {
+        const now = this.#now();
+        const changed = this.#database.prepare(`
+          UPDATE activities
+          SET status = 'recorded', receipt_json = ?, last_error = NULL,
+              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, recorded_at = ?
+          WHERE id = ? AND status <> 'recorded'
+        `).run(JSON.stringify(receipt), now.toISOString(), head.id);
+        if (changed.changes !== 1) {
+          throw new Error(`Activity ${head.id} no longer accepts recorder receipt`);
+        }
+        this.#recordTransition("activity", head.id, "pending", "recorded", "recording_completed", now, null);
+        this.#finishAgentRun(agentRunId, "succeeded", "recorded", now);
+      });
+      return { disposition: "activity_recorded" };
     }
-  }
-
-  /** Release a cancelled recording back to pending without recording a failure. */
-  #releaseActivityRecording(
-    claimed: { activity: FrozenActivity; attemptId: string; attemptNumber: number; fencingToken: number },
-    reason: string,
-  ): void {
+    if (outcome.cancelled) {
+      // Human preemption: write nothing — the row stays due and the same
+      // Activity retries once the foreground is done.
+      this.#finishAgentRun(agentRunId, "interrupted", "cancelled", this.#now(), "cancelled");
+      return { disposition: "busy" };
+    }
+    const error = outcome.failure!.error;
+    const message = error instanceof Error ? error.message : String(error);
+    const budget = failureBudget(this.#now(), {
+      attempts: head.attempt_count,
+      needsHuman: head.needs_human === 1,
+    }, {
+      class: organFailureClass(error),
+      error: message,
+      quotaResetAt: quotaResetAt(error),
+    });
     this.#transaction(() => {
-      const now = this.#now();
-      const changed = this.#database.prepare(`
-        UPDATE activities
-        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, last_error = NULL
-        WHERE id = ? AND status = 'recording' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) return;
-      // The domain attempt terminal state is 'interrupted'; the cancelled
-      // outcome itself lives in the shared Cognitive Organ ledger.
       this.#database.prepare(`
-        UPDATE activity_attempts
-        SET status = 'interrupted', ended_at = ?
-        WHERE id = ? AND status = 'recording' AND fencing_token = ?
-      `).run(now.toISOString(), claimed.attemptId, claimed.fencingToken);
-      this.#finishAgentRun(claimed.attemptId, "interrupted", reason, now, "cancelled");
-      this.#recordTransition(
-        "activity",
-        claimed.activity.segmentId,
-        "recording",
-        "pending",
-        `recording_${reason}`,
-        now,
-        claimed.fencingToken,
-      );
-    });
-  }
-
-  #claimPendingActivity(agentRunId: string): {
-    activity: FrozenActivity;
-    attemptId: string;
-    attemptNumber: number;
-    fencingToken: number;
-  } | undefined {
-    return this.#transaction(() => {
-      const next = this.#database.prepare(`
-        SELECT id, frozen_activity_json, status, attempt_count
-        FROM activities
-        WHERE status <> 'recorded'
-        ORDER BY sequence
-        LIMIT 1
-      `).get() as unknown as Pick<ActivityRow, "id" | "frozen_activity_json" | "status" | "attempt_count"> | undefined;
-      if (!next || next.status !== "pending") return undefined;
-      const tokenRow = this.#database.prepare(`
-        UPDATE runtime_counters SET value = value + 1
-        WHERE name = 'fencing_token'
-        RETURNING value
-      `).get() as unknown as { value: number };
-      const attemptNumber = next.attempt_count + 1;
-      const attemptId = agentRunId;
-      const now = this.#now();
-      const changed = this.#database.prepare(`
         UPDATE activities
-        SET status = 'recording', attempt_count = ?, lease_owner = ?, fencing_token = ?,
-            lease_expires_at = ?
-        WHERE id = ? AND status = 'pending' AND attempt_count = ?
-      `).run(
-        attemptNumber,
-        this.#ownerId,
-        tokenRow.value,
-        new Date(now.getTime() + this.#leaseDurationMs).toISOString(),
-        next.id,
-        next.attempt_count,
-      );
-      if (changed.changes !== 1) return undefined;
-      this.#database.prepare(`
-        INSERT INTO activity_attempts (
-          id, activity_id, attempt_number, status, lease_owner,
-          fencing_token, started_at
-        ) VALUES (?, ?, ?, 'recording', ?, ?, ?)
-      `).run(attemptId, next.id, attemptNumber, this.#ownerId, tokenRow.value, now.toISOString());
-      this.#startAgentRun(attemptId, "life-recorder", now);
-      this.#recordTransition("activity", next.id, "pending", "recording", "recording_claimed", now, tokenRow.value);
-      return {
-        activity: JSON.parse(next.frozen_activity_json) as FrozenActivity,
-        attemptId,
-        attemptNumber,
-        fencingToken: tokenRow.value,
-      };
+        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, last_error = ?
+        WHERE id = ? AND status <> 'recorded'
+      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, message.slice(0, 2_000), head.id);
+      this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
     });
-  }
-
-  #finishActivityRecording(
-    claimed: { activity: FrozenActivity; attemptId: string; attemptNumber: number; fencingToken: number },
-    receipt: LifeRecorderReceipt,
-  ): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const changed = this.#database.prepare(`
-        UPDATE activities
-        SET status = 'recorded', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, receipt_json = ?, last_error = NULL, recorded_at = ?
-        WHERE id = ? AND status = 'recording' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        JSON.stringify(receipt),
-        now.toISOString(),
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) {
-        throw new Error(`Activity ${claimed.activity.segmentId} no longer accepts recorder receipt`);
-      }
-      this.#database.prepare(`
-        UPDATE activity_attempts
-        SET status = 'recorded', ended_at = ?, receipt_json = ?
-        WHERE id = ? AND status = 'recording' AND fencing_token = ?
-      `).run(now.toISOString(), JSON.stringify(receipt), claimed.attemptId, claimed.fencingToken);
-      this.#finishAgentRun(claimed.attemptId, "succeeded", "recorded", now);
-      this.#recordTransition(
-        "activity",
-        claimed.activity.segmentId,
-        "recording",
-        "recorded",
-        "receipt_committed",
-        now,
-        claimed.fencingToken,
-      );
-    });
-  }
-
-  #failActivityRecording(
-    claimed: { activity: FrozenActivity; attemptId: string; attemptNumber: number; fencingToken: number },
-    error: unknown,
-  ): void {
-    this.#transaction(() => {
-      const now = this.#now();
-      const detail = error instanceof Error ? error.message : String(error);
-      const changed = this.#database.prepare(`
-        UPDATE activities
-        SET status = 'pending', lease_owner = NULL, fencing_token = NULL,
-            lease_expires_at = NULL, last_error = ?
-        WHERE id = ? AND status = 'recording' AND attempt_count = ?
-          AND fencing_token = ? AND lease_owner = ?
-      `).run(
-        detail,
-        claimed.activity.segmentId,
-        claimed.attemptNumber,
-        claimed.fencingToken,
-        this.#ownerId,
-      );
-      if (changed.changes !== 1) return;
-      this.#database.prepare(`
-        UPDATE activity_attempts
-        SET status = 'failed', ended_at = ?, error = ?
-        WHERE id = ? AND status = 'recording' AND fencing_token = ?
-      `).run(now.toISOString(), detail, claimed.attemptId, claimed.fencingToken);
-      this.#finishAgentRun(
-        claimed.attemptId,
-        "failed",
-        undefined,
-        now,
-        agentFailureCategory(error),
-      );
-      this.#recordTransition(
-        "activity",
-        claimed.activity.segmentId,
-        "recording",
-        "pending",
-        `recording_failed:${detail}`,
-        now,
-        claimed.fencingToken,
-      );
-    });
+    return {
+      disposition: "activity_recording_failed",
+      ...(budget.nextEligibleAt ? { nextRunAt: budget.nextEligibleAt } : {}),
+    };
   }
 
   #claimNextInput(): {

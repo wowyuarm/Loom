@@ -187,13 +187,35 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
           openedAt: request.segment.openedAt,
           closedAt: request.segment.closedAt,
           events: [],
-          turns: [],
+          turns: request.turns.map(turn => ({
+            turnId: turn.id,
+            startedAt: turn.startedAt,
+            endedAt: turn.endedAt,
+            status: turn.status,
+          })),
         },
         successorExecutionState: { version: 1 },
       }),
     },
     activityRecorder: {
-      record: async activity => {
+      record: async activity => ({
+        version: 1,
+        segmentId: activity.segmentId,
+        runId: "record-day-one",
+        recordedAt: "2026-07-19T12:00:00.000Z",
+        daily: { status: "no_change", path: "daily/2026-07-19.md" },
+        episodes: [],
+      }),
+      cancel: async () => {},
+    },
+    threadMaintenance: {
+      observationsFor: activity => [{
+        turnId: activity.turns[0]!.turnId,
+        threadPath: "threads/t.md",
+        relation: "changed" as const,
+        paths: ["threads/t.md"],
+      }],
+      maintain: async () => {
         resolveStarted();
         return new Promise(() => {});
       },
@@ -211,8 +233,10 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
   });
   await runtime.advance();
   await runtime.closeActivity();
-  // The recording run starts and holds; its cancel is ignored, so the grace
-  // expiry persists intervention_required in the ledger.
+  // The recording completes; the next advance starts the Thread organ run,
+  // which holds with its cancel ignored, so the grace expiry persists
+  // intervention_required in the ledger.
+  assert.deepEqual(await runtime.advance(), { disposition: "activity_recorded" });
   const heldRun = runtime.advance();
   await recordingStarted;
   await runtime.acceptInput({
@@ -231,8 +255,8 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
 
   // The Host status exposes the discoverable local work id.
   const held = host.status().instance.runtime.cognitiveOrganWork
-    .find(work => work.organ === "life-recorder")!;
-  assert.match(held.workId, /^life-recorder-\d+$/);
+    .find(work => work.organ === "thread-maintainer")!;
+  assert.match(held.workId, /^thread-maintainer-\d+$/);
   assert.equal(held.status, "intervention_required");
 
   const result = await runCli(cli, ["requeue-organ", "--root", root, held.workId], process.env);
@@ -241,7 +265,7 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
 
   // The successor is the current cycle, referencing the held work by its local id.
   const successor = host.status().instance.runtime.cognitiveOrganWork
-    .find(work => work.organ === "life-recorder")!;
+    .find(work => work.organ === "thread-maintainer")!;
   assert.equal(successor.status, "running");
   assert.equal(successor.attemptCount, 1);
   assert.equal(successor.requeuedFrom, held.workId);
@@ -253,18 +277,18 @@ test("requeues one held Cognitive Organ work through the running Host", async t 
   assert.match(status.stdout, /Cognitive Organ Work:/);
   assert.match(
     status.stdout,
-    new RegExp(`life-recorder-\\d+: running, attempt 1, requeued from ${held.workId}`),
+    new RegExp(`thread-maintainer-\\d+: running, attempt 1, requeued from ${held.workId}`),
   );
   // Normal execution has no wall-clock deadline, and the running successor
   // has no transcript or result reference yet.
   assert.doesNotMatch(status.stdout, /soft deadline|total deadline/);
-  assert.doesNotMatch(status.stdout, /transcript organs\/life-recorder/);
+  assert.doesNotMatch(status.stdout, /transcript organs\/thread-maintainer/);
   assert.doesNotMatch(status.stdout, /lastError/);
 
   // Unknown and missing ids fail with a clear message before touching anything.
-  const unknown = await runCli(cli, ["requeue-organ", "--root", root, "life-recorder-999999"], process.env);
+  const unknown = await runCli(cli, ["requeue-organ", "--root", root, "thread-maintainer-999999"], process.env);
   assert.equal(unknown.code, 1);
-  assert.match(unknown.stderr, /Unknown cognitive organ work life-recorder-999999/);
+  assert.match(unknown.stderr, /Unknown cognitive organ work thread-maintainer-999999/);
   const missing = await runCli(cli, ["requeue-organ", "--root", root], process.env);
   assert.equal(missing.code, 1);
   assert.match(missing.stderr, /Usage: loom requeue-organ/);

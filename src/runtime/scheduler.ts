@@ -550,6 +550,14 @@ function deferredResult(
 ): Extract<SchedulerRunResult, { disposition: "deferred" }> | undefined {
   switch (result.disposition) {
     case "activity_recording_failed":
+      return {
+        disposition: "deferred",
+        reason: result.disposition,
+        // The domain row's own retry deadline wins when it exists; the
+        // scheduler default is only a fallback so no wake is ever lost.
+        nextRunAt: result.nextRunAt
+          ?? new Date(observedAt.getTime() + DEFAULT_MAINTENANCE_RETRY_MS).toISOString(),
+      };
     case "thread_maintenance_failed":
       return {
         disposition: "deferred",

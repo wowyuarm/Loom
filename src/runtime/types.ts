@@ -637,7 +637,7 @@ export type AdvanceResult =
   | { disposition: "delivery_not_sent"; nextRunAt: string }
   | { disposition: "delivery_requires_reconciliation" }
   | { disposition: "activity_recorded" }
-  | { disposition: "activity_recording_failed" }
+  | { disposition: "activity_recording_failed"; nextRunAt?: string }
   | { disposition: "thread_maintenance_completed" }
   | { disposition: "thread_maintenance_failed" }
   | { disposition: "agent_work_deferred" }

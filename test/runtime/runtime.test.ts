@@ -809,7 +809,7 @@ test("does not cancel a running cognitive organ for a non-human Interaction", as
   assert.deepEqual(await organRun, { disposition: "activity_recorded" });
 });
 
-test("returns after a short cancellation grace while the cognitive organ remains visible", async t => {
+test("a late recording completion after a cancel is discarded and the row stays due", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-organ-cancel-grace-"));
   const started = deferred<void>();
   const recording = deferred<Awaited<ReturnType<ActivityRecorder["record"]>>>();
@@ -824,12 +824,10 @@ test("returns after a short cancellation grace while the cognitive organ remains
         started.resolve();
         return recording.promise;
       },
-      // The recorder ignores the cancel and never releases the run.
-      cancel: async () => new Promise<void>(() => {}),
+      // The cancel is delivered; the run unwinds asynchronously and the late
+      // completion below races with it.
+      cancel: async () => {},
     },
-    // Short grace window so the test observes the intervention_required outcome
-    // without waiting the production 10 seconds.
-    cognitiveOrganPolicy: { ...COGNITIVE_ORGAN_POLICY, cancelGraceMs: 250 },
     now: () => new Date("2026-07-19T11:00:00.000Z"),
   });
   t.after(() => runtime.close());
@@ -840,17 +838,17 @@ test("returns after a short cancellation grace while the cognitive organ remains
   const organRun = runtime.advance();
   await started.promise;
 
-  const human = await Promise.race([
-    runtime.acceptInput({
-      source: "test",
-      sourceId: "human-after-grace",
-      kind: "interaction",
-      payload: { text: "please answer" },
-    }),
-    delay(1_500).then(() => { throw new Error("cognitive organ cancellation grace did not end"); }),
-  ]);
+  // The cancel is fire-and-forget: the Input is accepted immediately while
+  // the organ run unwinds on its own.
+  const human = await runtime.acceptInput({
+    source: "test",
+    sourceId: "human-after-grace",
+    kind: "interaction",
+    payload: { text: "please answer" },
+  });
+  assert.equal(human.disposition, "accepted");
   assert.equal(runtime.status().inputs.find(input => input.id === human.inputId)?.status, "pending");
-  assert.equal(runtime.status().activities[0]?.status, "recording");
+  assert.equal(runtime.status().activities[0]?.status, "pending");
 
   recording.resolve({
     version: 1,
@@ -860,12 +858,20 @@ test("returns after a short cancellation grace while the cognitive organ remains
     daily: { status: "no_change", path: "daily/2026-07-19.md" },
     episodes: [],
   });
-  // The late completion lands after the work was persisted as
-  // intervention_required, so it is a no-op in the ledger and the organ stays
-  // held for a human; no parallel start or retry is admitted.
+  // The late completion lands after the cancel was requested, so it is
+  // discarded: nothing is written and the row simply retries.
   assert.deepEqual(await organRun, { disposition: "busy" });
+  const db = new DatabaseSync(path.join(root, "runtime.db"));
+  const row = db.prepare(
+    "SELECT status, attempt_count, needs_human, next_eligible_at, receipt_json FROM activities LIMIT 1",
+  ).get() as Record<string, unknown>;
+  db.close();
+  assert.equal(row.status, "pending");
+  assert.equal(row.attempt_count, 0);
+  assert.equal(row.needs_human, 0);
+  assert.equal(row.next_eligible_at, null);
+  assert.equal(row.receipt_json, null);
 });
-
 test("exposes the age of the oldest pending cognitive organ work", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-runtime-oldest-organ-work-"));
   let now = new Date("2026-07-19T11:00:00.000Z");
@@ -952,7 +958,7 @@ test("retries failed frozen activities in FIFO order after restart", async () =>
     frozenIds.push(closed.activityId);
   }
 
-  assert.deepEqual(await firstRuntime.advance(), { disposition: "activity_recording_failed" });
+  assert.equal((await firstRuntime.advance()).disposition, "activity_recording_failed");
   assert.equal(firstRuntime.status().activities[0]?.attempts, 1);
   assert.match(firstRuntime.status().activities[0]?.lastError ?? "", /recorder unavailable/);
   firstRuntime.close();
