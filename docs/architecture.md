@@ -35,6 +35,10 @@ Runtime                         持有 Runtime Store（本地 SQLite）
 | Interaction Channels | 协议接入、ingress、Delivery 与恢复；向 Main Agent 暴露 guidance、tools 和 destinations。 |
 | Integrations | 外部记忆服务与 Web Access。 |
 
+### Operational Events
+
+各执行模块通过 `src/operational-events.ts` 上报类型化操作事件：Host 与 Channel 生命周期、Runtime 状态迁移、Process Driver run、agent/tool run 与重试、Model Runtime 状态。事件观察者由装配方注入；上报失败会被吞掉，不改变 Runtime 或 Agent 行为。操作事件面向 operator 观测，不是恢复事实源——恢复只读 Runtime Store。
+
 ### 持久面
 
 | Surface | 持有者 | 用途 |
