@@ -1,0 +1,189 @@
+{
+  "agents/attention-maintainer": [
+    "src/agents/attention-maintainer.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "agents/cognitive-organ-finish": [
+    "src/agents/session/finish.ts"
+  ],
+  "agents/life-recorder": [
+    "src/agents/life-recorder.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "agents/memory-reflector": [
+    "src/agents/memory-reflector.ts",
+    "src/integrations/nmem/index.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "agents/orientation": [
+    "src/agents/orientation.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "agents/session-retry-observability": [
+    "src/agents/session/index.ts"
+  ],
+  "agents/thread-maintainer": [
+    "src/agents/thread-maintainer/index.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "agents/tool-trace-compactor": [
+    "src/agents/tool-trace-compactor.ts"
+  ],
+  "attachments/attachments": [
+    "src/attachments/index.ts"
+  ],
+  "channels/collection": [
+    "src/channels/collection.ts"
+  ],
+  "channels/raft-activity": [
+    "src/channels/raft/raft-activity.ts",
+    "src/channels/raft/raft-cli-parse.ts"
+  ],
+  "channels/raft-cli-parse": [
+    "src/channels/raft/raft-cli-parse.ts"
+  ],
+  "channels/raft-cli-remote": [
+    "src/channels/raft/index.ts"
+  ],
+  "channels/raft": [
+    "src/channels/raft/index.ts"
+  ],
+  "channels/weixin": [
+    "src/attachments/index.ts",
+    "src/channels/weixin/index.ts"
+  ],
+  "cli/format-status": [
+    "src/cli.ts"
+  ],
+  "configuration/model-runtime-revision": [
+    "src/configuration/index.ts"
+  ],
+  "configuration/time-policy": [
+    "src/configuration/index.ts"
+  ],
+  "configuration/workspace-mirror-config": [
+    "src/configuration/instance.ts"
+  ],
+  "host/foreground-cli": [
+    "src/configuration/index.ts",
+    "src/host/index.ts",
+    "src/instance/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "host/loom-host": [
+    "src/channels/weixin/index.ts",
+    "src/host/index.ts",
+    "src/instance/layout.ts",
+    "src/runtime/index.ts"
+  ],
+  "host/status-socket": [
+    "src/host/status-socket.ts"
+  ],
+  "instance/harness-conditions": [
+    "src/instance/harness-conditions.ts"
+  ],
+  "instance/initialize-instance": [
+    "src/instance/index.ts"
+  ],
+  "instance/loom-instance": [
+    "src/attachments/index.ts",
+    "src/instance/index.ts",
+    "src/workspace/workspace-mutation.ts"
+  ],
+  "instance/process-driver": [
+    "src/instance/index.ts"
+  ],
+  "integrations/nmem-threads": [
+    "src/integrations/nmem/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "integrations/nmem-working-memory": [
+    "src/integrations/nmem/index.ts"
+  ],
+  "integrations/nmem": [
+    "src/integrations/nmem/index.ts",
+    "src/runtime/index.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "integrations/web": [
+    "src/integrations/web/index.ts"
+  ],
+  "main-agent/activity": [
+    "src/main-agent/activity.ts",
+    "src/main-agent/context.ts",
+    "src/main-agent/tool-trace.ts",
+    "src/main-agent/transcript.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "main-agent/context": [
+    "src/main-agent/context.ts"
+  ],
+  "main-agent/daily-context": [
+    "src/main-agent/daily-context.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "main-agent/input-presentation": [
+    "src/main-agent/pi/input.ts"
+  ],
+  "main-agent/pi-execution": [
+    "src/attachments/index.ts",
+    "src/integrations/nmem/index.ts",
+    "src/main-agent/context.ts",
+    "src/main-agent/pi-execution.ts",
+    "src/main-agent/pi/tool-activity.ts",
+    "src/main-agent/tool-trace.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "main-agent/transcript": [
+    "src/main-agent/transcript.ts"
+  ],
+  "runtime/activity-closure": [
+    "src/agents/life-recorder.ts",
+    "src/main-agent/activity.ts",
+    "src/main-agent/pi-execution.ts",
+    "src/runtime/index.ts",
+    "src/workspace/agent-workspace.ts"
+  ],
+  "runtime/after-chat": [
+    "src/runtime/index.ts"
+  ],
+  "runtime/cognitive-organ-runtime": [
+    "src/agents/session/index.ts",
+    "src/configuration/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "runtime/organ-budget": [
+    "src/runtime/organ-budget.ts"
+  ],
+  "runtime/proactive-scheduling": [
+    "src/configuration/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "runtime/proactive": [
+    "src/configuration/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "runtime/runtime": [
+    "src/configuration/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "runtime/scheduler": [
+    "src/configuration/index.ts",
+    "src/runtime/index.ts"
+  ],
+  "runtime/schema": [
+    "src/runtime/schema.ts"
+  ],
+  "workspace/agent-workspace": [
+    "src/workspace/agent-workspace.ts"
+  ],
+  "workspace/tools": [
+    "src/workspace/tools.ts"
+  ],
+  "workspace/workspace-mutation": [
+    "src/workspace/workspace-mutation.ts"
+  ],
+  "workspace/write-limits": [
+    "src/workspace/workspace-write-limits.ts"
+  ]
+}

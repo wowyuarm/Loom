@@ -8,6 +8,7 @@
 - `.scratch/organ-execution/`：Cognitive Organ 执行模型审查（立意层讨论中，含事故清单、Xi 对照、pi 能力调研）
 - `.scratch/codebase/`：codebase 审查的时间轮次记录（rounds/）
 - `.scratch/codebase-ablation/`：codebase 消融实验（模块删除 / 器官 stub / 静态耦合图谱三轮，2026-09-03）
+- `.scratch/test-ablation/`：测试套件消融体检（leave-one-out 覆盖率 + 时长分布 + 冗余候选定性复核，2026-09-03）
 - `.scratch/archive/`：已完成且正式 docs 已承接的主题（raft-channel、instance-operations、web-access）
 - 新主题按下方「新建主题」约定创建
 

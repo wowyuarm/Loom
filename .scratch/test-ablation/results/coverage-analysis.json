@@ -1,0 +1,2112 @@
+{
+  "generatedAt": "2026-09-03T07:10:49.488Z",
+  "runs": 51,
+  "perTest": [
+    {
+      "name": "integrations__workspace-mirror",
+      "file": "dist/test/integrations/workspace-mirror.test.js",
+      "tests": 6,
+      "pass": 6,
+      "fail": 0,
+      "durationMs": 542,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 138,
+      "uniqueLines": 138,
+      "uniqueRatio": 1,
+      "uniqueTop": {
+        "src/integrations/workspace-mirror/mirror.mjs": 138
+      }
+    },
+    {
+      "name": "integrations__web",
+      "file": "dist/test/integrations/web.test.js",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "durationMs": 718,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 75,
+      "uniqueLines": 49,
+      "uniqueRatio": 0.6533,
+      "uniqueTop": {
+        "src/integrations/web/index.ts": 49
+      }
+    },
+    {
+      "name": "channels__raft-cli-remote",
+      "file": "dist/test/channels/raft-cli-remote.test.js",
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "durationMs": 8284,
+      "exitCode": 0,
+      "srcFilesCovered": 6,
+      "coveredLines": 1281,
+      "uniqueLines": 662,
+      "uniqueRatio": 0.5168,
+      "uniqueTop": {
+        "src/channels/raft/raft-cli-remote.ts": 652,
+        "src/channels/raft/raft-cli-parse.ts": 10
+      }
+    },
+    {
+      "name": "channels__raft",
+      "file": "dist/test/channels/raft.test.js",
+      "tests": 26,
+      "pass": 26,
+      "fail": 0,
+      "durationMs": 7150,
+      "exitCode": 0,
+      "srcFilesCovered": 6,
+      "coveredLines": 1245,
+      "uniqueLines": 525,
+      "uniqueRatio": 0.4217,
+      "uniqueTop": {
+        "src/channels/raft/raft-channel.ts": 525
+      }
+    },
+    {
+      "name": "agents__tool-trace-compactor",
+      "file": "dist/test/agents/tool-trace-compactor.test.js",
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "durationMs": 952,
+      "exitCode": 0,
+      "srcFilesCovered": 4,
+      "coveredLines": 245,
+      "uniqueLines": 103,
+      "uniqueRatio": 0.4204,
+      "uniqueTop": {
+        "src/agents/tool-trace-compactor.ts": 103
+      }
+    },
+    {
+      "name": "channels__collection",
+      "file": "dist/test/channels/collection.test.js",
+      "tests": 12,
+      "pass": 12,
+      "fail": 0,
+      "durationMs": 100,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 187,
+      "uniqueLines": 58,
+      "uniqueRatio": 0.3102,
+      "uniqueTop": {
+        "src/channels/collection.ts": 58
+      }
+    },
+    {
+      "name": "instance__harness-conditions",
+      "file": "dist/test/instance/harness-conditions.test.js",
+      "tests": 16,
+      "pass": 16,
+      "fail": 0,
+      "durationMs": 116,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 108,
+      "uniqueLines": 31,
+      "uniqueRatio": 0.287,
+      "uniqueTop": {
+        "src/instance/harness-conditions.ts": 31
+      }
+    },
+    {
+      "name": "agents__session-retry-observability",
+      "file": "dist/test/agents/session-retry-observability.test.js",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "durationMs": 716,
+      "exitCode": 0,
+      "srcFilesCovered": 3,
+      "coveredLines": 63,
+      "uniqueLines": 16,
+      "uniqueRatio": 0.254,
+      "uniqueTop": {
+        "src/agents/session/index.ts": 16
+      }
+    },
+    {
+      "name": "channels__weixin",
+      "file": "dist/test/channels/weixin.test.js",
+      "tests": 11,
+      "pass": 11,
+      "fail": 0,
+      "durationMs": 1520,
+      "exitCode": 0,
+      "srcFilesCovered": 6,
+      "coveredLines": 907,
+      "uniqueLines": 224,
+      "uniqueRatio": 0.247,
+      "uniqueTop": {
+        "src/channels/weixin/weixin-http.ts": 199,
+        "src/channels/weixin/weixin-adapter.ts": 25
+      }
+    },
+    {
+      "name": "main-agent__pi-execution",
+      "file": "dist/test/main-agent/pi-execution.test.js",
+      "tests": 73,
+      "pass": 73,
+      "fail": 0,
+      "durationMs": 3002,
+      "exitCode": 0,
+      "srcFilesCovered": 28,
+      "coveredLines": 2710,
+      "uniqueLines": 532,
+      "uniqueRatio": 0.1963,
+      "uniqueTop": {
+        "src/main-agent/tool-trace.ts": 294,
+        "src/main-agent/pi-execution.ts": 121,
+        "src/main-agent/transcript.ts": 36,
+        "src/main-agent/pi/tool-activity.ts": 22,
+        "src/main-agent/pi/input.ts": 15,
+        "src/main-agent/attachment.ts": 13,
+        "src/main-agent/message.ts": 11,
+        "src/main-agent/pi/session.ts": 11
+      }
+    },
+    {
+      "name": "integrations__nmem-working-memory",
+      "file": "dist/test/integrations/nmem-working-memory.test.js",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "durationMs": 954,
+      "exitCode": 0,
+      "srcFilesCovered": 9,
+      "coveredLines": 299,
+      "uniqueLines": 58,
+      "uniqueRatio": 0.194,
+      "uniqueTop": {
+        "src/integrations/nmem/working-memory.ts": 42,
+        "src/integrations/nmem/client.ts": 16
+      }
+    },
+    {
+      "name": "host__status-socket",
+      "file": "dist/test/host/status-socket.test.js",
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "durationMs": 107,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 163,
+      "uniqueLines": 29,
+      "uniqueRatio": 0.1779,
+      "uniqueTop": {
+        "src/host/status-socket.ts": 29
+      }
+    },
+    {
+      "name": "main-agent__activity",
+      "file": "dist/test/main-agent/activity.test.js",
+      "tests": 13,
+      "pass": 13,
+      "fail": 0,
+      "durationMs": 784,
+      "exitCode": 0,
+      "srcFilesCovered": 8,
+      "coveredLines": 981,
+      "uniqueLines": 120,
+      "uniqueRatio": 0.1223,
+      "uniqueTop": {
+        "src/main-agent/activity.ts": 96,
+        "src/main-agent/transcript.ts": 24
+      }
+    },
+    {
+      "name": "agents__cognitive-organ-finish",
+      "file": "dist/test/agents/cognitive-organ-finish.test.js",
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "durationMs": 798,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 91,
+      "uniqueLines": 11,
+      "uniqueRatio": 0.1209,
+      "uniqueTop": {
+        "src/agents/session/finish.ts": 11
+      }
+    },
+    {
+      "name": "agents__memory-reflector",
+      "file": "dist/test/agents/memory-reflector.test.js",
+      "tests": 18,
+      "pass": 18,
+      "fail": 0,
+      "durationMs": 2699,
+      "exitCode": 0,
+      "srcFilesCovered": 18,
+      "coveredLines": 1414,
+      "uniqueLines": 154,
+      "uniqueRatio": 0.1089,
+      "uniqueTop": {
+        "src/agents/memory-reflector.ts": 154
+      }
+    },
+    {
+      "name": "runtime__schema",
+      "file": "dist/test/runtime/schema.test.js",
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "durationMs": 2038,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 175,
+      "uniqueLines": 18,
+      "uniqueRatio": 0.1029,
+      "uniqueTop": {
+        "src/runtime/schema.ts": 18
+      }
+    },
+    {
+      "name": "agents__orientation",
+      "file": "dist/test/agents/orientation.test.js",
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "durationMs": 917,
+      "exitCode": 0,
+      "srcFilesCovered": 7,
+      "coveredLines": 523,
+      "uniqueLines": 47,
+      "uniqueRatio": 0.0899,
+      "uniqueTop": {
+        "src/agents/orientation.ts": 47
+      }
+    },
+    {
+      "name": "agents__thread-maintainer",
+      "file": "dist/test/agents/thread-maintainer.test.js",
+      "tests": 11,
+      "pass": 11,
+      "fail": 0,
+      "durationMs": 2061,
+      "exitCode": 0,
+      "srcFilesCovered": 12,
+      "coveredLines": 1450,
+      "uniqueLines": 123,
+      "uniqueRatio": 0.0848,
+      "uniqueTop": {
+        "src/agents/thread-maintainer/workspace.ts": 64,
+        "src/agents/thread-maintainer/index.ts": 37,
+        "src/agents/thread-maintainer/evidence.ts": 14,
+        "src/workspace/workspace-mutation.ts": 4,
+        "src/agents/thread-maintainer/observations.ts": 4
+      }
+    },
+    {
+      "name": "channels__raft-activity",
+      "file": "dist/test/channels/raft-activity.test.js",
+      "tests": 14,
+      "pass": 14,
+      "fail": 0,
+      "durationMs": 91,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 217,
+      "uniqueLines": 17,
+      "uniqueRatio": 0.0783,
+      "uniqueTop": {
+        "src/channels/raft/raft-activity.ts": 15,
+        "src/channels/raft/raft-cli-parse.ts": 2
+      }
+    },
+    {
+      "name": "configuration__workspace-mirror-config",
+      "file": "dist/test/configuration/workspace-mirror-config.test.js",
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "durationMs": 187,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 232,
+      "uniqueLines": 18,
+      "uniqueRatio": 0.0776,
+      "uniqueTop": {
+        "src/configuration/instance.ts": 18
+      }
+    },
+    {
+      "name": "agents__attention-maintainer",
+      "file": "dist/test/agents/attention-maintainer.test.js",
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "durationMs": 1578,
+      "exitCode": 0,
+      "srcFilesCovered": 9,
+      "coveredLines": 939,
+      "uniqueLines": 59,
+      "uniqueRatio": 0.0628,
+      "uniqueTop": {
+        "src/agents/attention-maintainer.ts": 48,
+        "src/agents/session/index.ts": 11
+      }
+    },
+    {
+      "name": "main-agent__daily-context",
+      "file": "dist/test/main-agent/daily-context.test.js",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "durationMs": 106,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 100,
+      "uniqueLines": 5,
+      "uniqueRatio": 0.05,
+      "uniqueTop": {
+        "src/main-agent/daily-context.ts": 5
+      }
+    },
+    {
+      "name": "integrations__nmem",
+      "file": "dist/test/integrations/nmem.test.js",
+      "tests": 8,
+      "pass": 8,
+      "fail": 0,
+      "durationMs": 2549,
+      "exitCode": 0,
+      "srcFilesCovered": 21,
+      "coveredLines": 2025,
+      "uniqueLines": 95,
+      "uniqueRatio": 0.0469,
+      "uniqueTop": {
+        "src/integrations/nmem/client.ts": 63,
+        "src/integrations/nmem/episodes.ts": 24,
+        "src/integrations/nmem/recall.ts": 8
+      }
+    },
+    {
+      "name": "workspace__workspace-mutation",
+      "file": "dist/test/workspace/workspace-mutation.test.js",
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "durationMs": 977,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 555,
+      "uniqueLines": 26,
+      "uniqueRatio": 0.0468,
+      "uniqueTop": {
+        "src/workspace/workspace-mutation.ts": 25,
+        "src/workspace/workspace-write-limits.ts": 1
+      }
+    },
+    {
+      "name": "workspace__tools",
+      "file": "dist/test/workspace/tools.test.js",
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "durationMs": 693,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 45,
+      "uniqueLines": 2,
+      "uniqueRatio": 0.0444,
+      "uniqueTop": {
+        "src/workspace/tools.ts": 2
+      }
+    },
+    {
+      "name": "channels__raft-cli-parse",
+      "file": "dist/test/channels/raft-cli-parse.test.js",
+      "tests": 17,
+      "pass": 17,
+      "fail": 0,
+      "durationMs": 106,
+      "exitCode": 0,
+      "srcFilesCovered": 2,
+      "coveredLines": 332,
+      "uniqueLines": 14,
+      "uniqueRatio": 0.0422,
+      "uniqueTop": {
+        "src/channels/raft/raft-cli-parse.ts": 14
+      }
+    },
+    {
+      "name": "runtime__cognitive-organ-runtime",
+      "file": "dist/test/runtime/cognitive-organ-runtime.test.js",
+      "tests": 21,
+      "pass": 21,
+      "fail": 0,
+      "durationMs": 9265,
+      "exitCode": 0,
+      "srcFilesCovered": 13,
+      "coveredLines": 2177,
+      "uniqueLines": 91,
+      "uniqueRatio": 0.0418,
+      "uniqueTop": {
+        "src/runtime/runtime.ts": 80,
+        "src/runtime/status-reader.ts": 11
+      }
+    },
+    {
+      "name": "runtime__runtime",
+      "file": "dist/test/runtime/runtime.test.js",
+      "tests": 71,
+      "pass": 71,
+      "fail": 0,
+      "durationMs": 28017,
+      "exitCode": 0,
+      "srcFilesCovered": 11,
+      "coveredLines": 2420,
+      "uniqueLines": 97,
+      "uniqueRatio": 0.0401,
+      "uniqueTop": {
+        "src/runtime/runtime.ts": 82,
+        "src/runtime/scheduler.ts": 12,
+        "src/runtime/status-reader.ts": 3
+      }
+    },
+    {
+      "name": "host__loom-host",
+      "file": "dist/test/host/loom-host.test.js",
+      "tests": 23,
+      "pass": 23,
+      "fail": 0,
+      "durationMs": 12366,
+      "exitCode": 0,
+      "srcFilesCovered": 79,
+      "coveredLines": 6275,
+      "uniqueLines": 219,
+      "uniqueRatio": 0.0349,
+      "uniqueTop": {
+        "src/host/loom-host.ts": 76,
+        "src/integrations/nmem/configuration.ts": 55,
+        "src/channels/raft/raft-channel.ts": 36,
+        "src/host/status-socket.ts": 28,
+        "src/cli.ts": 10,
+        "src/channels/collection.ts": 6,
+        "src/runtime/scheduler.ts": 4,
+        "src/instance/process-driver.ts": 2
+      }
+    },
+    {
+      "name": "runtime__after-chat",
+      "file": "dist/test/runtime/after-chat.test.js",
+      "tests": 13,
+      "pass": 13,
+      "fail": 0,
+      "durationMs": 5769,
+      "exitCode": 0,
+      "srcFilesCovered": 11,
+      "coveredLines": 1825,
+      "uniqueLines": 60,
+      "uniqueRatio": 0.0329,
+      "uniqueTop": {
+        "src/runtime/runtime.ts": 43,
+        "src/runtime/schema.ts": 12,
+        "src/runtime/scheduler.ts": 5
+      }
+    },
+    {
+      "name": "configuration__model-runtime-revision",
+      "file": "dist/test/configuration/model-runtime-revision.test.js",
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "durationMs": 951,
+      "exitCode": 0,
+      "srcFilesCovered": 5,
+      "coveredLines": 427,
+      "uniqueLines": 14,
+      "uniqueRatio": 0.0328,
+      "uniqueTop": {
+        "src/configuration/model-runtime-revision.ts": 14
+      }
+    },
+    {
+      "name": "host__foreground-cli",
+      "file": "dist/test/host/foreground-cli.test.js",
+      "tests": 7,
+      "pass": 7,
+      "fail": 0,
+      "durationMs": 14345,
+      "exitCode": 0,
+      "srcFilesCovered": 79,
+      "coveredLines": 6977,
+      "uniqueLines": 206,
+      "uniqueRatio": 0.0295,
+      "uniqueTop": {
+        "src/cli.ts": 169,
+        "src/host/status-socket.ts": 31,
+        "src/host/loom-host.ts": 5,
+        "src/instance/loom-instance.ts": 1
+      }
+    },
+    {
+      "name": "configuration__time-policy",
+      "file": "dist/test/configuration/time-policy.test.js",
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "durationMs": 827,
+      "exitCode": 0,
+      "srcFilesCovered": 5,
+      "coveredLines": 358,
+      "uniqueLines": 9,
+      "uniqueRatio": 0.0251,
+      "uniqueTop": {
+        "src/configuration/instance.ts": 7,
+        "src/configuration/time-policy.ts": 2
+      }
+    },
+    {
+      "name": "instance__loom-instance",
+      "file": "dist/test/instance/loom-instance.test.js",
+      "tests": 29,
+      "pass": 29,
+      "fail": 0,
+      "durationMs": 18564,
+      "exitCode": 0,
+      "srcFilesCovered": 62,
+      "coveredLines": 9342,
+      "uniqueLines": 208,
+      "uniqueRatio": 0.0223,
+      "uniqueTop": {
+        "src/instance/revision-bound-organs.ts": 104,
+        "src/runtime/runtime.ts": 27,
+        "src/instance/loom-instance.ts": 24,
+        "src/runtime/scheduler.ts": 24,
+        "src/instance/harness-conditions.ts": 10,
+        "src/integrations/nmem/projection-status.ts": 8,
+        "src/integrations/nmem/episodes.ts": 5,
+        "src/integrations/nmem/threads.ts": 5
+      }
+    },
+    {
+      "name": "runtime__proactive-scheduling",
+      "file": "dist/test/runtime/proactive-scheduling.test.js",
+      "tests": 12,
+      "pass": 12,
+      "fail": 0,
+      "durationMs": 5794,
+      "exitCode": 0,
+      "srcFilesCovered": 11,
+      "coveredLines": 2336,
+      "uniqueLines": 51,
+      "uniqueRatio": 0.0218,
+      "uniqueTop": {
+        "src/runtime/runtime.ts": 32,
+        "src/runtime/scheduler.ts": 19
+      }
+    },
+    {
+      "name": "integrations__nmem-threads",
+      "file": "dist/test/integrations/nmem-threads.test.js",
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "durationMs": 1639,
+      "exitCode": 0,
+      "srcFilesCovered": 20,
+      "coveredLines": 1920,
+      "uniqueLines": 39,
+      "uniqueRatio": 0.0203,
+      "uniqueTop": {
+        "src/integrations/nmem/threads.ts": 36,
+        "src/integrations/nmem/client.ts": 3
+      }
+    },
+    {
+      "name": "runtime__scheduler",
+      "file": "dist/test/runtime/scheduler.test.js",
+      "tests": 26,
+      "pass": 26,
+      "fail": 0,
+      "durationMs": 10942,
+      "exitCode": 0,
+      "srcFilesCovered": 11,
+      "coveredLines": 2970,
+      "uniqueLines": 47,
+      "uniqueRatio": 0.0158,
+      "uniqueTop": {
+        "src/runtime/scheduler.ts": 34,
+        "src/runtime/runtime.ts": 13
+      }
+    },
+    {
+      "name": "main-agent__transcript",
+      "file": "dist/test/main-agent/transcript.test.js",
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "durationMs": 686,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 197,
+      "uniqueLines": 3,
+      "uniqueRatio": 0.0152,
+      "uniqueTop": {
+        "src/main-agent/transcript.ts": 3
+      }
+    },
+    {
+      "name": "main-agent__context",
+      "file": "dist/test/main-agent/context.test.js",
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "durationMs": 824,
+      "exitCode": 0,
+      "srcFilesCovered": 5,
+      "coveredLines": 276,
+      "uniqueLines": 4,
+      "uniqueRatio": 0.0145,
+      "uniqueTop": {
+        "src/main-agent/context.ts": 4
+      }
+    },
+    {
+      "name": "attachments__attachments",
+      "file": "dist/test/attachments/attachments.test.js",
+      "tests": 6,
+      "pass": 6,
+      "fail": 0,
+      "durationMs": 449,
+      "exitCode": 0,
+      "srcFilesCovered": 3,
+      "coveredLines": 285,
+      "uniqueLines": 4,
+      "uniqueRatio": 0.014,
+      "uniqueTop": {
+        "src/attachments/attachment-store.ts": 4
+      }
+    },
+    {
+      "name": "main-agent__input-presentation",
+      "file": "dist/test/main-agent/input-presentation.test.js",
+      "tests": 2,
+      "pass": 2,
+      "fail": 0,
+      "durationMs": 81,
+      "exitCode": 0,
+      "srcFilesCovered": 5,
+      "coveredLines": 121,
+      "uniqueLines": 1,
+      "uniqueRatio": 0.0083,
+      "uniqueTop": {
+        "src/main-agent/pi/input.ts": 1
+      }
+    },
+    {
+      "name": "agents__life-recorder",
+      "file": "dist/test/agents/life-recorder.test.js",
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "durationMs": 1603,
+      "exitCode": 0,
+      "srcFilesCovered": 9,
+      "coveredLines": 1029,
+      "uniqueLines": 7,
+      "uniqueRatio": 0.0068,
+      "uniqueTop": {
+        "src/agents/life-recorder.ts": 7
+      }
+    },
+    {
+      "name": "cli__format-status",
+      "file": "dist/test/cli/format-status.test.js",
+      "tests": 3,
+      "pass": 3,
+      "fail": 0,
+      "durationMs": 786,
+      "exitCode": 0,
+      "srcFilesCovered": 79,
+      "coveredLines": 2473,
+      "uniqueLines": 12,
+      "uniqueRatio": 0.0049,
+      "uniqueTop": {
+        "src/cli.ts": 12
+      }
+    },
+    {
+      "name": "runtime__proactive",
+      "file": "dist/test/runtime/proactive.test.js",
+      "tests": 15,
+      "pass": 15,
+      "fail": 0,
+      "durationMs": 6207,
+      "exitCode": 0,
+      "srcFilesCovered": 11,
+      "coveredLines": 1917,
+      "uniqueLines": 7,
+      "uniqueRatio": 0.0037,
+      "uniqueTop": {
+        "src/runtime/runtime.ts": 7
+      }
+    },
+    {
+      "name": "instance__initialize-instance",
+      "file": "dist/test/instance/initialize-instance.test.js",
+      "tests": 4,
+      "pass": 4,
+      "fail": 0,
+      "durationMs": 845,
+      "exitCode": 0,
+      "srcFilesCovered": 62,
+      "coveredLines": 1872,
+      "uniqueLines": 6,
+      "uniqueRatio": 0.0032,
+      "uniqueTop": {
+        "src/instance/initialization.ts": 6
+      }
+    },
+    {
+      "name": "runtime__activity-closure",
+      "file": "dist/test/runtime/activity-closure.test.js",
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "durationMs": 1730,
+      "exitCode": 0,
+      "srcFilesCovered": 35,
+      "coveredLines": 3848,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    },
+    {
+      "name": "instance__process-driver",
+      "file": "dist/test/instance/process-driver.test.js",
+      "tests": 7,
+      "pass": 7,
+      "fail": 0,
+      "durationMs": 873,
+      "exitCode": 0,
+      "srcFilesCovered": 62,
+      "coveredLines": 1932,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    },
+    {
+      "name": "workspace__write-limits",
+      "file": "dist/test/workspace/write-limits.test.js",
+      "tests": 10,
+      "pass": 10,
+      "fail": 0,
+      "durationMs": 124,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 95,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    },
+    {
+      "name": "runtime__organ-budget",
+      "file": "dist/test/runtime/organ-budget.test.js",
+      "tests": 9,
+      "pass": 9,
+      "fail": 0,
+      "durationMs": 85,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 77,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    },
+    {
+      "name": "workspace__agent-workspace",
+      "file": "dist/test/workspace/agent-workspace.test.js",
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "durationMs": 115,
+      "exitCode": 0,
+      "srcFilesCovered": 1,
+      "coveredLines": 60,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    },
+    {
+      "name": "host__cli-permissions",
+      "file": "dist/test/host/cli-permissions.test.js",
+      "tests": 1,
+      "pass": 1,
+      "fail": 0,
+      "durationMs": 81,
+      "exitCode": 0,
+      "srcFilesCovered": 0,
+      "coveredLines": 0,
+      "uniqueLines": 0,
+      "uniqueRatio": 0,
+      "uniqueTop": {}
+    }
+  ],
+  "perSrcFile": [
+    {
+      "srcPath": "src/integrations/workspace-mirror/mirror.mjs",
+      "guards": 1,
+      "coveredLines": 138
+    },
+    {
+      "srcPath": "src/channels/index.ts",
+      "guards": 3,
+      "coveredLines": 3
+    },
+    {
+      "srcPath": "src/cli.ts",
+      "guards": 3,
+      "coveredLines": 296
+    },
+    {
+      "srcPath": "src/host/index.ts",
+      "guards": 3,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/host/loom-host.ts",
+      "guards": 3,
+      "coveredLines": 399
+    },
+    {
+      "srcPath": "src/version.ts",
+      "guards": 3,
+      "coveredLines": 18
+    },
+    {
+      "srcPath": "src/channels/collection.ts",
+      "guards": 4,
+      "coveredLines": 179
+    },
+    {
+      "srcPath": "src/channels/weixin/index.ts",
+      "guards": 4,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/channels/weixin/weixin-adapter.ts",
+      "guards": 4,
+      "coveredLines": 384
+    },
+    {
+      "srcPath": "src/channels/weixin/weixin-http.ts",
+      "guards": 4,
+      "coveredLines": 345
+    },
+    {
+      "srcPath": "src/host/status-socket.ts",
+      "guards": 4,
+      "coveredLines": 291
+    },
+    {
+      "srcPath": "src/integrations/web/index.ts",
+      "guards": 4,
+      "coveredLines": 75
+    },
+    {
+      "srcPath": "src/channels/raft/index.ts",
+      "guards": 5,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/channels/raft/raft-channel.ts",
+      "guards": 5,
+      "coveredLines": 1067
+    },
+    {
+      "srcPath": "src/channels/raft/raft-cli-remote.ts",
+      "guards": 5,
+      "coveredLines": 737
+    },
+    {
+      "srcPath": "src/channels/raft/raft-state.ts",
+      "guards": 5,
+      "coveredLines": 7
+    },
+    {
+      "srcPath": "src/instance/default-materials.ts",
+      "guards": 6,
+      "coveredLines": 4
+    },
+    {
+      "srcPath": "src/instance/index.ts",
+      "guards": 6,
+      "coveredLines": 3
+    },
+    {
+      "srcPath": "src/instance/initialization.ts",
+      "guards": 6,
+      "coveredLines": 84
+    },
+    {
+      "srcPath": "src/instance/layout.ts",
+      "guards": 6,
+      "coveredLines": 37
+    },
+    {
+      "srcPath": "src/instance/loom-instance.ts",
+      "guards": 6,
+      "coveredLines": 307
+    },
+    {
+      "srcPath": "src/instance/process-driver.ts",
+      "guards": 6,
+      "coveredLines": 156
+    },
+    {
+      "srcPath": "src/instance/revision-bound-main-agent.ts",
+      "guards": 6,
+      "coveredLines": 69
+    },
+    {
+      "srcPath": "src/instance/revision-bound-organs.ts",
+      "guards": 6,
+      "coveredLines": 179
+    },
+    {
+      "srcPath": "src/main-agent/system-guidance.ts",
+      "guards": 6,
+      "coveredLines": 5
+    },
+    {
+      "srcPath": "src/agents/attention-maintainer.ts",
+      "guards": 7,
+      "coveredLines": 286
+    },
+    {
+      "srcPath": "src/agents/memory-reflector.ts",
+      "guards": 7,
+      "coveredLines": 594
+    },
+    {
+      "srcPath": "src/agents/orientation.ts",
+      "guards": 7,
+      "coveredLines": 307
+    },
+    {
+      "srcPath": "src/agents/thread-maintainer/evidence.ts",
+      "guards": 7,
+      "coveredLines": 116
+    },
+    {
+      "srcPath": "src/agents/thread-maintainer/index.ts",
+      "guards": 7,
+      "coveredLines": 443
+    },
+    {
+      "srcPath": "src/agents/thread-maintainer/observations.ts",
+      "guards": 7,
+      "coveredLines": 64
+    },
+    {
+      "srcPath": "src/agents/thread-maintainer/workspace.ts",
+      "guards": 7,
+      "coveredLines": 116
+    },
+    {
+      "srcPath": "src/agents/tool-trace-compactor.ts",
+      "guards": 7,
+      "coveredLines": 127
+    },
+    {
+      "srcPath": "src/channels/raft/raft-activity.ts",
+      "guards": 7,
+      "coveredLines": 110
+    },
+    {
+      "srcPath": "src/channels/raft/raft-cli-parse.ts",
+      "guards": 7,
+      "coveredLines": 329
+    },
+    {
+      "srcPath": "src/instance/harness-conditions.ts",
+      "guards": 7,
+      "coveredLines": 118
+    },
+    {
+      "srcPath": "src/agents/life-recorder.ts",
+      "guards": 8,
+      "coveredLines": 353
+    },
+    {
+      "srcPath": "src/main-agent/activity.ts",
+      "guards": 8,
+      "coveredLines": 339
+    },
+    {
+      "srcPath": "src/main-agent/attachment.ts",
+      "guards": 8,
+      "coveredLines": 42
+    },
+    {
+      "srcPath": "src/main-agent/message.ts",
+      "guards": 8,
+      "coveredLines": 132
+    },
+    {
+      "srcPath": "src/main-agent/pi-execution.ts",
+      "guards": 8,
+      "coveredLines": 600
+    },
+    {
+      "srcPath": "src/main-agent/pi/session.ts",
+      "guards": 8,
+      "coveredLines": 94
+    },
+    {
+      "srcPath": "src/channels/reserved-tool-names.ts",
+      "guards": 9,
+      "coveredLines": 14
+    },
+    {
+      "srcPath": "src/main-agent/pi/attachments.ts",
+      "guards": 9,
+      "coveredLines": 26
+    },
+    {
+      "srcPath": "src/main-agent/pi/input.ts",
+      "guards": 9,
+      "coveredLines": 90
+    },
+    {
+      "srcPath": "src/main-agent/context.ts",
+      "guards": 10,
+      "coveredLines": 214
+    },
+    {
+      "srcPath": "src/main-agent/daily-context.ts",
+      "guards": 10,
+      "coveredLines": 43
+    },
+    {
+      "srcPath": "src/main-agent/pi/tool-activity.ts",
+      "guards": 10,
+      "coveredLines": 61
+    },
+    {
+      "srcPath": "src/main-agent/tool-trace.ts",
+      "guards": 10,
+      "coveredLines": 455
+    },
+    {
+      "srcPath": "src/attachments/attachment-store.ts",
+      "guards": 11,
+      "coveredLines": 281
+    },
+    {
+      "srcPath": "src/attachments/index.ts",
+      "guards": 11,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/attachments/reference.ts",
+      "guards": 11,
+      "coveredLines": 34
+    },
+    {
+      "srcPath": "src/integrations/nmem/client.ts",
+      "guards": 11,
+      "coveredLines": 196
+    },
+    {
+      "srcPath": "src/integrations/nmem/configuration.ts",
+      "guards": 11,
+      "coveredLines": 66
+    },
+    {
+      "srcPath": "src/integrations/nmem/connection.ts",
+      "guards": 11,
+      "coveredLines": 21
+    },
+    {
+      "srcPath": "src/integrations/nmem/episodes.ts",
+      "guards": 11,
+      "coveredLines": 193
+    },
+    {
+      "srcPath": "src/integrations/nmem/index.ts",
+      "guards": 11,
+      "coveredLines": 6
+    },
+    {
+      "srcPath": "src/integrations/nmem/projection-status.ts",
+      "guards": 11,
+      "coveredLines": 14
+    },
+    {
+      "srcPath": "src/integrations/nmem/recall.ts",
+      "guards": 11,
+      "coveredLines": 80
+    },
+    {
+      "srcPath": "src/integrations/nmem/threads.ts",
+      "guards": 11,
+      "coveredLines": 274
+    },
+    {
+      "srcPath": "src/integrations/nmem/working-memory.ts",
+      "guards": 11,
+      "coveredLines": 78
+    },
+    {
+      "srcPath": "src/main-agent/transcript.ts",
+      "guards": 11,
+      "coveredLines": 480
+    },
+    {
+      "srcPath": "src/continuity-guidance.ts",
+      "guards": 12,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/workspace/workspace-mutation.ts",
+      "guards": 12,
+      "coveredLines": 474
+    },
+    {
+      "srcPath": "src/workspace/tools.ts",
+      "guards": 13,
+      "coveredLines": 45
+    },
+    {
+      "srcPath": "src/workspace/workspace-write-limits.ts",
+      "guards": 13,
+      "coveredLines": 96
+    },
+    {
+      "srcPath": "src/runtime/index.ts",
+      "guards": 15,
+      "coveredLines": 2
+    },
+    {
+      "srcPath": "src/runtime/runtime.ts",
+      "guards": 15,
+      "coveredLines": 2501
+    },
+    {
+      "srcPath": "src/runtime/scheduler.ts",
+      "guards": 15,
+      "coveredLines": 439
+    },
+    {
+      "srcPath": "src/runtime/status-reader.ts",
+      "guards": 15,
+      "coveredLines": 315
+    },
+    {
+      "srcPath": "src/agents/session/index.ts",
+      "guards": 16,
+      "coveredLines": 166
+    },
+    {
+      "srcPath": "src/runtime/organ-budget.ts",
+      "guards": 16,
+      "coveredLines": 83
+    },
+    {
+      "srcPath": "src/runtime/schema.ts",
+      "guards": 16,
+      "coveredLines": 225
+    },
+    {
+      "srcPath": "src/agents/session/finish.ts",
+      "guards": 17,
+      "coveredLines": 97
+    },
+    {
+      "srcPath": "src/configuration/index.ts",
+      "guards": 17,
+      "coveredLines": 3
+    },
+    {
+      "srcPath": "src/configuration/model-runtime-revision.ts",
+      "guards": 17,
+      "coveredLines": 200
+    },
+    {
+      "srcPath": "src/workspace/agent-workspace.ts",
+      "guards": 17,
+      "coveredLines": 101
+    },
+    {
+      "srcPath": "src/configuration/instance.ts",
+      "guards": 18,
+      "coveredLines": 265
+    },
+    {
+      "srcPath": "src/configuration/time-policy.ts",
+      "guards": 18,
+      "coveredLines": 82
+    },
+    {
+      "srcPath": "src/operational-events.ts",
+      "guards": 27,
+      "coveredLines": 13
+    }
+  ],
+  "zeroCoverage": [
+    {
+      "srcPath": "src/channels/channel.ts",
+      "distExists": false,
+      "distBytes": 0
+    },
+    {
+      "srcPath": "src/channels/surface.ts",
+      "distExists": false,
+      "distBytes": 0
+    },
+    {
+      "srcPath": "src/runtime/types.ts",
+      "distExists": false,
+      "distBytes": 0
+    }
+  ],
+  "unmapped": {
+    "agents__attention-maintainer": {
+      "dist/src/agents/attention-maintainer.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "agents__cognitive-organ-finish": {
+      "dist/src/agents/session/finish.js": 1
+    },
+    "agents__life-recorder": {
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1
+    },
+    "agents__memory-reflector": {
+      "dist/src/agents/memory-reflector.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "agents__orientation": {
+      "dist/src/agents/orientation.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "agents__session-retry-observability": {
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1
+    },
+    "agents__thread-maintainer": {
+      "dist/src/agents/thread-maintainer/index.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/agents/thread-maintainer/evidence.js": 1,
+      "dist/src/agents/thread-maintainer/workspace.js": 1,
+      "dist/src/agents/thread-maintainer/observations.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "agents__tool-trace-compactor": {
+      "dist/src/agents/tool-trace-compactor.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1
+    },
+    "attachments__attachments": {
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1
+    },
+    "channels__collection": {
+      "dist/src/channels/collection.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1
+    },
+    "channels__raft-activity": {
+      "dist/src/channels/raft/raft-activity.js": 1,
+      "dist/src/channels/raft/raft-cli-parse.js": 1
+    },
+    "channels__raft-cli-parse": {
+      "dist/src/channels/raft/raft-cli-parse.js": 1,
+      "dist/src/channels/raft/raft-activity.js": 1
+    },
+    "channels__raft-cli-remote": {
+      "dist/src/channels/raft/index.js": 1,
+      "dist/src/channels/raft/raft-channel.js": 2,
+      "dist/src/channels/raft/raft-state.js": 2,
+      "dist/src/channels/raft/raft-cli-remote.js": 2,
+      "dist/src/channels/raft/raft-cli-parse.js": 2,
+      "dist/src/channels/raft/raft-activity.js": 2
+    },
+    "channels__raft": {
+      "dist/src/channels/raft/index.js": 1,
+      "dist/src/channels/raft/raft-channel.js": 1,
+      "dist/src/channels/raft/raft-state.js": 1,
+      "dist/src/channels/raft/raft-cli-remote.js": 1,
+      "dist/src/channels/raft/raft-cli-parse.js": 1,
+      "dist/src/channels/raft/raft-activity.js": 1
+    },
+    "channels__weixin": {
+      "dist/src/channels/weixin/index.js": 1,
+      "dist/src/channels/weixin/weixin-adapter.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/channels/weixin/weixin-http.js": 1
+    },
+    "cli__format-status": {
+      "dist/src/cli.js": 2,
+      "dist/src/host/index.js": 1,
+      "dist/src/host/loom-host.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/instance/index.js": 1,
+      "dist/src/instance/loom-instance.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/instance/layout.js": 1,
+      "dist/src/instance/revision-bound-main-agent.js": 1,
+      "dist/src/agents/tool-trace-compactor.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/main-agent/system-guidance.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/instance/harness-conditions.js": 1,
+      "dist/src/instance/revision-bound-organs.js": 1,
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/agents/attention-maintainer.js": 1,
+      "dist/src/agents/memory-reflector.js": 1,
+      "dist/src/agents/orientation.js": 1,
+      "dist/src/agents/thread-maintainer/index.js": 1,
+      "dist/src/agents/thread-maintainer/evidence.js": 1,
+      "dist/src/agents/thread-maintainer/workspace.js": 1,
+      "dist/src/agents/thread-maintainer/observations.js": 1,
+      "dist/src/instance/initialization.js": 1,
+      "dist/src/instance/default-materials.js": 1,
+      "dist/src/instance/process-driver.js": 1,
+      "dist/src/channels/weixin/index.js": 1,
+      "dist/src/channels/weixin/weixin-adapter.js": 1,
+      "dist/src/channels/weixin/weixin-http.js": 1,
+      "dist/src/channels/raft/index.js": 1,
+      "dist/src/channels/raft/raft-channel.js": 1,
+      "dist/src/channels/raft/raft-state.js": 1,
+      "dist/src/channels/raft/raft-cli-remote.js": 1,
+      "dist/src/channels/raft/raft-cli-parse.js": 1,
+      "dist/src/channels/raft/raft-activity.js": 1,
+      "dist/src/channels/index.js": 1,
+      "dist/src/channels/collection.js": 1,
+      "dist/src/integrations/web/index.js": 1,
+      "dist/src/version.js": 1,
+      "dist/src/host/status-socket.js": 1
+    },
+    "configuration__model-runtime-revision": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1
+    },
+    "configuration__time-policy": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1
+    },
+    "configuration__workspace-mirror-config": {
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1
+    },
+    "host__foreground-cli": {
+      "dist/src/host/index.js": 14,
+      "dist/src/host/loom-host.js": 14,
+      "dist/src/configuration/index.js": 14,
+      "dist/src/configuration/instance.js": 14,
+      "dist/src/configuration/time-policy.js": 14,
+      "dist/src/configuration/model-runtime-revision.js": 14,
+      "dist/src/operational-events.js": 14,
+      "dist/src/instance/index.js": 14,
+      "dist/src/instance/loom-instance.js": 14,
+      "dist/src/runtime/index.js": 14,
+      "dist/src/runtime/runtime.js": 14,
+      "dist/src/runtime/schema.js": 14,
+      "dist/src/runtime/status-reader.js": 14,
+      "dist/src/runtime/organ-budget.js": 14,
+      "dist/src/runtime/scheduler.js": 14,
+      "dist/src/integrations/nmem/index.js": 14,
+      "dist/src/integrations/nmem/configuration.js": 14,
+      "dist/src/integrations/nmem/episodes.js": 14,
+      "dist/src/integrations/nmem/client.js": 14,
+      "dist/src/integrations/nmem/connection.js": 14,
+      "dist/src/integrations/nmem/projection-status.js": 14,
+      "dist/src/integrations/nmem/recall.js": 14,
+      "dist/src/integrations/nmem/threads.js": 14,
+      "dist/src/integrations/nmem/working-memory.js": 14,
+      "dist/src/attachments/index.js": 14,
+      "dist/src/attachments/attachment-store.js": 14,
+      "dist/src/attachments/reference.js": 14,
+      "dist/src/main-agent/activity.js": 14,
+      "dist/src/main-agent/context.js": 14,
+      "dist/src/main-agent/tool-trace.js": 14,
+      "dist/src/main-agent/transcript.js": 14,
+      "dist/src/main-agent/pi/tool-activity.js": 14,
+      "dist/src/main-agent/daily-context.js": 14,
+      "dist/src/workspace/agent-workspace.js": 14,
+      "dist/src/workspace/workspace-mutation.js": 14,
+      "dist/src/workspace/workspace-write-limits.js": 14,
+      "dist/src/instance/layout.js": 14,
+      "dist/src/instance/revision-bound-main-agent.js": 14,
+      "dist/src/agents/tool-trace-compactor.js": 14,
+      "dist/src/agents/session/index.js": 14,
+      "dist/src/agents/session/finish.js": 14,
+      "dist/src/main-agent/pi-execution.js": 14,
+      "dist/src/main-agent/message.js": 14,
+      "dist/src/channels/reserved-tool-names.js": 14,
+      "dist/src/main-agent/attachment.js": 14,
+      "dist/src/main-agent/pi/session.js": 14,
+      "dist/src/main-agent/pi/input.js": 14,
+      "dist/src/main-agent/pi/attachments.js": 14,
+      "dist/src/main-agent/system-guidance.js": 14,
+      "dist/src/continuity-guidance.js": 14,
+      "dist/src/instance/harness-conditions.js": 14,
+      "dist/src/instance/revision-bound-organs.js": 14,
+      "dist/src/agents/life-recorder.js": 14,
+      "dist/src/workspace/tools.js": 14,
+      "dist/src/agents/attention-maintainer.js": 14,
+      "dist/src/agents/memory-reflector.js": 14,
+      "dist/src/agents/orientation.js": 14,
+      "dist/src/agents/thread-maintainer/index.js": 14,
+      "dist/src/agents/thread-maintainer/evidence.js": 14,
+      "dist/src/agents/thread-maintainer/workspace.js": 14,
+      "dist/src/agents/thread-maintainer/observations.js": 14,
+      "dist/src/instance/initialization.js": 14,
+      "dist/src/instance/default-materials.js": 14,
+      "dist/src/instance/process-driver.js": 14,
+      "dist/src/channels/weixin/index.js": 14,
+      "dist/src/channels/weixin/weixin-adapter.js": 14,
+      "dist/src/channels/weixin/weixin-http.js": 14,
+      "dist/src/channels/raft/index.js": 14,
+      "dist/src/channels/raft/raft-channel.js": 14,
+      "dist/src/channels/raft/raft-state.js": 14,
+      "dist/src/channels/raft/raft-cli-remote.js": 14,
+      "dist/src/channels/raft/raft-cli-parse.js": 14,
+      "dist/src/channels/raft/raft-activity.js": 14,
+      "dist/src/channels/index.js": 14,
+      "dist/src/channels/collection.js": 14,
+      "dist/src/integrations/web/index.js": 14,
+      "dist/src/version.js": 14,
+      "dist/src/host/status-socket.js": 14,
+      "dist/src/cli.js": 26
+    },
+    "host__loom-host": {
+      "dist/src/host/index.js": 2,
+      "dist/src/host/loom-host.js": 2,
+      "dist/src/configuration/index.js": 2,
+      "dist/src/configuration/instance.js": 2,
+      "dist/src/configuration/time-policy.js": 2,
+      "dist/src/configuration/model-runtime-revision.js": 2,
+      "dist/src/operational-events.js": 2,
+      "dist/src/instance/index.js": 2,
+      "dist/src/instance/loom-instance.js": 2,
+      "dist/src/runtime/index.js": 2,
+      "dist/src/runtime/runtime.js": 2,
+      "dist/src/runtime/schema.js": 2,
+      "dist/src/runtime/status-reader.js": 2,
+      "dist/src/runtime/organ-budget.js": 2,
+      "dist/src/runtime/scheduler.js": 2,
+      "dist/src/integrations/nmem/index.js": 2,
+      "dist/src/integrations/nmem/configuration.js": 2,
+      "dist/src/integrations/nmem/episodes.js": 2,
+      "dist/src/integrations/nmem/client.js": 2,
+      "dist/src/integrations/nmem/connection.js": 2,
+      "dist/src/integrations/nmem/projection-status.js": 2,
+      "dist/src/integrations/nmem/recall.js": 2,
+      "dist/src/integrations/nmem/threads.js": 2,
+      "dist/src/integrations/nmem/working-memory.js": 2,
+      "dist/src/attachments/index.js": 2,
+      "dist/src/attachments/attachment-store.js": 2,
+      "dist/src/attachments/reference.js": 2,
+      "dist/src/main-agent/activity.js": 2,
+      "dist/src/main-agent/context.js": 2,
+      "dist/src/main-agent/tool-trace.js": 2,
+      "dist/src/main-agent/transcript.js": 2,
+      "dist/src/main-agent/pi/tool-activity.js": 2,
+      "dist/src/main-agent/daily-context.js": 2,
+      "dist/src/workspace/agent-workspace.js": 2,
+      "dist/src/workspace/workspace-mutation.js": 2,
+      "dist/src/workspace/workspace-write-limits.js": 2,
+      "dist/src/instance/layout.js": 2,
+      "dist/src/instance/revision-bound-main-agent.js": 2,
+      "dist/src/agents/tool-trace-compactor.js": 2,
+      "dist/src/agents/session/index.js": 2,
+      "dist/src/agents/session/finish.js": 2,
+      "dist/src/main-agent/pi-execution.js": 2,
+      "dist/src/main-agent/message.js": 2,
+      "dist/src/channels/reserved-tool-names.js": 2,
+      "dist/src/main-agent/attachment.js": 2,
+      "dist/src/main-agent/pi/session.js": 2,
+      "dist/src/main-agent/pi/input.js": 2,
+      "dist/src/main-agent/pi/attachments.js": 2,
+      "dist/src/main-agent/system-guidance.js": 2,
+      "dist/src/continuity-guidance.js": 2,
+      "dist/src/instance/harness-conditions.js": 2,
+      "dist/src/instance/revision-bound-organs.js": 2,
+      "dist/src/agents/life-recorder.js": 2,
+      "dist/src/workspace/tools.js": 2,
+      "dist/src/agents/attention-maintainer.js": 2,
+      "dist/src/agents/memory-reflector.js": 2,
+      "dist/src/agents/orientation.js": 2,
+      "dist/src/agents/thread-maintainer/index.js": 2,
+      "dist/src/agents/thread-maintainer/evidence.js": 2,
+      "dist/src/agents/thread-maintainer/workspace.js": 2,
+      "dist/src/agents/thread-maintainer/observations.js": 2,
+      "dist/src/instance/initialization.js": 2,
+      "dist/src/instance/default-materials.js": 2,
+      "dist/src/instance/process-driver.js": 2,
+      "dist/src/channels/weixin/index.js": 2,
+      "dist/src/channels/weixin/weixin-adapter.js": 2,
+      "dist/src/channels/weixin/weixin-http.js": 2,
+      "dist/src/channels/raft/index.js": 2,
+      "dist/src/channels/raft/raft-channel.js": 2,
+      "dist/src/channels/raft/raft-state.js": 2,
+      "dist/src/channels/raft/raft-cli-remote.js": 2,
+      "dist/src/channels/raft/raft-cli-parse.js": 2,
+      "dist/src/channels/raft/raft-activity.js": 2,
+      "dist/src/channels/index.js": 2,
+      "dist/src/channels/collection.js": 2,
+      "dist/src/integrations/web/index.js": 2,
+      "dist/src/version.js": 2,
+      "dist/src/host/status-socket.js": 2,
+      "dist/src/cli.js": 2
+    },
+    "host__status-socket": {
+      "dist/src/host/status-socket.js": 1
+    },
+    "instance__harness-conditions": {
+      "dist/src/instance/harness-conditions.js": 1
+    },
+    "instance__initialize-instance": {
+      "dist/src/instance/index.js": 1,
+      "dist/src/instance/loom-instance.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/instance/layout.js": 1,
+      "dist/src/instance/revision-bound-main-agent.js": 1,
+      "dist/src/agents/tool-trace-compactor.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/main-agent/system-guidance.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/instance/harness-conditions.js": 1,
+      "dist/src/instance/revision-bound-organs.js": 1,
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/agents/attention-maintainer.js": 1,
+      "dist/src/agents/memory-reflector.js": 1,
+      "dist/src/agents/orientation.js": 1,
+      "dist/src/agents/thread-maintainer/index.js": 1,
+      "dist/src/agents/thread-maintainer/evidence.js": 1,
+      "dist/src/agents/thread-maintainer/workspace.js": 1,
+      "dist/src/agents/thread-maintainer/observations.js": 1,
+      "dist/src/instance/initialization.js": 1,
+      "dist/src/instance/default-materials.js": 1,
+      "dist/src/instance/process-driver.js": 1
+    },
+    "instance__loom-instance": {
+      "dist/src/instance/index.js": 1,
+      "dist/src/instance/loom-instance.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/instance/layout.js": 1,
+      "dist/src/instance/revision-bound-main-agent.js": 1,
+      "dist/src/agents/tool-trace-compactor.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/main-agent/system-guidance.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/instance/harness-conditions.js": 1,
+      "dist/src/instance/revision-bound-organs.js": 1,
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/agents/attention-maintainer.js": 1,
+      "dist/src/agents/memory-reflector.js": 1,
+      "dist/src/agents/orientation.js": 1,
+      "dist/src/agents/thread-maintainer/index.js": 1,
+      "dist/src/agents/thread-maintainer/evidence.js": 1,
+      "dist/src/agents/thread-maintainer/workspace.js": 1,
+      "dist/src/agents/thread-maintainer/observations.js": 1,
+      "dist/src/instance/initialization.js": 1,
+      "dist/src/instance/default-materials.js": 1,
+      "dist/src/instance/process-driver.js": 1
+    },
+    "instance__process-driver": {
+      "dist/src/instance/index.js": 1,
+      "dist/src/instance/loom-instance.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/instance/layout.js": 1,
+      "dist/src/instance/revision-bound-main-agent.js": 1,
+      "dist/src/agents/tool-trace-compactor.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/main-agent/system-guidance.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/instance/harness-conditions.js": 1,
+      "dist/src/instance/revision-bound-organs.js": 1,
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/agents/attention-maintainer.js": 1,
+      "dist/src/agents/memory-reflector.js": 1,
+      "dist/src/agents/orientation.js": 1,
+      "dist/src/agents/thread-maintainer/index.js": 1,
+      "dist/src/agents/thread-maintainer/evidence.js": 1,
+      "dist/src/agents/thread-maintainer/workspace.js": 1,
+      "dist/src/agents/thread-maintainer/observations.js": 1,
+      "dist/src/instance/initialization.js": 1,
+      "dist/src/instance/default-materials.js": 1,
+      "dist/src/instance/process-driver.js": 1
+    },
+    "integrations__nmem-threads": {
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "integrations__nmem-working-memory": {
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1
+    },
+    "integrations__nmem": {
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "integrations__web": {
+      "dist/src/integrations/web/index.js": 1
+    },
+    "main-agent__activity": {
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "main-agent__context": {
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/operational-events.js": 1
+    },
+    "main-agent__daily-context": {
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "main-agent__input-presentation": {
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1
+    },
+    "main-agent__pi-execution": {
+      "dist/src/integrations/nmem/index.js": 1,
+      "dist/src/integrations/nmem/configuration.js": 1,
+      "dist/src/integrations/nmem/episodes.js": 1,
+      "dist/src/integrations/nmem/client.js": 1,
+      "dist/src/integrations/nmem/connection.js": 1,
+      "dist/src/integrations/nmem/projection-status.js": 1,
+      "dist/src/integrations/nmem/recall.js": 1,
+      "dist/src/integrations/nmem/threads.js": 1,
+      "dist/src/integrations/nmem/working-memory.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "main-agent__transcript": {
+      "dist/src/main-agent/transcript.js": 1
+    },
+    "runtime__activity-closure": {
+      "dist/src/agents/life-recorder.js": 1,
+      "dist/src/continuity-guidance.js": 1,
+      "dist/src/workspace/agent-workspace.js": 1,
+      "dist/src/workspace/tools.js": 1,
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/agents/session/finish.js": 1,
+      "dist/src/main-agent/activity.js": 1,
+      "dist/src/main-agent/context.js": 1,
+      "dist/src/main-agent/tool-trace.js": 1,
+      "dist/src/main-agent/transcript.js": 1,
+      "dist/src/main-agent/pi/tool-activity.js": 1,
+      "dist/src/main-agent/daily-context.js": 1,
+      "dist/src/main-agent/pi-execution.js": 1,
+      "dist/src/main-agent/message.js": 1,
+      "dist/src/channels/reserved-tool-names.js": 1,
+      "dist/src/main-agent/attachment.js": 1,
+      "dist/src/main-agent/pi/session.js": 1,
+      "dist/src/main-agent/pi/input.js": 1,
+      "dist/src/main-agent/pi/attachments.js": 1,
+      "dist/src/attachments/index.js": 1,
+      "dist/src/attachments/attachment-store.js": 1,
+      "dist/src/attachments/reference.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__after-chat": {
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__cognitive-organ-runtime": {
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1,
+      "dist/src/agents/session/index.js": 1,
+      "dist/src/agents/session/finish.js": 1
+    },
+    "runtime__organ-budget": {
+      "dist/src/runtime/organ-budget.js": 1
+    },
+    "runtime__proactive-scheduling": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__proactive": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__runtime": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__scheduler": {
+      "dist/src/configuration/index.js": 1,
+      "dist/src/configuration/instance.js": 1,
+      "dist/src/configuration/time-policy.js": 1,
+      "dist/src/configuration/model-runtime-revision.js": 1,
+      "dist/src/operational-events.js": 1,
+      "dist/src/runtime/index.js": 1,
+      "dist/src/runtime/runtime.js": 1,
+      "dist/src/runtime/schema.js": 1,
+      "dist/src/runtime/status-reader.js": 1,
+      "dist/src/runtime/organ-budget.js": 1,
+      "dist/src/runtime/scheduler.js": 1
+    },
+    "runtime__schema": {
+      "dist/src/runtime/schema.js": 1
+    },
+    "workspace__agent-workspace": {
+      "dist/src/workspace/agent-workspace.js": 1
+    },
+    "workspace__tools": {
+      "dist/src/workspace/tools.js": 1
+    },
+    "workspace__workspace-mutation": {
+      "dist/src/workspace/workspace-mutation.js": 1,
+      "dist/src/workspace/workspace-write-limits.js": 1
+    },
+    "workspace__write-limits": {
+      "dist/src/workspace/workspace-write-limits.js": 1
+    }
+  }
+}
