@@ -3628,7 +3628,10 @@ class SqliteRuntime implements Runtime {
           WHERE inputs.interaction_wave_id = ?
         `).get(turnId, wave.id) as unknown as { total: number; included: number };
         if (coverage.included !== coverage.total) {
-          throw new Error("Interaction wave has newer Inputs; review them before replying");
+          throw new Error(
+            "Interaction wave has newer Inputs; review them before replying."
+            + " The decision was rejected and no Effect was created — nothing was delivered to the human.",
+          );
         }
       }
       // Reply gate coverage: every Interaction of this scope accepted while
@@ -3666,7 +3669,10 @@ class SqliteRuntime implements Runtime {
           included: number;
         };
         if (scopeCoverage.included !== scopeCoverage.total) {
-          throw new Error("Interaction scope has newer Inputs; review them before replying");
+          throw new Error(
+            "Interaction scope has newer Inputs; review them before replying."
+            + " The decision was rejected and no Effect was created — nothing was delivered to the human.",
+          );
         }
       }
       // Atomically close the reply gate: the first committed reply (send or

@@ -41,7 +41,7 @@ export function createMessageTool(options: {
     description: [
       "Use message to make text or one Agent Workspace attachment visible to the human through the configured Interaction Route, or to let the current interaction end naturally.",
       "Assistant output outside this tool is private and is not delivered.",
-      "send creates one durable outbound Effect. Tool success means the Harness accepted it; it does not mean Delivery succeeded or the human received it.",
+      "send creates one durable outbound Effect. Tool success means the Harness accepted it; it does not mean Delivery succeeded or the human received it. A failed call created no Effect: nothing from it was delivered. When the failure names newer Inputs, review them and then decide whether the undelivered text is still worth sending.",
       "When attachment_path is present, Loom snapshots that Workspace file before accepting the Effect. Later edits cannot change the accepted attachment.",
       "One call produces one visible message; several natural messages need several calls, and a blank line inside one text does not split it into separate messages.",
       "send ends the Turn by default. Use after_send=continue when another message, tool action, or further work should follow in the same Turn.",

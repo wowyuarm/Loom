@@ -2080,7 +2080,7 @@ test("rejects a stale reply while a newer Input in the same wave is still queued
   await assert.rejects(control.commitInteractionDecision!({
     outcome: "send",
     effect: { kind: "message", payload: { text: "stale" }, routeRef: "default" },
-  }), /review them before replying/);
+  }), /review them before replying\. The decision was rejected and no Effect was created — nothing was delivered/);
   assert.equal(runtime.status().effects.length, 0);
 
   control.includeInput(second.inputId);
@@ -2782,7 +2782,7 @@ test("rejects a reply-gate commit while a scope Input is not included", async t 
       outcome: "send",
       effect: { kind: "message", payload: { text: "stale reply" }, routeRef: "test-route" },
     }),
-    /newer Inputs; review them before replying/,
+    /newer Inputs; review them before replying\. The decision was rejected and no Effect was created — nothing was delivered/,
   );
 
   // The agent reviews, includes the late Input, and retries.

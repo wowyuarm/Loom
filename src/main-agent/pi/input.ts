@@ -64,7 +64,12 @@ function interactionInputText(input: ExecutionInput, options: InputTextOptions):
     "",
   ] : [];
   if (input.lateSteered) {
-    lines.push("This message arrived after your previous user message but before the final reply was committed.", "Re-evaluate the current reply with this message included.", "");
+    lines.push(
+      "This message arrived after your previous user message but before the final reply was committed.",
+      "Re-evaluate the current reply with this message included.",
+      "If a message call just failed, its text was never delivered and the human has not seen it; decide whether that content is still worth sending, as is or adapted, rather than letting it drop silently.",
+      "",
+    );
   } else if (input.lateArriving) {
     lines.push("This message arrived after your previous reply of this conversation was committed but before its delivery was confirmed.", "At that moment the delivery was not yet confirmed, so the human may not have seen the previous reply; treat this as the continuation of the previous exchange, not as a fresh message.", "");
   }
