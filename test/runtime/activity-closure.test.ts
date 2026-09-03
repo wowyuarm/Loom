@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { createTestFauxCore } from "../faux.js";
 import { createPiLifeRecorder } from "../../src/agents/life-recorder.js";
 import { createMainAgentActivityLifecycle } from "../../src/main-agent/activity.js";
 import { createPiAgentExecution } from "../../src/main-agent/pi-execution.js";
@@ -136,7 +137,7 @@ async function createWorkspace(root: string): Promise<string> {
 }
 
 function registerFaux(modelRuntime: ModelRuntime, provider: string) {
-  const faux = createFauxCore({ provider, api: provider });
+  const faux = createTestFauxCore({ provider, api: provider });
   modelRuntime.registerProvider(provider, {
     name: provider,
     api: faux.api,

@@ -6,12 +6,12 @@ import { mkdtemp } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  createFauxCore,
   fauxAssistantMessage,
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { createTestFauxCore } from "../faux.js";
 import { createPiMemoryReflector } from "../../src/agents/memory-reflector.js";
 import { createNmemRecallTool, type NmemWorkingMemoryReader } from "../../src/integrations/nmem/index.js";
 import type { FrozenActivity } from "../../src/runtime/index.js";
@@ -803,7 +803,7 @@ async function createTestPi(root: string, provider: string) {
     modelsStorePath: path.join(root, "config", "models-store.json"),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider, api: provider });
+  const faux = createTestFauxCore({ provider, api: provider });
   modelRuntime.registerProvider(provider, {
     name: provider,
     api: faux.api,

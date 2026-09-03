@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
   defineTool,
   estimateTokens,
@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { createTestFauxCore } from "../faux.js";
 import { createNmemRecallTool } from "../../src/integrations/nmem/index.js";
 import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
@@ -44,7 +45,7 @@ async function createTestPi(root: string) {
     modelsStorePath: path.join(root, "config", "models-store.json"),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider: "loom-test", api: "loom-test" });
+  const faux = createTestFauxCore({ provider: "loom-test", api: "loom-test" });
   modelRuntime.registerProvider("loom-test", {
     name: "Loom Test",
     api: faux.api,
@@ -1095,15 +1096,9 @@ test("reminds only the first human input to enter a Turn", async t => {
     },
     context => {
       const messages = JSON.stringify(context.messages);
-      assert.equal(messages.match(/To make a reply visible to the human/g)?.length, 1);
-      assert.equal(messages.match(/A human message arrived while the non-interaction Turn was still running/g)?.length, 1);
-      assert.equal(messages.match(/<human_input>/g)?.length, 1);
-      assert.match(messages, /first human input/);
-      assert.doesNotMatch(messages, /second human input/);
-      return fauxAssistantMessage("The first input is present.");
-    },
-    context => {
-      const messages = JSON.stringify(context.messages);
+      // Steering drains both steered inputs into the same Turn. Only the first
+      // steered input carries the arrival header and the message decision
+      // reminder; the second enters as a plain human_input block.
       assert.equal(messages.match(/To make a reply visible to the human/g)?.length, 1);
       assert.equal(messages.match(/A human message arrived while the non-interaction Turn was still running/g)?.length, 1);
       assert.equal(messages.match(/<human_input>/g)?.length, 2);

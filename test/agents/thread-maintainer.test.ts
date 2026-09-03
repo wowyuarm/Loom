@@ -4,13 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 import {
   createPiThreadMaintainer,
   threadObservationsFromActivity,
 } from "../../src/agents/thread-maintainer/index.js";
+import { createTestFauxCore } from "../faux.js";
 import type { FrozenActivity, JsonValue } from "../../src/runtime/index.js";
 import { AgentWorkspace } from "../../src/workspace/agent-workspace.js";
 
@@ -577,7 +578,7 @@ async function createTestPi(root: string, provider: string) {
     modelsStorePath: path.join(root, "config", `${provider}-models.json`),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider, api: provider });
+  const faux = createTestFauxCore({ provider, api: provider });
   modelRuntime.registerProvider(provider, {
     name: provider,
     api: faux.api,

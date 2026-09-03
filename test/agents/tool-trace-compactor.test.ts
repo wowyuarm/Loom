@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
+import { createTestFauxCore } from "../faux.js";
 import { createPiToolTraceCompactor } from "../../src/agents/tool-trace-compactor.js";
 
 test("compacts tool evidence in an isolated factual Pi run", async () => {
@@ -17,7 +18,7 @@ test("compacts tool evidence in an isolated factual Pi run", async () => {
     modelsStorePath: path.join(root, "config", "models-store.json"),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider: "loom-compactor-test", api: "loom-compactor-test" });
+  const faux = createTestFauxCore({ provider: "loom-compactor-test", api: "loom-compactor-test" });
   modelRuntime.registerProvider("loom-compactor-test", {
     name: "Loom Compactor Test",
     api: faux.api,
@@ -96,7 +97,7 @@ test("corrects a compaction result with fields outside the factual contract", as
     modelsStorePath: path.join(root, "config", "models-store.json"),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider: "loom-compactor-invalid", api: "loom-compactor-invalid" });
+  const faux = createTestFauxCore({ provider: "loom-compactor-invalid", api: "loom-compactor-invalid" });
   modelRuntime.registerProvider("loom-compactor-invalid", {
     name: "Loom Compactor Invalid Test",
     api: faux.api,
@@ -188,7 +189,7 @@ async function createTestCompactor(root: string, provider: string) {
     modelsStorePath: path.join(root, "config", "models-store.json"),
     allowModelNetwork: false,
   });
-  const faux = createFauxCore({ provider, api: provider });
+  const faux = createTestFauxCore({ provider, api: provider });
   modelRuntime.registerProvider(provider, {
     name: provider,
     api: faux.api,
