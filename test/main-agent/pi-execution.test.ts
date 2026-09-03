@@ -1004,7 +1004,7 @@ test("requires a message decision after a human steers a proactive Turn", async 
     },
     context => {
       const currentInput = JSON.stringify(context.messages.at(-1));
-      assert.match(currentInput, /human message arrived/i);
+      assert.match(currentInput, /An Interaction arrived while the non-interaction Turn was still running/i);
       assert.match(currentInput, /message\.send/);
       assert.match(currentInput, /new human input/);
       return fauxAssistantMessage("An unsent response to the human.");
@@ -1063,6 +1063,17 @@ test("requires a message decision after a human steers a proactive Turn", async 
 
   await running.result;
   assert.equal(faux.state.callCount, 3);
+  // A scripted faux response assertion that throws inside the provider becomes
+  // a swallowed provider error and the Turn still completes through the
+  // correction prompt, so the assertions above would pass vacuously. The Turn
+  // transcript must therefore contain no error assistant message.
+  const transcriptEntries = await readTranscript(path.join(root, "transcript", "2026-07-19", "agent.jsonl"));
+  const errorMessages = transcriptEntries.filter(entry => {
+    const message = entry.message;
+    return typeof message === "object" && message !== null
+      && (message as Record<string, unknown>).stopReason === "error";
+  });
+  assert.deepEqual(errorMessages, []);
   assert.deepEqual(effects, [{
     kind: "message",
     payload: { text: "A visible response to the new input." },
