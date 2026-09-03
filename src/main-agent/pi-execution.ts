@@ -539,6 +539,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
       this.#throwIfAborted(request.turnId);
       this.#throwIfToolErrorCircuitOpened();
       this.#throwIfContextLimitOpened();
+      this.#throwIfProviderError(session);
       if (this.interactionEnabled
         && (requiresMessageDecision(request.inputs[0]!) || lifecycle.hasIncludedInteraction(request.turnId))
         && !hasMessageDecision(messageDecision)) {
@@ -550,6 +551,7 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
         await session.prompt(messageDecisionFollowupText(), { expandPromptTemplates: false });
         this.#throwIfAborted(request.turnId);
         this.#throwIfContextLimitOpened();
+        this.#throwIfProviderError(session);
         if (!hasMessageDecision(messageDecision)) {
           throw new Error("Main Agent did not choose message.send or message.no_reply after one correction");
         }
@@ -623,6 +625,16 @@ class PerTurnPiAgentExecution implements PiAgentExecution {
     throw new Error(
       `Main Agent context exceeded the live Turn limit (${circuit.estimatedTokens ?? "unknown"} > ${circuit.limit ?? "unknown"} tokens)`,
     );
+  }
+
+  #throwIfProviderError(session: PiSession): void {
+    // A provider error assistant message ends the Pi run loop, so the Turn
+    // would otherwise complete or fall through to the message-decision
+    // correction prompt with the real failure left only in the transcript.
+    const last = session.messages.at(-1);
+    if (last?.role === "assistant" && last.stopReason === "error") {
+      throw new Error(`Main Agent Turn ended with a provider error: ${last.errorMessage || "unknown error"}`);
+    }
   }
 
   async #selectCommittedBranch(

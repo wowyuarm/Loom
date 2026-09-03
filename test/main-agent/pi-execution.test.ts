@@ -2433,6 +2433,75 @@ test("fails an interaction that still has no message decision after the correcti
   assert.equal(faux.state.callCount, 2);
 });
 
+test("fails an interaction Turn with a provider error instead of asking for a message decision", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-provider-error-decision-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  // "invalid api key" matches no retryable provider error pattern, so the Pi
+  // session does not auto-retry and the run ends on this error message.
+  faux.setResponses([
+    fauxAssistantMessage("A reply that was never produced.", { stopReason: "error", errorMessage: "invalid api key" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+    interactionEnabled: true,
+    defaultInteractionRoute: "primary-route",
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(
+    execution.start({
+      turnId: "turn-1",
+      leaseToken: 1,
+      recordingDay: "2026-07-19",
+      inputs: [executionInput("input-1", "hello")],
+    }, noEffectControl()).result,
+    /Main Agent Turn ended with a provider error: invalid api key/,
+  );
+  const transcript = await readTranscript(path.join(root, "transcript", "2026-07-19", "agent.jsonl"));
+  assert.ok(!transcript.some(entry =>
+    entry.type === "custom" && entry.customType === "loom.internal-prompt.v1"));
+});
+
+test("fails a proactive Turn with a provider error instead of completing", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-pi-provider-error-opportunity-"));
+  const { faux, model, modelRuntime } = await createTestPi(root);
+  faux.setResponses([
+    fauxAssistantMessage("An opportunity that was never considered.", { stopReason: "error", errorMessage: "invalid api key" }),
+  ]);
+  const execution = await createPiAgentExecution({
+    agentWorkspace: new AgentWorkspace(await createAgentWorkspaceFixture(root)),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcript"),
+    modelRuntime,
+    model,
+    harnessSystemPrompt: "You are the primary Agent.",
+  });
+  t.after(() => execution.close());
+
+  await assert.rejects(
+    execution.start({
+      turnId: "turn-1",
+      leaseToken: 1,
+      recordingDay: "2026-07-19",
+      inputs: [{
+        ...executionInput("input-1", "unused"),
+        kind: "opportunity",
+        payload: {
+          version: 1,
+          narrative: "A private line may be worth exploring.",
+          observedAt: "2026-07-19T00:00:00.000Z",
+        },
+      }],
+    }, noEffectControl()).result,
+    /Main Agent Turn ended with a provider error: invalid api key/,
+  );
+});
+
 test("prepares a message Effect through the Main Agent action interface", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-pi-message-send-"));
   const { faux, model, modelRuntime } = await createTestPi(root);
