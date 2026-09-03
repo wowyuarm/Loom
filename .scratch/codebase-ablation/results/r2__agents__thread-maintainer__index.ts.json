@@ -1,0 +1,20 @@
+{
+  "target": "agents/thread-maintainer/index.ts",
+  "function": "createPiThreadMaintainer",
+  "mode": "stub",
+  "tests": 586,
+  "pass": 576,
+  "fail": 10,
+  "failures": [
+    "keeps Thread history as references and expands an earlier Turn only on request",
+    "counts Workspace-internal absolute paths as required Thread reads",
+    "accepts an explicit terminal outcome after explanatory prose",
+    "preserves a substantive movement as a note and rewrites the Thread entrances together",
+    "restores the complete Thread Workspace when the provider fails after writes and moves",
+    "keeps the same Thread reference after archive and later activity",
+    "allows a decision after reading only part of the current Turn",
+    "surfaces an unread remainder notice and lets the model finish the page",
+    "maintains changed Thread material through the assembled Instance",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

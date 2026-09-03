@@ -1,0 +1,35 @@
+{
+  "target": "channels/raft",
+  "mode": "deletion",
+  "removedSrcCount": 9,
+  "removedTestCount": 7,
+  "removedSrc": [
+    "src/channels/raft/index.ts",
+    "src/channels/raft/raft-activity.ts",
+    "src/channels/raft/raft-channel.ts",
+    "src/channels/raft/raft-cli-parse.ts",
+    "src/channels/raft/raft-cli-remote.ts",
+    "src/channels/raft/raft-state.ts",
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts"
+  ],
+  "removedTest": [
+    "test/channels/raft-activity.test.ts",
+    "test/channels/raft-cli-parse.test.ts",
+    "test/channels/raft-cli-remote.test.ts",
+    "test/channels/raft.test.ts",
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts"
+  ],
+  "survivingTestFiles": 43,
+  "tscOk": true,
+  "tests": 486,
+  "pass": 484,
+  "fail": 2,
+  "failures": [
+    "keeps the linked Loom CLI executable after build",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

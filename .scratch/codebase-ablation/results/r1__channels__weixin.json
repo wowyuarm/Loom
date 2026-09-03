@@ -1,0 +1,29 @@
+{
+  "target": "channels/weixin",
+  "mode": "deletion",
+  "removedSrcCount": 6,
+  "removedTestCount": 4,
+  "removedSrc": [
+    "src/channels/weixin/index.ts",
+    "src/channels/weixin/weixin-adapter.ts",
+    "src/channels/weixin/weixin-http.ts",
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts"
+  ],
+  "removedTest": [
+    "test/channels/weixin.test.ts",
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts"
+  ],
+  "survivingTestFiles": 46,
+  "tscOk": true,
+  "tests": 542,
+  "pass": 540,
+  "fail": 2,
+  "failures": [
+    "keeps the linked Loom CLI executable after build",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

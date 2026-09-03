@@ -1,0 +1,40 @@
+{
+  "target": "instance",
+  "mode": "deletion",
+  "removedSrcCount": 13,
+  "removedTestCount": 8,
+  "removedSrc": [
+    "src/agents/orientation.ts",
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts",
+    "src/instance/default-materials.ts",
+    "src/instance/harness-conditions.ts",
+    "src/instance/index.ts",
+    "src/instance/initialization.ts",
+    "src/instance/layout.ts",
+    "src/instance/loom-instance.ts",
+    "src/instance/process-driver.ts",
+    "src/instance/revision-bound-main-agent.ts",
+    "src/instance/revision-bound-organs.ts"
+  ],
+  "removedTest": [
+    "test/agents/orientation.test.ts",
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts",
+    "test/instance/harness-conditions.test.ts",
+    "test/instance/initialize-instance.test.ts",
+    "test/instance/loom-instance.test.ts",
+    "test/instance/process-driver.test.ts"
+  ],
+  "survivingTestFiles": 42,
+  "tscOk": true,
+  "tests": 494,
+  "pass": 492,
+  "fail": 2,
+  "failures": [
+    "keeps the linked Loom CLI executable after build",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

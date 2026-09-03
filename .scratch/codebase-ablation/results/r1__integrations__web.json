@@ -1,0 +1,33 @@
+{
+  "target": "integrations/web",
+  "mode": "deletion",
+  "removedSrcCount": 7,
+  "removedTestCount": 7,
+  "removedSrc": [
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts",
+    "src/instance/index.ts",
+    "src/instance/loom-instance.ts",
+    "src/instance/process-driver.ts",
+    "src/integrations/web/index.ts"
+  ],
+  "removedTest": [
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts",
+    "test/instance/initialize-instance.test.ts",
+    "test/instance/loom-instance.test.ts",
+    "test/instance/process-driver.test.ts",
+    "test/integrations/web.test.ts"
+  ],
+  "survivingTestFiles": 43,
+  "tscOk": true,
+  "tests": 511,
+  "pass": 509,
+  "fail": 2,
+  "failures": [
+    "keeps the linked Loom CLI executable after build",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

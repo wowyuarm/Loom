@@ -1,0 +1,30 @@
+{
+  "target": "agents/memory-reflector.ts",
+  "function": "createPiMemoryReflector",
+  "mode": "stub",
+  "tests": 586,
+  "pass": 566,
+  "fail": 20,
+  "failures": [
+    "reflects grounded evidence into protected core material",
+    "accepts a completed reflection after the model recovers from a tool error",
+    "counts Workspace-internal absolute paths as complete core reads",
+    "accepts an explicit terminal outcome after explanatory prose",
+    "commits grounded replacements regardless of final model wording",
+    "rejects an early finish and gathers supporting evidence in the same session",
+    "treats missing optional Workspace evidence as an explicit absence",
+    "rejects a write after a truncated baseline and accepts it after the remaining page",
+    "accepts a long core material after every consecutive page is read",
+    "keeps local reflection available when nmem evidence is unavailable",
+    "updates stable facts, identity, and both behavior views in one revision",
+    "derives an update from durable replacements instead of final model wording",
+    "omits nmem tools and guidance when the Integration is not enabled",
+    "writes a layered memory entry after reading it completely",
+    "creates a new layered memory entry only with a complete memory.md index update",
+    "refuses to write a layered memory entry that was not read completely",
+    "deletes a layered memory entry after reading it completely",
+    "rejects memory entry paths outside the single-level memory/ shape",
+    "reflects a completed logical day through the assembled Instance",
+    "binds interaction Workspace materials to their system and Context levels"
+  ]
+}

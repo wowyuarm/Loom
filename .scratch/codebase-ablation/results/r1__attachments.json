@@ -1,0 +1,46 @@
+{
+  "target": "attachments",
+  "mode": "deletion",
+  "removedSrcCount": 18,
+  "removedTestCount": 10,
+  "removedSrc": [
+    "src/attachments/attachment-store.ts",
+    "src/attachments/index.ts",
+    "src/attachments/reference.ts",
+    "src/channels/weixin/index.ts",
+    "src/channels/weixin/weixin-adapter.ts",
+    "src/channels/weixin/weixin-http.ts",
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts",
+    "src/instance/index.ts",
+    "src/instance/loom-instance.ts",
+    "src/instance/process-driver.ts",
+    "src/instance/revision-bound-main-agent.ts",
+    "src/main-agent/attachment.ts",
+    "src/main-agent/message.ts",
+    "src/main-agent/pi-execution.ts",
+    "src/main-agent/pi/attachments.ts",
+    "src/main-agent/pi/input.ts"
+  ],
+  "removedTest": [
+    "test/attachments/attachments.test.ts",
+    "test/channels/weixin.test.ts",
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts",
+    "test/instance/initialize-instance.test.ts",
+    "test/instance/loom-instance.test.ts",
+    "test/instance/process-driver.test.ts",
+    "test/main-agent/pi-execution.test.ts",
+    "test/runtime/activity-closure.test.ts"
+  ],
+  "survivingTestFiles": 40,
+  "tscOk": true,
+  "tests": 424,
+  "pass": 423,
+  "fail": 1,
+  "failures": [
+    "keeps the linked Loom CLI executable after build"
+  ]
+}

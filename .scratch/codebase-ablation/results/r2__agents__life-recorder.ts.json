@@ -1,0 +1,29 @@
+{
+  "target": "agents/life-recorder.ts",
+  "function": "createPiLifeRecorder",
+  "mode": "stub",
+  "tests": 586,
+  "pass": 567,
+  "fail": 19,
+  "failures": [
+    "grounds a recorder run and writes protected Daily and Episode records",
+    "allows no change when Daily and Episodes do not exist",
+    "requires stable facts before calling the recorder model",
+    "recovers from a rejected outside read in the same session",
+    "rejects an early finish and reads the remaining frozen events in the same session",
+    "rejects an event with an unsupported actor reference before calling the model",
+    "accepts a namespaced external actor as attributed evidence",
+    "keeps earlier writes and recovers when an episode cites unsupported evidence",
+    "restores all Workspace files when the provider fails after writes",
+    "reuses the episode identity when the same segment ordinal is recorded again",
+    "freezes idle Activity but defers Life Recorder work while models are blocked",
+    "records a closed Activity through a revision-bound Life Recorder",
+    "reflects a completed logical day through the assembled Instance",
+    "maintains changed Thread material through the assembled Instance",
+    "reconciles nmem Thread and Episode projections after local Activity work",
+    "keeps nmem projection failure-soft and resumes it after restart backoff",
+    "Fair-splits an open Activity at Pulse expiry so Orientation gets its chance",
+    "binds interaction Workspace materials to their system and Context levels",
+    "closes interaction Activity while the successor continues and Recorder catches up"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "target": "host",
+  "mode": "deletion",
+  "removedSrcCount": 4,
+  "removedTestCount": 4,
+  "removedSrc": [
+    "src/cli.ts",
+    "src/host/index.ts",
+    "src/host/loom-host.ts",
+    "src/host/status-socket.ts"
+  ],
+  "removedTest": [
+    "test/cli/format-status.test.ts",
+    "test/host/foreground-cli.test.ts",
+    "test/host/loom-host.test.ts",
+    "test/host/status-socket.test.ts"
+  ],
+  "survivingTestFiles": 46,
+  "tscOk": true,
+  "tests": 552,
+  "pass": 550,
+  "fail": 2,
+  "failures": [
+    "keeps the linked Loom CLI executable after build",
+    "binds interaction Workspace materials to their system and Context levels"
+  ],
+  "failureDetails": "✖ failing tests:\n\ntest at dist/test/host/cli-permissions.test.js:5:1\n✖ keeps the linked Loom CLI executable after build (2.223967ms)\n  Error: ENOENT: no such file or directory, stat '/tmp/loom-ablation/host/dist/src/cli.js'\n      at async stat (node:internal/fs/promises:1038:18)\n      at async TestContext.<anonymous> (file:///tmp/loom-ablation/host/dist/test/host/cli-permissions.test.js:7:19)\n      at async Test.run (node:internal/test_runner/test:1208:7)\n      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:385:3) {\n    errno: -2,\n    code: 'ENOENT',\n    syscall: 'stat',\n    path: '/tmp/loom-ablation/host/dist/src/cli.js'\n  }\n\ntest at dist/test/main-agent/pi-execution.test.js:438:1\n✖ binds interaction Workspace materials to their system and Context levels (21.128517ms)\n  Error: Transcript /tmp/loom-test-suite-B29ATL/loom-pi-workspace-materials-4o6WG1/transcript/2026-07-19/agent.jsonl ends with error: Expected values to be strictly equal:\n  + actual - expected\n  ... Skipped lines\n  \n    '# Harness System Guidance\\n' +\n      '\\n' +\n      'harness guidance\\n' +\n      '\\n' +\n      '# Identity\\n' +\n  ...\n      'long-term memory\\n' +\n  +   'Current working directory: /tmp/loom-test-suite-B29ATL/loom-pi-workspace-materials-4o6WG1/workspace\\n'\n  -   'Current working directory: /tmp/loom-test-suite-B29ATL/loom-pi-workspace-materials-4o6WG1/workspace'\n  \n      at assertCompletedTurn (file:///tmp/loom-ablation/host/dist/src/main-agent/transcript.js:321:15)\n      at verifyPrimaryTranscriptEvidence (file:///tmp/loom-ablation/host/dist/src/main-agent/transcript.js:213:5)\n      at async #run (file:///tmp/loom-ablation/host/dist/src/main-agent/pi-execution.js:403:30)\n      at async TestContext.<anonymous> (file:///tmp/loom-ablation/host/dist/test/main-agent/pi-execution.test.js:475:20)\n      at async Test.run (node:internal/test_runner/test:1208:7)\n      at async Test.processPendingSubtests (node:internal/test_runner/test:831:7)\n"
+}
