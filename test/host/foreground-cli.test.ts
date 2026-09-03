@@ -68,6 +68,43 @@ test("requires an explicit --channel for init and rejects unknown channels", asy
   await assert.rejects(access(root));
 });
 
+test("init rejects stray arguments instead of silently ignoring them", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-strict-"));
+  const root = path.join(parent, ".loom");
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+
+  for (const args of [
+    ["init", "--channel", "raft", "stray-positional"],
+    ["init", "--channel", "raft", "--force"],
+  ]) {
+    const result = await runCli(cli, args, { ...process.env, HOME: parent });
+    assert.equal(result.code, 1, `${args.join(" ")} should fail`);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Unknown argument: /);
+  }
+  await assert.rejects(access(root));
+});
+
+test("help and per-command --help exit 0 with usage", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "loom-cli-help-"));
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const env = { ...process.env, HOME: home };
+
+  for (const args of [["--help"], ["-h"], ["help"]]) {
+    const result = await runCli(cli, args, env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /^Usage:/);
+    assert.equal(result.stderr, "");
+  }
+
+  for (const args of [["status", "--help"], ["init", "--help"], ["run", "-h"]]) {
+    const result = await runCli(cli, args, env);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`^Usage: loom ${args[0]}`));
+    assert.equal(result.stderr, "");
+  }
+});
+
 test("reports an unavailable Host as structured status without opening Instance state", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "loom-cli-status-"));
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));

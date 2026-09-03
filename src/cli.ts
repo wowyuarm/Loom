@@ -26,11 +26,19 @@ import {
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
+  if (command === "help" || command === "--help" || command === "-h") {
+    console.log(usage());
+    return;
+  }
   if (command !== "init" && command !== "run" && command !== "history"
     && command !== "status" && command !== "validate-config" && command !== "requeue"
     && command !== "organ-approve" && command !== "organ-resolve"
     && command !== "retry-ingress") {
     throw new Error(usage());
+  }
+  if (args.includes("--help") || args.includes("-h")) {
+    console.log(usage(command));
+    return;
   }
   const root = readRoot(args, command);
   if (command === "init") {
@@ -171,17 +179,12 @@ export function formatStatus(report: LoomStatusReport, since?: string): string {
     : report.model.state === "degraded"
       ? `${report.model.revisionId}, ${report.model.failureCategory}`
       : report.model.failureCategory;
-  const lines = [
-    `Host: ${report.host.state} (Loom ${report.host.version}, started ${report.host.startedAt})`,
-    `Model: ${report.model.state} (${modelDetail})`,
-    `Runtime: active turn ${report.runtime.activeTurn ? "yes" : "no"}; ${report.runtime.pendingInputs} pending Inputs; ${report.runtime.pendingEffects} pending Effects; ${report.runtime.deliveriesNeedingAttention} Deliveries need attention`,
-    "Agents:",
-  ];
+  const attention: string[] = [];
   for (const item of report.runtime.deliveriesNeedingAttentionItems ?? []) {
-    lines.push(`  Delivery ${item.id} (attempt ${item.attempt})${item.error ? `: ${item.error}` : ""}`);
+    attention.push(`  Delivery ${item.id} (attempt ${item.attempt})${item.error ? `: ${item.error}` : ""}`);
   }
   if (report.runtime.oldestPendingOrganAgeMs !== undefined) {
-    lines.splice(3, 0, `Oldest pending organ work: ${Math.floor(report.runtime.oldestPendingOrganAgeMs / 1_000)}s`);
+    attention.push(`Oldest pending organ work: ${Math.floor(report.runtime.oldestPendingOrganAgeMs / 1_000)}s`);
   }
   if (report.runtime.activityOverdueSince !== undefined) {
     const reason = report.runtime.activityOverdueReason?.kind ?? "unknown";
@@ -200,11 +203,21 @@ export function formatStatus(report: LoomStatusReport, since?: string): string {
                 : report.runtime.activityOverdueReason?.kind === "thread_maintenance"
                   ? ` (activity ${report.runtime.activityOverdueReason.activityId})`
                   : "";
-    lines.splice(3, 0, `Active Segment overdue since ${report.runtime.activityOverdueSince}: ${reason}${detail} (needs attention${report.runtime.activityOverdueNextCheckAt ? `, next check ${report.runtime.activityOverdueNextCheckAt}` : ""})`);
+    attention.push(`Active Segment overdue since ${report.runtime.activityOverdueSince}: ${reason}${detail} (needs attention${report.runtime.activityOverdueNextCheckAt ? `, next check ${report.runtime.activityOverdueNextCheckAt}` : ""})`);
   }
   for (const warning of report.runtime.integrityWarnings) {
-    lines.splice(3, 0, `Runtime integrity warning: ${warning.kind} (${warning.count})`);
+    attention.push(`Runtime integrity warning: ${warning.kind} (${warning.count})`);
   }
+  const deliveries = report.runtime.deliveriesNeedingAttention === 1
+    ? "1 Delivery needs attention"
+    : `${report.runtime.deliveriesNeedingAttention} Deliveries need attention`;
+  const lines = [
+    `Host: ${report.host.state} (Loom ${report.host.version}, started ${report.host.startedAt})`,
+    `Model: ${report.model.state} (${modelDetail})`,
+    `Runtime: active turn ${report.runtime.activeTurn ? "yes" : "no"}; ${report.runtime.pendingInputs} pending Inputs; ${report.runtime.pendingEffects} pending Effects; ${deliveries}`,
+    ...attention,
+    "Agents:",
+  ];
   for (const agent of report.agents) {
     const latestAt = agent.latest?.endedAt ?? agent.latest?.startedAt;
     const outcome = agent.latest?.outcome ? `, ${agent.latest.outcome}` : "";
@@ -276,7 +289,8 @@ type LoomCommand = "init" | "run" | "history" | "status" | "validate-config" | "
 function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
   for (let index = 0; index < args.length; index += 1) {
-    if (args[index] !== "--channel") continue;
+    const argument = args[index]!;
+    if (argument !== "--channel") throw new Error(`Unknown argument: ${argument}`);
     const value = args[index + 1];
     if (value !== "weixin" && value !== "raft") throw new Error(usage("init"));
     if (!channels.includes(value)) channels.push(value);

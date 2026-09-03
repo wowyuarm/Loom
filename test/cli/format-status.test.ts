@@ -65,3 +65,20 @@ test("formatStatus omits overdue fields when the Segment is not overdue", () => 
   const text = formatStatus(base);
   assert.doesNotMatch(text, /overdue/);
 });
+
+test("formatStatus lists delivery attention and integrity warnings above the Agents section in order", () => {
+  const report: LoomStatusReport = {
+    ...base,
+    runtime: {
+      ...base.runtime,
+      deliveriesNeedingAttention: 1,
+      deliveriesNeedingAttentionItems: [{ id: "delivery-1", attempt: 2, error: "boom" }],
+      integrityWarnings: [{ kind: "unexplained_terminal_turn_segment", count: 3 }],
+    },
+  };
+  const text = formatStatus(report);
+  assert.match(text, /1 Delivery needs attention/);
+  assert.ok(text.indexOf("  Delivery delivery-1 (attempt 2): boom") < text.indexOf("Agents:"));
+  assert.ok(text.indexOf("Runtime integrity warning: unexplained_terminal_turn_segment (3)") < text.indexOf("Agents:"));
+  assert.ok(text.indexOf("  Delivery delivery-1") < text.indexOf("Runtime integrity warning"));
+});
