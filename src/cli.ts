@@ -290,6 +290,10 @@ function readInitChannels(args: string[]): Array<"weixin" | "raft"> {
   const channels: Array<"weixin" | "raft"> = [];
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
+    if (argument === "--root") {
+      index += 1;
+      continue;
+    }
     if (argument !== "--channel") throw new Error(`Unknown argument: ${argument}`);
     const value = args[index + 1];
     if (value !== "weixin" && value !== "raft") throw new Error(usage("init"));

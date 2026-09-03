@@ -85,6 +85,21 @@ test("init rejects stray arguments instead of silently ignoring them", async () 
   await assert.rejects(access(root));
 });
 
+test("init honors --root with an explicit channel while still rejecting stray arguments", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "loom-cli-init-root-"));
+  const root = path.join(parent, "islands", ".loom");
+  const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
+  const env = { ...process.env, HOME: parent };
+
+  const result = await runCli(cli, ["init", "--root", root, "--channel", "raft"], env);
+  assert.equal(result.code, 0, result.stderr);
+  await access(root);
+
+  const stray = await runCli(cli, ["init", "--root", root, "--channel", "raft", "--force"], env);
+  assert.equal(stray.code, 1);
+  assert.match(stray.stderr, /Unknown argument: --force/);
+});
+
 test("help and per-command --help exit 0 with usage", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "loom-cli-help-"));
   const cli = fileURLToPath(new URL("../../src/cli.js", import.meta.url));
