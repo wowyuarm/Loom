@@ -489,7 +489,7 @@ test("binds interaction Workspace materials to their system and Context levels",
         "# Identity\n\nidentity material",
         "# Behavior\n\ninteractivity behavior",
         "# Long-term Memory\n\nlong-term memory",
-      ].join("\n\n")}\nCurrent working directory: ${workspaceRoot}`);
+      ].join("\n\n")}\nCurrent working directory: ${workspaceRoot}\n`);
       const text = context.messages.map(message => JSON.stringify(message)).join("\n");
       assert.match(text, /Current Attention/);
       assert.match(text, /current attention/);
