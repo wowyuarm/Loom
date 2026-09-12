@@ -44,6 +44,8 @@
 
 ## 数据与脚本
 
+脚本与结果已移出仓库，放在本机 `.scratch/local/test-ablation/`（`local/` 不进版本控制）；下面留的是它们当时的清单，便于需要时按名找回：
+
 - `harness/collect-one.mjs` — 单测试文件采集（时长 + node:test 计数 + 失败名 + V8 dump）
 - `harness/merge-coverage.mjs` — V8→行→sourcemap→src 行矩阵 + leave-one-out 分析
 - `harness/static-edges.mjs` — dist JS 的 test→src 静态 import 边

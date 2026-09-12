@@ -19,7 +19,7 @@
 
 基线（2026-09-03，main @ 5aef85dd）：全量 586 测试，585 过、1 败。已知基线失败：`test/main-agent/pi-execution.test.ts` "binds interaction Workspace materials to their system and Context levels"（transcript 断言中的尾随换行差异，重跑稳定复现，非 flake）。所有轮次结果以“超出该基线的失败”计增量。
 
-消融在 `/tmp/loom-ablation/` 下的独立 git worktree 中执行（node_modules 软链回主仓），不污染工作区。harness 脚本见 `harness/`。
+消融在 `/tmp/loom-ablation/` 下的独立 git worktree 中执行（node_modules 软链回主仓），不污染工作区。harness 脚本与逐步结果 JSON 已移出仓库，放在本机 `.scratch/local/codebase-ablation/`（`local/` 不进版本控制）。
 
 ## 轮次
 
@@ -38,4 +38,4 @@
 5. **Instance 是器官系统的唯一集成面**:六个器官 stub 都命中 `loom-instance.test.ts`;四个写入型器官对系统的行为依赖仅有装配点 1 处,器官未向材料层(config/workspace/attachments)和集成层(nmem/web)渗透。
 6. **附带发现(已修复)**:实验时的基线失败 `test/main-agent/pi-execution.test.ts` "binds interaction Workspace materials…" 已根因定位——Pi SDK `buildSystemPrompt` 的 customPrompt 分支在 cwd 行后追加尾随 `\n`,0.84.2 升级同一提交写入的测试预期漏算了它;已按 SDK 实际行为修正测试预期(commit `6a00a12`),修复后独立 worktree 并行全量 588/588 × 2 零失败。实验中一次性的 "requires a message decision…" 负载翻转未再复现,记为观察项;另确认同一 checkout 上并发跑两个 build 会因 `cp core-skills` 竞态产生嵌套目录(自伤,非产品缺陷)。
 
-完整数据:`results/`(JSON)· 分轮记录:`research/round{1,2,3}-*.md`
+完整数据：`.scratch/local/codebase-ablation/results/`（JSON，本机）· 分轮记录：`research/round{1,2,3}-*.md`

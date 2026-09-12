@@ -52,6 +52,8 @@
 
 - `.scratch/<topic>/`：正在推进的主题。
 - `.scratch/archive/<topic>/`：已收口主题的历史资料。
-- `.scratch/local/<topic>/`：本机工作区，**不在版本控制内**（`.gitignore` 忽略 `.scratch/local/`），也不在两个索引里登记。
+- `.scratch/local/<topic>/`：本机工作区，**不进版本控制**（`.gitignore` 忽略 `.scratch/local/`），也不在两个索引里登记。
 
-前三者中只有前两个在 [README.md](README.md) 建立索引；主题移动时同步修正跨主题相对链接和仓库里引用它的脚本或检查配置。
+只有前两个在 [README.md](README.md) 建立索引；主题移动时同步修正跨主题相对链接和仓库里引用它的脚本或检查配置。
+
+**`local/` 放什么**：判断标准是「删掉它对下一个读仓库的人有没有损失」——有损失留前两处，没有就放这里。该放：跑出来的 harness 脚本与结果 JSON、transcript、性能/覆盖率 dump，以及依赖本机路径与环境的产物。不该放：结论与读法（主题 README、`research/`、`spec.md`、issue、验收证据）和会被别人引用的口径。同一个主题可以横跨两处：结论留在 `archive/`，脚本与数据放 `local/`，archive 的 README 里写一行说明它们在哪，但不写指向 `local/` 的相对链接。`local/` 沿用原来的目录名（如 `harness/`、`results/`），别人（包括未来的自己）才认得出。
