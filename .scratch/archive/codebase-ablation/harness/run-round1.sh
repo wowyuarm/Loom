@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Round 1 runner: deletion ablation over modules + hot files, 2-way parallel.
 set -u
-cd "$(dirname "$0")/../../.." || exit 1
+cd "$(dirname "$0")/../../../.." || exit 1
 REPO="$PWD"
-HARNESS=".scratch/codebase-ablation/harness"
-OUT=".scratch/codebase-ablation/results"
+HARNESS=".scratch/archive/codebase-ablation/harness"
+OUT=".scratch/archive/codebase-ablation/results"
 TARGETS=(
   configuration runtime workspace attachments
   channels channels/raft channels/weixin

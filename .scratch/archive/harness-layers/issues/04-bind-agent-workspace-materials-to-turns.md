@@ -91,7 +91,7 @@ Agent Workspace 是一个深 Module。调用方只需给出 Workspace root，并
 - Xi `6608fde` `src/harness/windowed-context.ts`
 - Xi `6608fde` `src/shared/paths.ts`
 - Xi `6608fde` `src/workspace/layout.ts`
-- Xi [04 - Runtime Instance, Workspace, and Individual](../../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
-- Xi [05 - Harness Capability Composition](../../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
-- Xi [11 - Generic Language and Behavioral Quality](../../../../Xi/.scratch/harness-generalization/issues/11-specify-generic-language-and-behavioral-quality-migration.md)
+- Xi [04 - Runtime Instance, Workspace, and Individual](../../../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
+- Xi [05 - Harness Capability Composition](../../../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
+- Xi [11 - Generic Language and Behavioral Quality](../../../../../Xi/.scratch/harness-generalization/issues/11-specify-generic-language-and-behavioral-quality-migration.md)
 - Loom [03 - Materialize Context Windows per Turn](03-materialize-context-windows-per-turn.md)

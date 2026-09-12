@@ -14,7 +14,9 @@ const checkedRoots = [
   "CONTEXT.md",
   "docs",
   ".scratch/README.md",
-  ".scratch/codebase/README.md",
+  ".scratch/AGENTS.md",
+  ".scratch/archive/README.md",
+  ".scratch/archive/codebase/README.md",
 ];
 const markdownFiles = checkedRoots.flatMap(collectMarkdownFiles).sort();
 

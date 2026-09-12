@@ -92,9 +92,9 @@ Runtime 对 host 保持三个能力：
 
 ## Source References
 
-- Xi [03 — Runtime Kernel Contract](../../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)
-- Xi [07 — Interaction Route and Message Contract](../../../../Xi/.scratch/harness-generalization/issues/07-define-interaction-route-and-message-contract.md)
-- Xi [09 — Runtime Store and Recovery](../../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md)
+- Xi [03 — Runtime Kernel Contract](../../../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)
+- Xi [07 — Interaction Route and Message Contract](../../../../../Xi/.scratch/harness-generalization/issues/07-define-interaction-route-and-message-contract.md)
+- Xi [09 — Runtime Store and Recovery](../../../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md)
 - Xi `src/runtime/`, `src/state/`, `src/harness/turn-runner.ts`, `src/channels/outbound.ts`
 
 ## Out of Scope

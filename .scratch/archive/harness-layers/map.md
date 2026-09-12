@@ -119,7 +119,7 @@ nmem 范围闭合后的全局审视现已完成：
 
 首阶段到此闭合。下一阶段应从一次具体部署选择运维入口、备份/恢复或既有 Individual 迁移，不把 voice/ASR、通用文件解析、video、多附件或更多 channel 当成默认下一步。
 
-该建设阶段随后进入 [Raft Interaction Channel Ticket 04](../archive/raft-channel/issues/04-implement-raft-interaction-channel.md)（已归档）：把已收束的 channel 设计实现为一项完整工作单元，以真实 Raft-only acceptance 作为关闭门票的唯一门槛；HaL 的既有 Local 实例继续作为独立运行观察。当前状态以代码、测试和正式 docs 为准。
+该建设阶段随后进入 [Raft Interaction Channel Ticket 04](../raft-channel/issues/04-implement-raft-interaction-channel.md)（已归档）：把已收束的 channel 设计实现为一项完整工作单元，以真实 Raft-only acceptance 作为关闭门票的唯一门槛；HaL 的既有 Local 实例继续作为独立运行观察。当前状态以代码、测试和正式 docs 为准。
 
 ## Independent Development
 
@@ -154,11 +154,11 @@ Local 已启用，Weixin 与 nmem 保持关闭。迁移使用了已核验的完�
 
 - Current: [53 — Unified Cognitive Organ Session and Workspace Write Limits](issues/53-workspace-write-limits.md). 六个 Pi organ 统一 50-turn Session，四个写入 organ 使用共同 `finish` 与 applied/rejected/uncertain 写入结果；10/45 分钟正常执行 deadline 已移除。字节上限由 src 常量统一查表，未匹配路径默认放行。
 
-- Xi [Harness Generalization Map](../../../Xi/.scratch/harness-generalization/map.md)
-- Xi [03 — Runtime Kernel Contract](../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)
-- Xi [04 — Runtime Instance, Workspace, and Individual](../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
-- Xi [05 — Harness Capability Composition](../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
-- Xi [07 — Interaction Route and Message Contract](../../../Xi/.scratch/harness-generalization/issues/07-define-interaction-route-and-message-contract.md)
-- Xi [08 — nmem Cognitive Integration Boundary](../../../Xi/.scratch/harness-generalization/issues/08-define-nmem-cognitive-integration-boundary.md)
-- Xi [09 — Runtime Store and Recovery](../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md)
-- Xi [10 — Primary Agent Transcript](../../../Xi/.scratch/harness-generalization/issues/10-define-primary-agent-transcript-protocol.md)
+- Xi [Harness Generalization Map](../../../../Xi/.scratch/harness-generalization/map.md)
+- Xi [03 — Runtime Kernel Contract](../../../../Xi/.scratch/harness-generalization/issues/03-identify-the-runtime-kernel-contract.md)
+- Xi [04 — Runtime Instance, Workspace, and Individual](../../../../Xi/.scratch/harness-generalization/issues/04-define-workspace-and-instance-semantics.md)
+- Xi [05 — Harness Capability Composition](../../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
+- Xi [07 — Interaction Route and Message Contract](../../../../Xi/.scratch/harness-generalization/issues/07-define-interaction-route-and-message-contract.md)
+- Xi [08 — nmem Cognitive Integration Boundary](../../../../Xi/.scratch/harness-generalization/issues/08-define-nmem-cognitive-integration-boundary.md)
+- Xi [09 — Runtime Store and Recovery](../../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md)
+- Xi [10 — Primary Agent Transcript](../../../../Xi/.scratch/harness-generalization/issues/10-define-primary-agent-transcript-protocol.md)

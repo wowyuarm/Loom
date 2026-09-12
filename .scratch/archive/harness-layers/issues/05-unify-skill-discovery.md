@@ -56,6 +56,6 @@ Blocked by: 04 — Bind Agent Workspace Materials to Turns
 
 ## Source References
 
-- Xi [05 — Harness Capability Composition](../../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
-- Xi [Extensions](../../../../Xi/docs/extensions.md)
+- Xi [05 — Harness Capability Composition](../../../../../Xi/.scratch/harness-generalization/issues/05-define-harness-capability-composition.md)
+- Xi [Extensions](../../../../../Xi/docs/extensions.md)
 - Loom [04 — Bind Agent Workspace Materials to Turns](04-bind-agent-workspace-materials-to-turns.md)

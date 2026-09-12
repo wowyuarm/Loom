@@ -33,7 +33,7 @@ Loom 是面向长期关系主体的 Agent Harness。一个 Runtime Instance 只�
 - 进行中的设计：任务合同和明确引用的 `.scratch/<topic>/` 记录。
 - 协作过程：讨论面、评审、部署和验收记录。
 
-`.scratch/` 是某个主题当时的研究和决策记录，不是持续维护的第二套产品文档。后续演化不回写旧的历史判断；稳定结论进入正式文档，旧记录保留作历史或按主题清理。新主题按真实代码边界建立，不能预建空目录。
+`.scratch/` 是某个主题当时的研究和决策记录，不是持续维护的第二套产品文档。正在推进的主题放 `.scratch/<topic>/`，收口后移进 `.scratch/archive/<topic>/`；后续演化不回写旧的历史判断，稳定结论进入正式文档，旧记录保留作历史或按主题清理。新主题按真实代码边界建立，不能预建空目录。工作规则见 [`.scratch/AGENTS.md`](.scratch/AGENTS.md)。
 
 ## Universal engineering rules
 

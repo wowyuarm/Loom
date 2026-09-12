@@ -12,7 +12,7 @@
 - 自动恢复何时必须停止并交给人工；
 - 恢复机制自身失效时，是否还有独立的存活保障。
 
-Loom 术语以现有文档为准：Cognitive Organs 是 Harness 内置、由 Runtime 持久队列调度的有界维护能力；`blocked` 表示重试耗尽、需要人工处理，Operator 可通过 `loom requeue-organ` 开启新的预算周期，但这不证明原始故障已经修复。[Loom Cognitive Organs](../../../docs/cognitive-organs.md)、[Loom Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)
+Loom 术语以现有文档为准：Cognitive Organs 是 Harness 内置、由 Runtime 持久队列调度的有界维护能力；`blocked` 表示重试耗尽、需要人工处理，Operator 可通过 `loom requeue-organ` 开启新的预算周期，但这不证明原始故障已经修复。[Loom Cognitive Organs](../../../../docs/cognitive-organs.md)、[Loom Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)
 
 本文不提出通用 control plane、通用 job queue 或实现 ticket，也不把外部系统的完整架构直接移植进单个 Agent Individual 的 Harness。
 
@@ -73,7 +73,7 @@ Kubernetes 将三个问题做成三个 probe：
 
 对 Loom 的直接限制是：
 
-- “systemd 仍显示 active”只说明 Host 进程存在，不说明 Scheduler、Channel 或某个 Cognitive Organ 在前进；Loom 当前运维文档已经明确写出这一非保证。[Loom Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)
+- “systemd 仍显示 active”只说明 Host 进程存在，不说明 Scheduler、Channel 或某个 Cognitive Organ 在前进；Loom 当前运维文档已经明确写出这一非保证。[Loom Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)
 - 一个 blocked Cognitive Organ 不等于整个 Host 不存活；把它映射成全局 liveness failure 会造成无效重启。
 - 单实例没有 Kubernetes Service 后面的健康副本，因此 readiness 失败最多用来拒绝或延后某类新工作，并清楚显示 degraded；它不能提供流量转移保证。
 
@@ -114,7 +114,7 @@ systemd 的 `WatchdogSec=` 在服务完成启动后生效。服务必须定期�
 
 这正是 cognition-independent lifeline：systemd manager 在 Loom Host 外运行，不依赖 Main Agent、Runtime Scheduler 或 Cognitive Organ 作出判断。它适合检测“进程已退出”以及“Host 明确承诺的进度 ping 停止”，不适合自行判断某条 Memory、Attention 或 Episode 是否正确，也没有权限安全修改 Runtime Store、Workspace 或文件所有权。
 
-Loom 当前 service 已配置 `Restart=on-failure` 和 start-rate limit，但没有 `WatchdogSec=`；当前运维合同也明确说 external supervisor 负责 boot startup 和 crash restart，而 service active 不能证明模型、Channel、Integration 或 Cognitive Organ 正常。[Loom service template](../../../docs/operations/loom@.service)、[Instance Lifecycle](../../../docs/operations/reference/instance-lifecycle.md)、[Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)
+Loom 当前 service 已配置 `Restart=on-failure` 和 start-rate limit，但没有 `WatchdogSec=`；当前运维合同也明确说 external supervisor 负责 boot startup 和 crash restart，而 service active 不能证明模型、Channel、Integration 或 Cognitive Organ 正常。[Loom service template](../../../../docs/operations/loom@.service)、[Instance Lifecycle](../../../../docs/operations/reference/instance-lifecycle.md)、[Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)
 
 这里仍有一条关键安全限制：watchdog 若由同一个已卡死的 scheduler 路径发送，它就不能独立发现该路径卡死；若服务在错误状态下继续发送 ping，systemd 也会继续视为存活。因此 ping 必须对应一个窄、可核对的 Host 进度合同，而不是“进程还在”或“最近有任意消息”。这属于从 systemd watchdog 输入语义得出的迁移判断，不是 systemd 提供的业务正确性保证。[systemd `WatchdogSec=`](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#WatchdogSec=)
 
@@ -141,8 +141,8 @@ IBM 的原始 autonomic computing 研究把 autonomic manager 与 managed elemen
 1. **只把真实执行视为占用**：`running` 有当前执行者；retry wait 和 `blocked` 是持久状态，但不应伪装成全局执行中。Temporal 的 work / attempt 分离和 Kubernetes 多 controller 分工都支持这一点。[Temporal failure detection](https://docs.temporal.io/encyclopedia/detecting-activity-failures)、[Kubernetes controller design](https://kubernetes.io/docs/concepts/architecture/controller/#design)
 2. **失败不跨越无依赖故障域**：一项 Cognitive Organ work 的永久失败可以保持 FIFO 或领域顺序，但不应停止独立的 Pulse、Attention、Reflection 或其他 organ lane。OTP 的 restart strategy 和 Kubernetes 分离 controller 支持按依赖确定影响范围。[OTP restart strategy](https://www.erlang.org/doc/system/sup_princ.html#restart-strategy)、[Kubernetes controller design](https://kubernetes.io/docs/concepts/architecture/controller/#design)
 3. **自动恢复有预算**：尝试次数、总时限、退避和进程重启强度各自有明确上限；超限进入可见、可人工恢复的状态。[OTP maximum restart intensity](https://www.erlang.org/doc/system/sup_princ.html#maximum-restart-intensity)、[Temporal Retry Policies](https://docs.temporal.io/encyclopedia/retry-policies)、[systemd start rate limiting](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#StartLimitIntervalSec=interval,%20StartLimitBurst=burst)
-4. **进程外保留最后一道存活保障**：内部 Runtime 负责语义状态和恢复事实，systemd 只负责进程退出或窄进度合同超时后的有界重启；两者不能互相冒充。[systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)、[Loom Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)
-5. **恢复后重新观测**：restart、requeue 或修复命令只证明动作发生，不证明原始故障消失。Loom 当前运维合同已明确 requeue 和 restart 的非保证；Kubernetes reconciliation 也通过下一轮观察判断 current state。[Loom Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)、[Kubernetes Controllers](https://kubernetes.io/docs/concepts/architecture/controller/)
+4. **进程外保留最后一道存活保障**：内部 Runtime 负责语义状态和恢复事实，systemd 只负责进程退出或窄进度合同超时后的有界重启；两者不能互相冒充。[systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)、[Loom Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)
+5. **恢复后重新观测**：restart、requeue 或修复命令只证明动作发生，不证明原始故障消失。Loom 当前运维合同已明确 requeue 和 restart 的非保证；Kubernetes reconciliation 也通过下一轮观察判断 current state。[Loom Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)、[Kubernetes Controllers](https://kubernetes.io/docs/concepts/architecture/controller/)
 
 ### 不应从外部模式推出的结论
 
@@ -155,14 +155,14 @@ IBM 的原始 autonomic computing 研究把 autonomic manager 与 managed elemen
 
 ## Loom 现状：复杂度来自重复解释，不是来自状态本身
 
-Loom 现有分层解决的都是真实问题：Runtime Store 保存恢复事实，Scheduler 推进有明确生命周期的工作，Process Driver 负责等待和唤醒，Host 持有一个 live Instance，Cognitive Organ 执行层管理 attempt 预算和重试，领域队列保留各自的顺序与 stale / supersede 规则。这些边界不应被一个通用任务系统替换。[ADR 0001](../../../docs/adr/0001-keep-runtime-store-concrete-and-internal.md)、[Drive a Runtime Instance](../issues/34-drive-a-runtime-instance.md)、[Run a Prepared Instance Host](../issues/37-run-a-prepared-instance-host.md)
+Loom 现有分层解决的都是真实问题：Runtime Store 保存恢复事实，Scheduler 推进有明确生命周期的工作，Process Driver 负责等待和唤醒，Host 持有一个 live Instance，Cognitive Organ 执行层管理 attempt 预算和重试，领域队列保留各自的顺序与 stale / supersede 规则。这些边界不应被一个通用任务系统替换。[ADR 0001](../../../../docs/adr/0001-keep-runtime-store-concrete-and-internal.md)、[Drive a Runtime Instance](../issues/34-drive-a-runtime-instance.md)、[Run a Prepared Instance Host](../issues/37-run-a-prepared-instance-host.md)
 
 当前风险集中在这些边界之间的状态翻译：
 
-- Runtime Store 同时有 Input、Turn、Effect / Delivery、Active Segment、Activity、各领域维护队列、Pulse、continuation、`agent_runs` 和 `cognitive_work` 等状态机。[schema](../../../src/runtime/schema.ts)、[Cognitive Organ execution](../../../src/runtime/cognitive-organ-execution.ts)
-- `#beginCognitiveOrganAttempt()` 目前用“有 claim / 有 nextAttemptAt / 两者都没有”表达 admission 结果；两者都没有可能表示 running、blocked、intervention required 或 domain mismatch。各个 organ entry 随后再次读取 `currentWork()`，自行决定返回 `busy`、`idle` 或等待。[Runtime](../../../src/runtime/runtime.ts)
-- Scheduler 再把各入口的结果折叠成 `idle`、`waiting`、`busy` 或若干 `deferred`；Process Driver 看到普通 `busy` 就一秒后重跑，看到没有 `nextRunAt` 的非 busy 结果就无限等待外部 wake。[Scheduler](../../../src/runtime/scheduler.ts)、[Process Driver](../../../src/instance/process-driver.ts)
-- `loom status` 能显示许多持久事实，但这些事实主要给 Operator 使用；`operational-events` 是可丢失的诊断输出，正式文档明确说它不是事实来源。目前没有同一份“Instance 正在何处退化”的有界证据同时供 status 和 Loom cognition 使用。[Status And Diagnosis](../../../docs/operations/reference/status-and-diagnosis.md)、[operational events](../../../src/operational-events.ts)
+- Runtime Store 同时有 Input、Turn、Effect / Delivery、Active Segment、Activity、各领域维护队列、Pulse、continuation、`agent_runs` 和 `cognitive_work` 等状态机。[schema](../../../../src/runtime/schema.ts)、[Cognitive Organ execution](../../../../src/runtime/cognitive-organ-execution.ts)
+- `#beginCognitiveOrganAttempt()` 目前用“有 claim / 有 nextAttemptAt / 两者都没有”表达 admission 结果；两者都没有可能表示 running、blocked、intervention required 或 domain mismatch。各个 organ entry 随后再次读取 `currentWork()`，自行决定返回 `busy`、`idle` 或等待。[Runtime](../../../../src/runtime/runtime.ts)
+- Scheduler 再把各入口的结果折叠成 `idle`、`waiting`、`busy` 或若干 `deferred`；Process Driver 看到普通 `busy` 就一秒后重跑，看到没有 `nextRunAt` 的非 busy 结果就无限等待外部 wake。[Scheduler](../../../../src/runtime/scheduler.ts)、[Process Driver](../../../../src/instance/process-driver.ts)
+- `loom status` 能显示许多持久事实，但这些事实主要给 Operator 使用；`operational-events` 是可丢失的诊断输出，正式文档明确说它不是事实来源。目前没有同一份“Instance 正在何处退化”的有界证据同时供 status 和 Loom cognition 使用。[Status And Diagnosis](../../../../docs/operations/reference/status-and-diagnosis.md)、[operational events](../../../../src/operational-events.ts)
 
 近期故障说明了这个问题：
 

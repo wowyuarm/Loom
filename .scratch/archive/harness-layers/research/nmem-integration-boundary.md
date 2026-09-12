@@ -15,7 +15,7 @@ What should Loom's first nmem Integration own, which Loom evidence should enter 
 - Runtime Store owns durable Integration receipts and recovery facts. Agent Workspace remains the semantic source for Daily, Episodes, Threads and Individual material.
 - nmem is a maintained Cognitive Integration, but Main Agent execution, Workspace continuity, Transcript, Activity recording and recovery must continue while it is offline.
 
-Sources: Loom tickets [08](../issues/08-run-life-recorder-from-frozen-activity.md), [10](../issues/10-define-replayable-episodes-and-recorder-method.md), [11](../issues/11-close-activity-lifecycle.md), and Xi source tickets [08](../../../../Xi/.scratch/harness-generalization/issues/08-define-nmem-cognitive-integration-boundary.md), [09](../../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md).
+Sources: Loom tickets [08](../issues/08-run-life-recorder-from-frozen-activity.md), [10](../issues/10-define-replayable-episodes-and-recorder-method.md), [11](../issues/11-close-activity-lifecycle.md), and Xi source tickets [08](../../../../../Xi/.scratch/harness-generalization/issues/08-define-nmem-cognitive-integration-boundary.md), [09](../../../../../Xi/.scratch/harness-generalization/issues/09-set-runtime-store-storage-and-recovery-boundaries.md).
 
 ## Xi Source Findings
 

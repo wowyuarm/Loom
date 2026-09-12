@@ -14,9 +14,9 @@
 
 **当前事实与成本**：
 
-- `runtime.ts` 的 `#discardSilentOpportunitySegment()` 会恢复进入机会前的执行状态并删除 Segment，随后记录 `silent_opportunity`；这是静默机会的正常收尾。[runtime.ts:2882](../../../../../src/runtime/runtime.ts:2882)
-- `#reflectionDayComplete()` 额外要求当天的 completed/failed/timeout/cancelled/interrupted Turn 的 `segment_id` 出现在 `activities` 中。[runtime.ts:1609](../../../../../src/runtime/runtime.ts:1609)
-- 合法静默因此被当成遗失证据，反思 cursor 不会推进；Scheduler 将它压成没有 deadline 的 `busy`，Process Driver 每秒重试，且不会到后面的 Pulse 分支。[runtime.ts:849](../../../../../src/runtime/runtime.ts:849) [scheduler.ts:150](../../../../../src/runtime/scheduler.ts:150) [process-driver.ts:169](../../../../../src/instance/process-driver.ts:169)
+- `runtime.ts` 的 `#discardSilentOpportunitySegment()` 会恢复进入机会前的执行状态并删除 Segment，随后记录 `silent_opportunity`；这是静默机会的正常收尾。[runtime.ts:2882](../../../../../../src/runtime/runtime.ts:2882)
+- `#reflectionDayComplete()` 额外要求当天的 completed/failed/timeout/cancelled/interrupted Turn 的 `segment_id` 出现在 `activities` 中。[runtime.ts:1609](../../../../../../src/runtime/runtime.ts:1609)
+- 合法静默因此被当成遗失证据，反思 cursor 不会推进；Scheduler 将它压成没有 deadline 的 `busy`，Process Driver 每秒重试，且不会到后面的 Pulse 分支。[runtime.ts:849](../../../../../../src/runtime/runtime.ts:849) [scheduler.ts:150](../../../../../../src/runtime/scheduler.ts:150) [process-driver.ts:169](../../../../../../src/instance/process-driver.ts:169)
 
 **Xi 对照**：Xi 也在无 message、无非 message 工具的 background 后丢弃 standalone segment；文档明确「没有工具的静默 pulse 不留空活动」。[Xi actions.ts:377](/home/yu/projects/Xi/src/runtime/actions.ts:377) [Xi daemon scheduling.md:40](/home/yu/projects/Xi/docs/daemon-scheduling.md:40) Xi 的 reflector 等它自己的 nightly marker 与 working-memory 条件，不检查每个 Turn/segment 是否有 Activity。[Xi cognitive-maintenance.ts:157](/home/yu/projects/Xi/src/runtime/cognitive-maintenance.ts:157)
 
@@ -30,8 +30,8 @@
 
 **当前事实与成本**：
 
-- `#isMaintenanceIdle()` 同时要求没有 active segment、pending input/delivery/recording/thread maintenance 等；Attention 与 Reflection 都把它当自己的先决条件。[runtime.ts:1569](../../../../../src/runtime/runtime.ts:1569) [runtime.ts:782](../../../../../src/runtime/runtime.ts:782) [runtime.ts:849](../../../../../src/runtime/runtime.ts:849)
-- `advance()` 在 Recorder 或 Thread Maintainer 一次失败后立即返回；Scheduler 把该结果变为 deferred，不再走 close、Attention、Reflection 或 Pulse。[runtime.ts:777](../../../../../src/runtime/runtime.ts:777) [scheduler.ts:128](../../../../../src/runtime/scheduler.ts:128)
+- `#isMaintenanceIdle()` 同时要求没有 active segment、pending input/delivery/recording/thread maintenance 等；Attention 与 Reflection 都把它当自己的先决条件。[runtime.ts:1569](../../../../../../src/runtime/runtime.ts:1569) [runtime.ts:782](../../../../../../src/runtime/runtime.ts:782) [runtime.ts:849](../../../../../../src/runtime/runtime.ts:849)
+- `advance()` 在 Recorder 或 Thread Maintainer 一次失败后立即返回；Scheduler 把该结果变为 deferred，不再走 close、Attention、Reflection 或 Pulse。[runtime.ts:777](../../../../../../src/runtime/runtime.ts:777) [scheduler.ts:128](../../../../../../src/runtime/scheduler.ts:128)
 - 这与 Ticket 11 已确认的原则相冲突：冻结后新 Input 可以继续，Recorder failure 仅保留该 Frozen Activity 重试。[Ticket 11](../../../../harness-layers/issues/11-close-activity-lifecycle.md)
 - Issue #5 已实证 Reflection 的一个 `busy` 使 Pulse 不可达；现有代码对 Recorder/Thread pending 采用相同的总闲置判定，因而存在同类长期饥饿路径。
 
@@ -47,9 +47,9 @@
 
 **两边实际保护的对象**：
 
-- `#hasPendingDeliveryWork()` 把任何 pending、带 route 的 Effect 都视为 close 阻碍，未区分「正在 dispatch」与「已确认未送达、下一次重试在未来」。[runtime.ts:1772](../../../../../src/runtime/runtime.ts:1772)
-- `#claimActivityClose()` 对 idle 和 max-age 使用同一个 pending Delivery 前置条件，因此两小时上限到达也不会 freeze。[runtime.ts:1839](../../../../../src/runtime/runtime.ts:1839)
-- Scheduler 在 max-age 到达后把 close 的 `busy` 原样返回；Process Driver 按一秒 retry，却无法让下一次 Delivery 提前发生。[scheduler.ts:188](../../../../../src/runtime/scheduler.ts:188) [process-driver.ts:169](../../../../../src/instance/process-driver.ts:169)
+- `#hasPendingDeliveryWork()` 把任何 pending、带 route 的 Effect 都视为 close 阻碍，未区分「正在 dispatch」与「已确认未送达、下一次重试在未来」。[runtime.ts:1772](../../../../../../src/runtime/runtime.ts:1772)
+- `#claimActivityClose()` 对 idle 和 max-age 使用同一个 pending Delivery 前置条件，因此两小时上限到达也不会 freeze。[runtime.ts:1839](../../../../../../src/runtime/runtime.ts:1839)
+- Scheduler 在 max-age 到达后把 close 的 `busy` 原样返回；Process Driver 按一秒 retry，却无法让下一次 Delivery 提前发生。[scheduler.ts:188](../../../../../../src/runtime/scheduler.ts:188) [process-driver.ts:169](../../../../../../src/instance/process-driver.ts:169)
 - Ticket 38 明说「新 Input 和其他 Runtime work 可以在 Delivery 等待时继续」；现码允许新 Turn，但不允许旧活动收束，故这个保证没有覆盖活动边界。[Ticket 38](../../../../harness-layers/issues/38-back-off-not-sent-delivery.md)
 
 关闭时写入的 `frozen_activity_json` 是不可变快照，直接固化 Effect 和 Delivery attempt。若在 `not_sent` 退避中先冻结，后续成功的 attempt 不会进入这段 Activity，Life Recorder 会永久缺少最终送达证据。因此 pending Delivery gate 有真实保护对象，不能直接放开 close。
@@ -66,7 +66,7 @@
 
 **原保护目标**：Ticket 28/31/32 需要持久 schedule 和最早唤醒时间；预调用至少会建立首次 schedule 行。
 
-**当前事实与成本**：三次预调用在 [scheduler.ts:103](../../../../../src/runtime/scheduler.ts:103) 到 [scheduler.ts:128](../../../../../src/runtime/scheduler.ts:128)，结果没有参与本轮返回；正式路径在 [scheduler.ts:150](../../../../../src/runtime/scheduler.ts:150) 到 [scheduler.ts:188](../../../../../src/runtime/scheduler.ts:188)。空 Reflection 日甚至可以在预调用阶段推进 cursor。当前只能证实入口重复，尚未证实它造成错误或多余模型运行。
+**当前事实与成本**：三次预调用在 [scheduler.ts:103](../../../../../../src/runtime/scheduler.ts:103) 到 [scheduler.ts:128](../../../../../../src/runtime/scheduler.ts:128)，结果没有参与本轮返回；正式路径在 [scheduler.ts:150](../../../../../../src/runtime/scheduler.ts:150) 到 [scheduler.ts:188](../../../../../../src/runtime/scheduler.ts:188)。空 Reflection 日甚至可以在预调用阶段推进 cursor。当前只能证实入口重复，尚未证实它造成错误或多余模型运行。
 
 **Xi 对照**：Xi 每个 tick 直接在各自函数内检查到期条件，没有对应的「预初始化后忽略结果」层。[Xi daemon.ts:91](/home/yu/projects/Xi/src/runtime/daemon.ts:91)
 

@@ -1,16 +1,29 @@
-# Scratch Work
+# Scratch 工作资料索引
 
-`.scratch/` 保存某个工程主题在推进期间形成的研究、方案和本地实施票。这里的内容记录的是当时的事实和决定，不是 Loom 当前行为或正式合同的事实源。
+`.scratch/` 保存某个工程主题在推进期间形成的研究、方案、实施票和验收证据。这里的内容记录的是当时的事实和决定，不是 Loom 当前行为或正式合同的事实源——那些以 `src/`、`test/`、真实运行状态和 `docs/` 为准。
 
-## 目录导览
+**怎么在这里工作（工作项结构、实施票骨架、生命周期）见 [AGENTS.md](AGENTS.md)。**
 
-- `.scratch/harness-layers/`：Loom 逐层建设历史档案（01→53 号），当前行为以代码、测试和正式 docs 为准
-- `.scratch/organ-execution/`：Cognitive Organ 执行模型审查（立意层讨论中，含事故清单、Xi 对照、pi 能力调研）
-- `.scratch/codebase/`：codebase 审查的时间轮次记录（rounds/）
-- `.scratch/codebase-ablation/`：codebase 消融实验（模块删除 / 器官 stub / 静态耦合图谱三轮，2026-09-03）
-- `.scratch/test-ablation/`：测试套件消融体检（leave-one-out 覆盖率 + 时长分布 + 冗余候选定性复核，2026-09-03）
-- `.scratch/archive/`：已完成且正式 docs 已承接的主题（raft-channel、instance-operations、web-access）
-- 新主题按下方「新建主题」约定创建
+## 目录
+
+```text
+.scratch/
+├── <topic>/           # 正在推进的主题
+├── archive/<topic>/   # 已收口主题的历史资料
+└── local/<topic>/     # 本机工作区：不进版本控制（.gitignore 忽略 .scratch/local/）
+```
+
+`local/` 放只在本机有意义、或体积/内容不适合入仓的材料（例如评测实例的产物）。它**不在上面两个索引表里**——索引只登记入仓的主题；`local/` 里有什么以本机实际目录为准。
+
+## 活跃主题
+
+| 主题 | 状态 | 入口 |
+| --- | --- | --- |
+| deepseek-harness | active —— 评估 DSH 作为 Loom 的 Interaction Channel（探索阶段，尚未形成实施方案） | [`deepseek-harness/as-channel/map.md`](deepseek-harness/as-channel/map.md) |
+
+## 归档主题
+
+已收口主题的索引与结果见 [`archive/README.md`](archive/README.md)。
 
 ## 阅读
 
@@ -20,34 +33,4 @@
 
 ## 新建主题
 
-新主题应对应真实产品或代码边界，只有实际需要时才创建目录。可以按需包含：
-
-```text
-.scratch/<topic>/
-  map.md
-  research/
-  spec.md
-  issues/
-```
-
-不要求每个主题具备全部结构，也不要预建空目录。工作简单且合同已清楚时，可以直接使用任务系统而不创建 scratch。
-
-同一主题会反复进行审查、简化或清理时，以时间轮次保存快照：
-
-```text
-.scratch/<topic>/
-  README.md
-  rounds/YYYY-MM-DD-<slug>/
-    summary.md
-    research/
-    decisions.md
-    issues/
-```
-
-日期属于一轮调查，不需要机械加入每个 research 文件名。`summary.md` 记录 Captured、Baseline、Status 和 Result；该轮其他材料默认继承这些时间和基线，只有证据采集时间不同才单独标注。
-
-## 完成与清理
-
-主题推进期间可以更新状态和结果；工作闭合后，不把后续设计回写进旧记录。仍需长期遵守的术语、架构和操作边界应进入 `CONTEXT.md`、`docs/` 或 ADR。
-
-定期清理时可以按主题归档或删除已经失去价值的材料，但必须先核对引用和历史价值。清理不承担改写产品历史，也不能用旧目录结构约束当前架构。
+新主题应对应真实产品或代码边界，只有实际需要时才创建目录；目录结构与实施票骨架见 [AGENTS.md](AGENTS.md)。工作简单且合同已清楚时，可以直接使用任务系统而不创建 scratch。

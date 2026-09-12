@@ -75,8 +75,8 @@ Turn completion 的顺序固定为：Pi run settled -> tool call/result 完整 -
 
 ## Source References
 
-- Xi [10 — Primary Agent Transcript](../../../../Xi/.scratch/harness-generalization/issues/10-define-primary-agent-transcript-protocol.md)
-- Xi [Pi 0.80.10 SDK Boundary and Migration Evidence](../../../../Xi/.scratch/harness-generalization/research/09-pi-08010-sdk-boundary-and-migration-evidence.md)
+- Xi [10 — Primary Agent Transcript](../../../../../Xi/.scratch/harness-generalization/issues/10-define-primary-agent-transcript-protocol.md)
+- Xi [Pi 0.80.10 SDK Boundary and Migration Evidence](../../../../../Xi/.scratch/harness-generalization/research/09-pi-08010-sdk-boundary-and-migration-evidence.md)
 - Xi `src/harness/agent.ts`, `src/harness/turn-context.ts`, `src/harness/windowed-context.ts`, `src/harness/truth-log.ts`
 - Loom [01 — Refine Runtime and Runtime Store](01-refine-runtime-and-store.md)
 
