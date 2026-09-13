@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 
 import type {
   WeixinRemote,
+  WeixinRemoteMedia,
   WeixinRemoteMessage,
   WeixinRemotePollResult,
 } from "./weixin-adapter.js";
@@ -15,7 +16,18 @@ const BOT_MESSAGE = 2;
 const FINISHED_MESSAGE = 2;
 const TEXT_ITEM = 1;
 const IMAGE_ITEM = 2;
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const VOICE_ITEM = 3;
+const FILE_ITEM = 4;
+const VIDEO_ITEM = 5;
+/**
+ * Largest inbound media item the Channel will persist. One cap covers every
+ * media type: it bounds what a single message can cost, and an item above it
+ * is classified as an invalid message instead of being retried forever.
+ */
+const MAX_INBOUND_MEDIA_BYTES = 15 * 1024 * 1024;
+/** Weixin voice encoding: 7 is MP3, 8 is Ogg/Opus, anything else is SILK. */
+const VOICE_ENCODE_MP3 = 7;
+const VOICE_ENCODE_OGG = 8;
 const TYPING_STATUS_TYPING = 1;
 const TYPING_STATUS_CANCEL = 2;
 const TYPING_REQUEST_TIMEOUT_MS = 5_000;
@@ -56,6 +68,12 @@ interface UploadedAttachment {
   ciphertextSize: number;
 }
 
+interface RawCdnMedia {
+  encrypt_query_param?: string;
+  aes_key?: string;
+  full_url?: string;
+}
+
 interface RawMessage {
   message_id?: number | string;
   from_user_id?: string;
@@ -66,14 +84,10 @@ interface RawMessage {
   item_list?: Array<{
     type?: number;
     text_item?: { text?: string };
-    image_item?: {
-      media?: {
-        encrypt_query_param?: string;
-        aes_key?: string;
-        full_url?: string;
-      };
-      aeskey?: string;
-    };
+    image_item?: { media?: RawCdnMedia; aeskey?: string };
+    voice_item?: { media?: RawCdnMedia; encode_type?: number; text?: string };
+    file_item?: { media?: RawCdnMedia; file_name?: string; len?: string };
+    video_item?: { media?: RawCdnMedia; video_size?: number; play_length?: number };
   }>;
 }
 
@@ -156,30 +170,38 @@ class HttpWeixinRemote implements WeixinRemote {
     return { disposition: "sent", remoteId: request.clientId };
   }
 
-  async downloadImage(request: {
+  async downloadMedia(request: {
     cdnBaseUrl: string;
-    image: import("./weixin-adapter.js").WeixinRemoteImage;
+    media: WeixinRemoteMedia;
     signal: AbortSignal;
   }): Promise<{ content: Uint8Array; mediaType: string; fileName: string }> {
-    const url = imageDownloadUrl(request.cdnBaseUrl, request.image);
+    const { media } = request;
+    const url = mediaDownloadUrl(request.cdnBaseUrl, media);
     const response = await fetch(url, { signal: request.signal });
-    if (!response.ok) throw new Error(`Weixin image download returned HTTP ${response.status}`);
-    const encrypted = Boolean(request.image.aesKey || request.image.aesKeyHex);
-    const maximumDownloadedBytes = MAX_IMAGE_BYTES + (encrypted ? 16 : 0);
+    if (!response.ok) {
+      throw new WeixinFailure(`Weixin ${media.kind} download returned HTTP ${response.status}`, "remote_unavailable");
+    }
+    const encrypted = Boolean(media.aesKey || media.aesKeyHex);
+    const maximumDownloadedBytes = MAX_INBOUND_MEDIA_BYTES + (encrypted ? 16 : 0);
     const declaredSize = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredSize) && declaredSize > maximumDownloadedBytes) {
-      throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
+      throw oversizeFailure(media.kind);
     }
-    const downloaded = await readBoundedBody(response, maximumDownloadedBytes);
-    const content = decryptImage(downloaded, request.image);
-    if (content.length > MAX_IMAGE_BYTES) {
-      throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
+    const downloaded = await readBoundedBody(response, maximumDownloadedBytes, media.kind);
+    const content = decryptMedia(downloaded, media);
+    if (content.length > MAX_INBOUND_MEDIA_BYTES) throw oversizeFailure(media.kind);
+    // Only an image carries bytes whose type the Channel can verify; every
+    // other kind is stored under the type the wire item declared, so audio is
+    // never mistaken for an unsupported image.
+    if (media.kind === "image") {
+      const detected = detectImage(content);
+      return { content, mediaType: detected.mediaType, fileName: `weixin-image${detected.extension}` };
     }
-    const detected = detectImage(content);
+    const declared = mediaTypeForFileName(media.fileName);
     return {
       content,
-      mediaType: detected.mediaType,
-      fileName: `weixin-image${detected.extension}`,
+      mediaType: declared ?? media.mediaType ?? "application/octet-stream",
+      fileName: media.fileName ?? defaultMediaFileName(media.kind),
     };
   }
 
@@ -319,6 +341,7 @@ function normalizeMessage(message: RawMessage): WeixinRemoteMessage {
       ...(item.type === IMAGE_ITEM ? {
         type: "image" as const,
         image: {
+          kind: "image" as const,
           ...(item.image_item?.media?.encrypt_query_param
             ? { encryptedQueryParam: item.image_item.media.encrypt_query_param }
             : {}),
@@ -327,46 +350,137 @@ function normalizeMessage(message: RawMessage): WeixinRemoteMessage {
           ...(item.image_item?.media?.full_url ? { fullUrl: item.image_item.media.full_url } : {}),
         },
       } : {}),
+      ...(item.type === VOICE_ITEM ? {
+        type: "voice" as const,
+        voice: {
+          ...(item.voice_item?.text ? { text: item.voice_item.text } : {}),
+          media: {
+            ...normalizeMedia(item.voice_item?.media, "voice"),
+            ...voiceFormat(item.voice_item?.encode_type),
+          },
+        },
+      } : {}),
+      ...(item.type === FILE_ITEM
+        ? { type: "file" as const, file: normalizeFileMedia(item.file_item) }
+        : {}),
+      ...(item.type === VIDEO_ITEM ? {
+        type: "video" as const,
+        video: {
+          ...normalizeMedia(item.video_item?.media, "video"),
+          mediaType: "video/mp4",
+          fileName: "weixin-video.mp4",
+          ...(item.video_item?.play_length !== undefined
+            ? { playLengthMs: item.video_item.play_length }
+            : {}),
+        },
+      } : {}),
       ...(item.text_item?.text !== undefined ? { text: item.text_item.text } : {}),
     })),
   };
 }
 
-function imageDownloadUrl(
-  cdnBaseUrl: string,
-  image: import("./weixin-adapter.js").WeixinRemoteImage,
-): string {
-  const source = image.fullUrl ?? (image.encryptedQueryParam
-    ? `${cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(image.encryptedQueryParam)}`
+function normalizeMedia(media: RawCdnMedia | undefined, kind: WeixinRemoteMedia["kind"]): WeixinRemoteMedia {
+  return {
+    kind,
+    ...(media?.encrypt_query_param ? { encryptedQueryParam: media.encrypt_query_param } : {}),
+    ...(media?.aes_key ? { aesKey: media.aes_key } : {}),
+    ...(media?.full_url ? { fullUrl: media.full_url } : {}),
+  };
+}
+
+function normalizeFileMedia(item: { media?: RawCdnMedia; file_name?: string } | undefined): WeixinRemoteMedia {
+  const fileName = safeWireFileName(item?.file_name);
+  return {
+    ...normalizeMedia(item?.media, "file"),
+    // A wire file name is the only type hint this item carries, so a name Loom
+    // cannot type stays generic rather than becoming a wrong claim.
+    mediaType: mediaTypeForFileName(fileName) ?? "application/octet-stream",
+    ...(fileName ? { fileName } : {}),
+  };
+}
+
+/** Voice encodings Weixin may use; an unknown encoding is stored as-is. */
+function voiceFormat(encodeType: number | undefined): { mediaType: string; fileName: string } {
+  if (encodeType === VOICE_ENCODE_MP3) return { mediaType: "audio/mpeg", fileName: "weixin-voice.mp3" };
+  if (encodeType === VOICE_ENCODE_OGG) return { mediaType: "audio/ogg", fileName: "weixin-voice.ogg" };
+  return { mediaType: "audio/silk", fileName: "weixin-voice.silk" };
+}
+
+/**
+ * The peer's file name is untrusted wire data: it never becomes a path, and an
+ * unusable name is dropped so the Attachment falls back to a generated one.
+ */
+function safeWireFileName(value: string | undefined): string | undefined {
+  const name = value?.trim();
+  if (!name) return undefined;
+  const base = name.split(/[\\/]/).at(-1) ?? "";
+  if (!base || base === "." || base === ".." || /[\u0000-\u001f\u007f]/.test(base)) return undefined;
+  return base;
+}
+
+function mediaTypeForFileName(fileName: string | undefined): string | undefined {
+  const extension = fileName?.toLowerCase().match(/\.[a-z0-9]+$/)?.[0];
+  switch (extension) {
+    case ".txt": return "text/plain";
+    case ".md": return "text/markdown";
+    case ".json": return "application/json";
+    case ".yaml":
+    case ".yml": return "application/yaml";
+    case ".pdf": return "application/pdf";
+    case ".zip": return "application/zip";
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    default: return undefined;
+  }
+}
+
+function defaultMediaFileName(kind: WeixinRemoteMedia["kind"]): string {
+  if (kind === "video") return "weixin-video.mp4";
+  if (kind === "file") return "weixin-file.bin";
+  return "weixin-media.bin";
+}
+
+function oversizeFailure(kind: WeixinRemoteMedia["kind"]): WeixinFailure {
+  return new WeixinFailure(
+    `Weixin ${kind} exceeds the 15 MiB inbound limit`,
+    "invalid_message",
+  );
+}
+
+function mediaDownloadUrl(cdnBaseUrl: string, media: WeixinRemoteMedia): string {
+  const source = media.fullUrl ?? (media.encryptedQueryParam
+    ? `${cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(media.encryptedQueryParam)}`
     : undefined);
-  if (!source) throw new WeixinFailure("Weixin image has no download reference", "invalid_message");
+  if (!source) throw new WeixinFailure(`Weixin ${media.kind} has no download reference`, "invalid_message");
   const url = new URL(source);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new WeixinFailure("Weixin image download URL must use HTTP", "invalid_message");
+    throw new WeixinFailure(`Weixin ${media.kind} download URL must use HTTP`, "invalid_message");
   }
   return url.toString();
 }
 
-function decryptImage(
-  downloaded: Buffer,
-  image: import("./weixin-adapter.js").WeixinRemoteImage,
-): Buffer {
-  const key = image.aesKeyHex
-    ? Buffer.from(image.aesKeyHex, "hex")
-    : image.aesKey ? parseAesKey(image.aesKey) : undefined;
+function decryptMedia(downloaded: Buffer, media: WeixinRemoteMedia): Buffer {
+  const key = media.aesKeyHex
+    ? Buffer.from(media.aesKeyHex, "hex")
+    : media.aesKey ? parseAesKey(media.aesKey, media.kind) : undefined;
   if (!key) return downloaded;
-  if (key.length !== 16) throw new WeixinFailure("Weixin image AES key must contain 16 bytes", "invalid_message");
+  if (key.length !== 16) {
+    throw new WeixinFailure(`Weixin ${media.kind} AES key must contain 16 bytes`, "invalid_message");
+  }
   const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
   return Buffer.concat([decipher.update(downloaded), decipher.final()]);
 }
 
-function parseAesKey(source: string): Buffer {
+function parseAesKey(source: string, kind: WeixinRemoteMedia["kind"]): Buffer {
   const decoded = Buffer.from(source, "base64");
   if (decoded.length === 16) return decoded;
   if (decoded.length === 32 && /^[a-f0-9]{32}$/i.test(decoded.toString("ascii"))) {
     return Buffer.from(decoded.toString("ascii"), "hex");
   }
-  throw new WeixinFailure("Weixin image AES key is invalid", "invalid_message");
+  throw new WeixinFailure(`Weixin ${kind} AES key is invalid`, "invalid_message");
 }
 
 function detectImage(content: Buffer): { mediaType: string; extension: string } {
@@ -387,7 +501,11 @@ function detectImage(content: Buffer): { mediaType: string; extension: string } 
   throw new WeixinFailure("Weixin image content is not a supported PNG, JPEG, GIF, or WebP image", "invalid_message");
 }
 
-async function readBoundedBody(response: Response, maximumBytes: number): Promise<Buffer> {
+async function readBoundedBody(
+  response: Response,
+  maximumBytes: number,
+  kind: WeixinRemoteMedia["kind"],
+): Promise<Buffer> {
   if (!response.body) return Buffer.alloc(0);
   const reader = response.body.getReader();
   const chunks: Buffer[] = [];
@@ -400,7 +518,7 @@ async function readBoundedBody(response: Response, maximumBytes: number): Promis
       byteSize += chunk.length;
       if (byteSize > maximumBytes) {
         await reader.cancel();
-        throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
+        throw oversizeFailure(kind);
       }
       chunks.push(chunk);
     }

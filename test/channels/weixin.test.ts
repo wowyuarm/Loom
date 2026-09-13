@@ -109,11 +109,11 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
         messageState: "finished",
         items: [{
           type: "image",
-          image: { encryptedQueryParam: "image-ref", aesKey: "image-key" },
+          image: { kind: "image", encryptedQueryParam: "image-ref", aesKey: "image-key" },
         }],
       }],
     },
-    downloadImage: async () => ({ content, mediaType: "image/png", fileName: "arrival.png" }),
+    downloadMedia: async () => ({ content, mediaType: "image/png", fileName: "arrival.png" }),
   });
   const adapter = await openWeixinAdapter({
     ...paths,
@@ -149,6 +149,305 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
   recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
   await eventually(() => recoveredCursors.length >= 1);
   assert.equal(recoveredCursors[0], "cursor-after-image");
+});
+
+test("uses Weixin's own voice transcription as the peer's words and advances the cursor", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const remote = blockingRemote({
+    cursors,
+    firstPoll: {
+      cursor: "cursor-after-transcript",
+      messages: [{
+        messageId: "voice-transcribed",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{
+          type: "voice",
+          voice: {
+            text: "明天下午三点见",
+            media: { kind: "voice", mediaType: "audio/silk", fileName: "weixin-voice.silk" },
+          },
+        }],
+      }],
+    },
+    downloadMedia: async () => { throw new Error("a transcribed voice needs no audio download"); },
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "input-voice-transcribed" };
+  });
+
+  await eventually(() => inputs.length === 1 || adapter.status().state === "degraded");
+  assert.equal(adapter.status().lastError, undefined);
+  const payload = inputs[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  // The platform's transcript is the peer's own words: the Input carries them
+  // unchanged, and a transcript already carries the meaning of its audio.
+  assert.equal(payload.text, "明天下午三点见");
+  assert.equal(payload.attachments, undefined);
+  await adapter.stop();
+
+  // A message that reached the Runtime is never replayed by the cursor.
+  const recoveredCursors: string[] = [];
+  const recovered = await openWeixinAdapter({
+    ...paths,
+    remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
+  });
+  t.after(() => recovered.stop());
+  recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => recoveredCursors.length >= 1);
+  assert.equal(recoveredCursors[0], "cursor-after-transcript");
+});
+
+test("persists an untranscribed voice as a file Attachment with an honest note", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const audio = Buffer.from("silk audio bytes", "utf8");
+  const remote = blockingRemote({
+    cursors,
+    firstPoll: {
+      cursor: "cursor-after-voice",
+      messages: [{
+        messageId: "voice-audio",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{
+          type: "voice",
+          voice: {
+            media: {
+              kind: "voice",
+              mediaType: "audio/silk",
+              fileName: "weixin-voice.silk",
+              encryptedQueryParam: "voice-ref",
+              aesKey: "voice-key",
+            },
+          },
+        }],
+      }],
+    },
+    downloadMedia: async () => ({ content: audio, mediaType: "audio/silk", fileName: "weixin-voice.silk" }),
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    const payload = input.payload as { attachments?: unknown[] };
+    const attachment = parseAttachmentReference(payload.attachments?.[0]);
+    assert.equal(attachment.kind, "file");
+    assert.equal(attachment.mediaType, "audio/silk");
+    assert.equal(attachment.fileName, "weixin-voice.silk");
+    assert.deepEqual(await paths.attachmentStore.read(attachment), audio);
+    return { disposition: "accepted", inputId: "input-voice-audio" };
+  });
+
+  await eventually(() => inputs.length === 1 || adapter.status().state === "degraded");
+  assert.equal(adapter.status().lastError, undefined);
+  const payload = inputs[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  // Audio Loom cannot turn into words is still named, so the transcript's
+  // absence is visible to the model instead of arriving as a silent attachment.
+  assert.equal(payload.text, "[语音]");
+  assert.equal(payload.attachments?.length, 1);
+  await adapter.stop();
+
+  // The accepted audio moved the durable cursor, so the remote is never asked
+  // to replay this voice message.
+  const recoveredCursors: string[] = [];
+  const recovered = await openWeixinAdapter({
+    ...paths,
+    remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
+  });
+  t.after(() => recovered.stop());
+  recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => recoveredCursors.length >= 1);
+  assert.equal(recoveredCursors[0], "cursor-after-voice");
+});
+
+test("makes an unreadable voice audible to the model instead of dropping it", async t => {
+  const paths = await weixinPaths();
+  const remote = blockingRemote({
+    cursors: [],
+    firstPoll: {
+      cursor: "cursor-after-empty-voice",
+      messages: [{
+        messageId: "voice-unreadable",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{ type: "voice", voice: { media: { kind: "voice" } } }],
+      }],
+    },
+    downloadMedia: async () => { throw new Error("no media reference expected"); },
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "input-voice-unreadable" };
+  });
+
+  await eventually(() => inputs.length === 1 || adapter.status().state === "degraded");
+  assert.equal(adapter.status().lastError, undefined);
+  const payload = inputs[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  assert.match(String(payload.text), /这条语音没有可用的转写/);
+  assert.equal(payload.attachments, undefined);
+  await adapter.stop();
+});
+
+test("stores an inbound file with its wire name and type and can send it back out", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const content = Buffer.from("%PDF-1.4 report", "utf8");
+  const remote = blockingRemote({
+    cursors,
+    firstPoll: {
+      cursor: "cursor-after-file",
+      messages: [{
+        messageId: "file-inbound",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [
+          { type: "text", text: "这是你要的报告" },
+          {
+            type: "file",
+            file: {
+              kind: "file",
+              mediaType: "application/pdf",
+              fileName: "报告.pdf",
+              encryptedQueryParam: "file-ref",
+              aesKey: "file-key",
+            },
+          },
+        ],
+      }],
+    },
+    downloadMedia: async () => ({
+      content,
+      mediaType: "application/pdf",
+      fileName: "报告.pdf",
+    }),
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "input-file" };
+  });
+
+  await eventually(() => inputs.length === 1 || adapter.status().state === "degraded");
+  assert.equal(adapter.status().lastError, undefined);
+  const payload = inputs[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  assert.equal(payload.text, "这是你要的报告\n[文件: 报告.pdf]");
+  const attachment = parseAttachmentReference(payload.attachments?.[0]);
+  assert.equal(attachment.kind, "file");
+  assert.equal(attachment.mediaType, "application/pdf");
+  assert.equal(attachment.fileName, "报告.pdf");
+  await adapter.stop();
+
+  // What arrived as a file stays sendable: the persisted Attachment is a valid
+  // outbound payload, and the caption keeps the peer's message.
+  const sends: Array<Parameters<WeixinRemote["sendAttachment"]>[0]> = [];
+  const sending = blockingRemote({
+    cursors: [],
+    firstPoll: { messages: [] },
+    sendAttachment: async request => {
+      sends.push(request);
+      return { disposition: "sent", remoteId: "remote-file" };
+    },
+  });
+  const sender = await openWeixinAdapter({ ...paths, remote: sending });
+  t.after(() => sender.stop());
+  sender.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => sender.status().state === "connected");
+  const result = await sender.deliver({
+    attemptId: "attempt-file",
+    effectId: "effect-file",
+    kind: "message",
+    payload: { text: "echo", attachments: [JSON.parse(JSON.stringify(attachment))] },
+    routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
+    idempotencyKey: "effect-file:1",
+  });
+  assert.deepEqual(result, { status: "delivered", remoteId: "remote-file" });
+  assert.equal(sends[0]?.attachment.fileName, "报告.pdf");
+  assert.equal(sends[0]?.text, "echo");
+  await sender.stop();
+
+  // The file message moved the durable cursor in its own adapter run.
+  const recoveredCursors: string[] = [];
+  const recovered = await openWeixinAdapter({
+    ...paths,
+    remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
+  });
+  t.after(() => recovered.stop());
+  recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => recoveredCursors.length >= 1);
+  assert.equal(recoveredCursors[0], "cursor-after-file");
+});
+
+test("stores an inbound video as a file Attachment and names it in the Input", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const video = Buffer.from("ftypmp42 video bytes", "utf8");
+  const remote = blockingRemote({
+    cursors,
+    firstPoll: {
+      cursor: "cursor-after-video",
+      messages: [{
+        messageId: "video-inbound",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{
+          type: "video",
+          video: {
+            kind: "video",
+            mediaType: "video/mp4",
+            fileName: "weixin-video.mp4",
+            encryptedQueryParam: "video-ref",
+            aesKey: "video-key",
+            playLengthMs: 8_000,
+          },
+        }],
+      }],
+    },
+    downloadMedia: async () => ({ content: video, mediaType: "video/mp4", fileName: "weixin-video.mp4" }),
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "input-video" };
+  });
+
+  await eventually(() => inputs.length === 1 || adapter.status().state === "degraded");
+  const payload = inputs[0]!.payload as { text?: unknown; attachments?: unknown[] };
+  assert.equal(payload.text, "[视频]");
+  const attachment = parseAttachmentReference(payload.attachments?.[0]);
+  assert.equal(attachment.kind, "file");
+  assert.equal(attachment.mediaType, "video/mp4");
+  assert.deepEqual(await paths.attachmentStore.read(attachment), video);
+  await adapter.stop();
+
+  // An accepted video moves the durable cursor like any other Input.
+  const recoveredCursors: string[] = [];
+  const recovered = await openWeixinAdapter({
+    ...paths,
+    remote: blockingRemote({ cursors: recoveredCursors, firstPoll: { messages: [] } }),
+  });
+  t.after(() => recovered.stop());
+  recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+  await eventually(() => recoveredCursors.length >= 1);
+  assert.equal(recoveredCursors[0], "cursor-after-video");
 });
 
 test("delivers text with Runtime idempotency and the accepted peer context", async t => {
@@ -360,9 +659,9 @@ test("stops an inbound image stream when it exceeds 15 MiB", async t => {
   assert.ok(address && typeof address === "object");
   const remote = createWeixinHttpRemote();
 
-  await assert.rejects(remote.downloadImage({
+  await assert.rejects(remote.downloadMedia({
     cdnBaseUrl: "http://unused.invalid",
-    image: { fullUrl: `http://127.0.0.1:${address.port}/oversized-image` },
+    media: { kind: "image" as const, fullUrl: `http://127.0.0.1:${address.port}/oversized-image` },
     signal: AbortSignal.timeout(2_000),
   }), /exceeds the 15 MiB inbound limit/);
 });
@@ -467,6 +766,7 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
         {
           type: "image",
           image: {
+            kind: "image",
             aesKey: imageKey.toString("base64"),
             fullUrl: `${baseUrl}/cdn-image`,
           },
@@ -476,9 +776,9 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
   });
   const image = polled.messages?.[0]?.items?.[1]?.image;
   assert.ok(image);
-  assert.deepEqual(await remote.downloadImage({
+  assert.deepEqual(await remote.downloadMedia({
     cdnBaseUrl: `${baseUrl}/unused-cdn`,
-    image,
+    media: image,
     signal: controller.signal,
   }), {
     content: imageContent,
@@ -539,6 +839,96 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
   })?.body as { msg?: { item_list?: Array<{ type?: number; file_item?: { file_name?: string } }> } } | undefined;
   assert.equal(attachmentSend?.msg?.item_list?.[0]?.type, 4);
   assert.equal(attachmentSend?.msg?.item_list?.[0]?.file_item?.file_name, "wire.txt");
+});
+
+test("maps Weixin voice, file, and video items and downloads audio without image detection", async t => {
+  const key = Buffer.from("0123456789abcdef", "utf8");
+  const audio = Buffer.from("mp3-audio-bytes-not-an-image", "utf8");
+  const cipher = crypto.createCipheriv("aes-128-ecb", key, null);
+  const encryptedVoice = Buffer.concat([cipher.update(audio), cipher.final()]);
+  let baseUrl = "";
+  const server = createServer((request, response) => {
+    if (request.url === "/cdn-voice") {
+      response.end(encryptedVoice);
+      return;
+    }
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      ret: 0,
+      get_updates_buf: "cursor-media",
+      msgs: [{
+        message_id: 91,
+        from_user_id: "peer-1",
+        message_type: 1,
+        message_state: 2,
+        item_list: [
+          { type: 3, voice_item: { media: { full_url: `${baseUrl}/cdn-voice`, aes_key: key.toString("base64") }, encode_type: 7, text: "语音转写" } },
+          { type: 3, voice_item: { media: {}, encode_type: 99 } },
+          { type: 4, file_item: { media: { full_url: `${baseUrl}/cdn-voice` }, file_name: "报告.pdf", len: "17" } },
+          { type: 5, video_item: { media: { full_url: `${baseUrl}/cdn-voice` }, play_length: 9000, video_size: 1234 } },
+        ],
+      }],
+    }));
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+  const remote = createWeixinHttpRemote();
+  const controller = new AbortController();
+
+  const polled = await remote.poll({
+    baseUrl,
+    token: "wire-token",
+    cursor: "",
+    timeoutMs: 40_000,
+    signal: controller.signal,
+  });
+  const items = polled.messages?.[0]?.items ?? [];
+  assert.deepEqual(items[0], {
+    type: "voice",
+    voice: {
+      text: "语音转写",
+      media: {
+        kind: "voice",
+        mediaType: "audio/mpeg",
+        fileName: "weixin-voice.mp3",
+        aesKey: key.toString("base64"),
+        fullUrl: `${baseUrl}/cdn-voice`,
+      },
+    },
+  });
+  // An unknown voice encoding keeps the platform's own type name instead of
+  // claiming a format Loom did not verify.
+  assert.equal(items[1]?.voice?.media.mediaType, "audio/silk");
+  assert.equal(items[1]?.voice?.media.fileName, "weixin-voice.silk");
+  assert.deepEqual(items[2], {
+    type: "file",
+    file: {
+      kind: "file",
+      mediaType: "application/pdf",
+      fileName: "报告.pdf",
+      fullUrl: `${baseUrl}/cdn-voice`,
+    },
+  });
+  assert.deepEqual(items[3], {
+    type: "video",
+    video: {
+      kind: "video",
+      mediaType: "video/mp4",
+      fileName: "weixin-video.mp4",
+      fullUrl: `${baseUrl}/cdn-voice`,
+      playLengthMs: 9000,
+    },
+  });
+  // Downloaded audio is decrypted and typed from the wire item, never run
+  // through the image signature check that only images may pass.
+  assert.deepEqual(await remote.downloadMedia({
+    cdnBaseUrl: `${baseUrl}/unused-cdn`,
+    media: items[0]!.voice!.media,
+    signal: controller.signal,
+  }), { content: audio, mediaType: "audio/mpeg", fileName: "weixin-voice.mp3" });
 });
 
 test("does not advance the Weixin cursor when Runtime has not accepted the Input", async t => {
@@ -846,8 +1236,8 @@ test("does not let an unrepresentable inbound message block later messages or th
             messageType: "user",
             messageState: "finished",
             items: [
-              { type: "image", image: { encryptedQueryParam: "image-1", aesKey: "key-1" } },
-              { type: "image", image: { encryptedQueryParam: "image-2", aesKey: "key-2" } },
+              { type: "image", image: { kind: "image", encryptedQueryParam: "image-1", aesKey: "key-1" } },
+              { type: "image", image: { kind: "image", encryptedQueryParam: "image-2", aesKey: "key-2" } },
             ],
           },
           {
@@ -860,7 +1250,7 @@ test("does not let an unrepresentable inbound message block later messages or th
         ],
       };
     },
-    downloadImage: async () => ({ content: image, mediaType: "image/png", fileName: "first.png" }),
+    downloadMedia: async () => ({ content: image, mediaType: "image/png", fileName: "first.png" }),
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -885,8 +1275,8 @@ test("records an unreadable inbound message as failed ingress and keeps the chan
   const cursors: string[] = [];
   const remote = batchRemote({
     cursors,
-    messages: [imageMessage("oversized", "image-poison"), textMessage("sibling", "text that must still arrive")],
-    downloadImage: async () => {
+    messages: [imageMediaMessage("oversized", "image-poison"), textMessage("sibling", "text that must still arrive")],
+    downloadMedia: async () => {
       throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
     },
   });
@@ -920,8 +1310,8 @@ test("holds the cursor and retries a transiently failing message until it succee
   let downloads = 0;
   const remote = batchRemote({
     cursors,
-    messages: [imageMessage("image-message", "image-retry")],
-    downloadImage: async () => {
+    messages: [imageMediaMessage("image-message", "image-retry")],
+    downloadMedia: async () => {
       downloads += 1;
       if (downloads === 1) throw new Error("Weixin image download returned HTTP 503");
       return { content: image, mediaType: "image/png", fileName: "retried.png" };
@@ -948,8 +1338,8 @@ test("gives up on a message that keeps failing transiently instead of wedging th
   const cursors: string[] = [];
   const remote = batchRemote({
     cursors,
-    messages: [imageMessage("image-message", "image-retry"), textMessage("sibling", "text that must still arrive")],
-    downloadImage: async () => { throw new Error("Weixin image download returned HTTP 503"); },
+    messages: [imageMediaMessage("image-message", "image-retry"), textMessage("sibling", "text that must still arrive")],
+    downloadMedia: async () => { throw new Error("Weixin image download returned HTTP 503"); },
   });
   const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
   t.after(() => adapter.stop());
@@ -983,7 +1373,7 @@ test("uses the server's long-poll timeout for the next poll", async t => {
       await aborted(request.signal);
       return { messages: [] };
     },
-    downloadImage: async () => { throw new Error("no image expected"); },
+    downloadMedia: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1008,7 +1398,7 @@ test("backs off after repeated poll failures", async t => {
       attempts.push(Date.now());
       throw new Error("Weixin getupdates returned HTTP 500");
     },
-    downloadImage: async () => { throw new Error("no image expected"); },
+    downloadMedia: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1040,7 +1430,7 @@ test("waits for an expired bot session instead of hot-looping the poll", async t
       polls += 1;
       throw new WeixinFailure("getupdates rejected: ret=-14", "remote_unavailable", WEIXIN_SESSION_EXPIRED_CODE);
     },
-    downloadImage: async () => { throw new Error("no image expected"); },
+    downloadMedia: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1066,7 +1456,7 @@ test("waits for an expired bot session instead of hot-looping the poll", async t
 function batchRemote(options: {
   cursors: string[];
   messages: WeixinRemoteMessage[];
-  downloadImage: WeixinRemote["downloadImage"];
+  downloadMedia: WeixinRemote["downloadMedia"];
 }): WeixinRemote {
   return {
     start: async () => {},
@@ -1078,7 +1468,7 @@ function batchRemote(options: {
       }
       return { cursor: "cursor-after-batch", messages: options.messages };
     },
-    downloadImage: options.downloadImage,
+    downloadMedia: options.downloadMedia,
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1087,13 +1477,16 @@ function batchRemote(options: {
   };
 }
 
-function imageMessage(messageId: string, reference: string): WeixinRemoteMessage {
+function imageMediaMessage(messageId: string, reference: string): WeixinRemoteMessage {
   return {
     messageId,
     from: "peer-1",
     messageType: "user",
     messageState: "finished",
-    items: [{ type: "image", image: { encryptedQueryParam: reference, aesKey: `key-${reference}` } }],
+    items: [{
+      type: "image",
+      image: { kind: "image", encryptedQueryParam: reference, aesKey: `key-${reference}` },
+    }],
   };
 }
 
@@ -1120,7 +1513,7 @@ function pollThenStopFailRemote(): WeixinRemote {
       if (polls === 1) throw new Error("original poll failure");
       throw new Error("unexpected second poll");
     },
-    downloadImage: async () => { throw new Error("no image expected"); },
+    downloadMedia: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1139,7 +1532,7 @@ function failingStopRemote(): WeixinRemote {
       await aborted(request.signal);
       return { messages: [] };
     },
-    downloadImage: async () => { throw new Error("no image expected"); },
+    downloadMedia: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
     typingTicket: async () => undefined,
@@ -1152,7 +1545,7 @@ function blockingRemote(options: {
   cursors: string[];
   firstPoll: Awaited<ReturnType<WeixinRemote["poll"]>>;
   sendText?: WeixinRemote["sendText"];
-  downloadImage?: WeixinRemote["downloadImage"];
+  downloadMedia?: WeixinRemote["downloadMedia"];
   sendAttachment?: WeixinRemote["sendAttachment"];
   typingTicket?: WeixinRemote["typingTicket"];
   sendTyping?: WeixinRemote["sendTyping"];
@@ -1167,7 +1560,7 @@ function blockingRemote(options: {
       await aborted(request.signal);
       return { messages: [] };
     },
-    downloadImage: options.downloadImage ?? (async () => { throw new Error("no image expected"); }),
+    downloadMedia: options.downloadMedia ?? (async () => { throw new Error("no image expected"); }),
     sendAttachment: options.sendAttachment ?? (async () => { throw new Error("no attachment expected"); }),
     sendText: options.sendText ?? (async () => ({ disposition: "sent", remoteId: "unused" })),
     typingTicket: options.typingTicket ?? (async () => "typing-ticket"),

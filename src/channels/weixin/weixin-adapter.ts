@@ -75,17 +75,42 @@ export interface WeixinRemoteMessage {
   messageState?: "finished" | "partial";
   contextToken?: string;
   items?: Array<{
-    type?: "text" | "image";
+    type?: "text" | "image" | "voice" | "file" | "video";
     text?: string;
-    image?: WeixinRemoteImage;
+    image?: WeixinRemoteMedia;
+    voice?: WeixinRemoteVoice;
+    file?: WeixinRemoteMedia;
+    video?: WeixinRemoteMedia;
   }>;
 }
 
-export interface WeixinRemoteImage {
+/**
+ * One downloadable Weixin media item. `kind` names the wire item the media
+ * came from, so a download failure and a stored Attachment say what actually
+ * arrived instead of guessing from the bytes. `mediaType` and `fileName` are
+ * that item's declared storage identity: an image's real type is still
+ * verified from its bytes, while audio and video keep the type the wire
+ * declared because the Channel cannot inspect those containers.
+ */
+export interface WeixinRemoteMedia {
+  kind: "image" | "voice" | "file" | "video";
+  mediaType?: string;
+  fileName?: string;
+  /** Video clip length as the wire item declared it. */
+  playLengthMs?: number;
   encryptedQueryParam?: string;
   aesKey?: string;
   aesKeyHex?: string;
   fullUrl?: string;
+}
+
+export interface WeixinRemoteVoice {
+  /**
+   * Weixin's own transcription of the voice message. The Channel never runs
+   * its own ASR: this is either what the platform already produced or absent.
+   */
+  text?: string;
+  media: WeixinRemoteMedia;
 }
 
 export interface WeixinRemotePollResult {
@@ -104,9 +129,9 @@ export interface WeixinRemote {
     timeoutMs: number;
     signal: AbortSignal;
   }): Promise<WeixinRemotePollResult>;
-  downloadImage(request: {
+  downloadMedia(request: {
     cdnBaseUrl: string;
-    image: WeixinRemoteImage;
+    media: WeixinRemoteMedia;
     signal: AbortSignal;
   }): Promise<{ content: Uint8Array; mediaType: string; fileName?: string }>;
   sendText(request: {
@@ -708,34 +733,44 @@ async function toRuntimeInput(
   // Inputs by contract and are silently dropped here.
   if (message.from !== configuration.peerId || message.messageType !== "user" || message.messageState !== "finished") return undefined;
   if (!message.messageId) return undefined;
-  const text = (message.items ?? [])
+  const items = message.items ?? [];
+  const text = items
     .filter(item => item.type === "text")
     .map(item => item.text?.trim() ?? "")
     .filter(Boolean)
     .join("\n");
-  const imageItems = (message.items ?? []).filter(item => item.type === "image" && item.image);
+  const voiceItems = items.filter(item => item.type === "voice" && item.voice);
+  const voice = voiceItems[0]?.voice;
+  // Weixin transcribes voice messages on its own side. That transcript is the
+  // peer's words and is preferred over the audio; only a voice message without
+  // a transcript is worth persisting as audio.
+  const transcription = voice?.text?.trim() ?? "";
   // One Input carries at most one attachment. Extra media in the same message
   // is dropped here rather than failing the whole message: the peer's text and
-  // first image still arrive.
-  const downloaded = imageItems[0]?.image
-    ? await remote.downloadImage({
-        cdnBaseUrl: configuration.cdnBaseUrl,
-        image: imageItems[0].image,
-        signal,
-      })
-    : undefined;
-  const attachment = downloaded
+  // the first representable item still arrive.
+  const selected = firstMediaItem(items, Boolean(transcription));
+  const attachment = selected.media
     ? await attachmentStore.put({
-        kind: "image",
-        mediaType: downloaded.mediaType,
-        ...(downloaded.fileName ? { fileName: downloaded.fileName } : {}),
-        content: downloaded.content,
+        kind: "file",
+        mediaType: selected.media.mediaType ?? "application/octet-stream",
+        ...(selected.media.fileName ? { fileName: selected.media.fileName } : {}),
+        content: (await remote.downloadMedia({
+          cdnBaseUrl: configuration.cdnBaseUrl,
+          media: selected.media,
+          signal,
+        })).content,
       })
     : undefined;
-  // Messages carrying neither text nor a downloadable attachment produce no
-  // Input; the wire contract keeps them out of the Runtime rather than
-  // surfacing empty interactions.
-  if (!text && !attachment) return undefined;
+  // The peer's own words come first; what only the Channel can know — that a
+  // voice message arrived untranscribed, or that a media item arrived — is
+  // appended as a note. Inbound text is never rewritten.
+  const composedText = [text, transcription, selected.note]
+    .filter(value => Boolean(value))
+    .join("\n");
+  // A message that carries neither words nor anything downloadable produces no
+  // Input; the wire contract keeps it out of the Runtime rather than surfacing
+  // an empty interaction.
+  if (!composedText && !attachment) return undefined;
   const occurredAt = message.createTimeMs === undefined ? undefined : new Date(message.createTimeMs);
   if (occurredAt && !Number.isFinite(occurredAt.getTime())) return undefined;
   const destinationRef = weixinOpaqueRef("destination", configuration.routeRef, configuration.peerId);
@@ -744,7 +779,7 @@ async function toRuntimeInput(
     sourceId: message.messageId,
     kind: "interaction",
     payload: {
-      ...(text ? { text } : {}),
+      ...(composedText ? { text: composedText } : {}),
       ...(attachment
         ? { attachments: [JSON.parse(JSON.stringify(attachment))] }
         : {}),
@@ -773,6 +808,36 @@ async function toRuntimeInput(
       defaultDestinationRef: destinationRef,
     },
   };
+}
+
+/**
+ * Picks the one media item an Input can carry and says in words what arrived,
+ * so the model never has to infer a file or a video from an Attachment
+ * reference alone. A voice transcript already carries the meaning of its
+ * audio, so transcribed voice does not consume the single attachment slot.
+ */
+function firstMediaItem(
+  items: NonNullable<WeixinRemoteMessage["items"]>,
+  transcribed: boolean,
+): { media?: WeixinRemoteMedia; note?: string } {
+  const candidates: Array<{ media?: WeixinRemoteMedia; note?: string }> = items.map(item => {
+    if (item.type === "image" && item.image) return { media: item.image };
+    if (item.type === "voice" && item.voice) {
+      if (transcribed) return {};
+      return item.voice.media.fullUrl || item.voice.media.encryptedQueryParam
+        ? { media: item.voice.media, note: "[语音]" }
+        : { note: "[语音] 这条语音没有可用的转写，也没有可下载的音频" };
+    }
+    if (item.type === "file" && item.file) {
+      const name = item.file.fileName;
+      return name
+        ? { media: item.file, note: `[文件: ${name}]` }
+        : { media: item.file, note: "[文件]" };
+    }
+    if (item.type === "video" && item.video) return { media: item.video, note: "[视频]" };
+    return {};
+  });
+  return candidates.find(candidate => candidate.media) ?? candidates.find(candidate => candidate.note) ?? {};
 }
 
 function parseMessagePayload(value: unknown): { text: string; attachment?: AttachmentReference } {
