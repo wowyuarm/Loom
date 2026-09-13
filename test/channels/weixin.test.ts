@@ -17,6 +17,7 @@ import {
 } from "../../src/channels/weixin/index.js";
 import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
+import { presentInputWithAttachments } from "../../src/main-agent/pi/attachments.js";
 import type { RuntimeInput } from "../../src/runtime/index.js";
 
 test("accepts text Input before advancing the durable Weixin cursor", async t => {
@@ -127,6 +128,13 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
     inputs.push(input);
     const payload = input.payload as { attachments?: unknown[] };
     const attachment = parseAttachmentReference(payload.attachments?.[0]);
+    // The Attachment has to keep the meaning the wire item had: an image stays
+    // an image, otherwise the Main Agent never receives it as a native image.
+    assert.equal(attachment.kind, "image");
+    // The downloaded content is authoritative about its own type; the image
+    // wire item declares none, so losing the download result would degrade it.
+    assert.equal(attachment.mediaType, "image/png");
+    assert.equal(attachment.fileName, "arrival.png");
     assert.deepEqual(await attachmentStore.read(attachment), content);
     return { disposition: "accepted", inputId: "input-image-42" };
   });
@@ -149,6 +157,53 @@ test("persists an inbound Weixin image before accepting Input and advancing curs
   recovered.start(async () => ({ disposition: "accepted", inputId: "unused" }));
   await eventually(() => recoveredCursors.length >= 1);
   assert.equal(recoveredCursors[0], "cursor-after-image");
+});
+
+test("presents an inbound Weixin image to a native-image model as a real image", async t => {
+  const paths = await weixinPaths();
+  const content = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from("loom-native-image", "utf8"),
+  ]);
+  const remote = blockingRemote({
+    cursors: [],
+    firstPoll: {
+      cursor: "cursor-after-native-image",
+      messages: [{
+        messageId: "image-native",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{ type: "image", image: { kind: "image", encryptedQueryParam: "image-ref" } }],
+      }],
+    },
+    // The HTTP layer verifies image bytes and reports the type it found.
+    downloadMedia: async () => ({ content, mediaType: "image/png", fileName: "weixin-image.png" }),
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const presentations: Array<Awaited<ReturnType<typeof presentInputWithAttachments>>> = [];
+  adapter.start(async input => {
+    presentations.push(await presentInputWithAttachments({
+      // The Runtime supplies a persisted ExecutionInput; the adapter produces
+      // the same payload shape the presentation layer reads.
+      input: input as unknown as Parameters<typeof presentInputWithAttachments>[0]["input"],
+      text: "peer text",
+      attachmentStore: paths.attachmentStore,
+      supportsNativeImages: true,
+    }));
+    return { disposition: "accepted", inputId: "input-image-native" };
+  });
+
+  await eventually(() => presentations.length === 1 || adapter.status().state === "degraded");
+  assert.equal(adapter.status().lastError, undefined);
+  assert.deepEqual(presentations[0]!.images, [{
+    type: "image",
+    data: content.toString("base64"),
+    mimeType: "image/png",
+  }]);
+  assert.match(presentations[0]!.text, /native image included in this user message/);
+  await adapter.stop();
 });
 
 test("uses Weixin's own voice transcription as the peer's words and advances the cursor", async t => {
@@ -664,6 +719,54 @@ test("stops an inbound image stream when it exceeds 15 MiB", async t => {
     media: { kind: "image" as const, fullUrl: `http://127.0.0.1:${address.port}/oversized-image` },
     signal: AbortSignal.timeout(2_000),
   }), /exceeds the 15 MiB inbound limit/);
+});
+
+test("reports an idle long poll as no updates instead of a failure", async t => {
+  const pollCursors: string[] = [];
+  const server = createServer((request, response) => {
+    const body = { ret: 0, get_updates_buf: "cursor-held", longpolling_timeout_ms: 100, msgs: [] };
+    let source = "";
+    request.on("data", chunk => { source += String(chunk); });
+    request.on("end", () => {
+      if (request.url !== "/ilink/bot/getupdates") {
+        response.end(JSON.stringify(body));
+        return;
+      }
+      pollCursors.push(String((JSON.parse(source || "{}") as { get_updates_buf?: string }).get_updates_buf));
+      // The server holds the request past the client's own window, which is
+      // what an idle long poll looks like from the Channel's side.
+      setTimeout(() => response.end(JSON.stringify(body)), 400);
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  }));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const remote = createWeixinHttpRemote();
+  const controller = new AbortController();
+
+  assert.deepEqual(await remote.poll({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    token: "wire-token",
+    cursor: "cursor-current",
+    timeoutMs: 60,
+    signal: controller.signal,
+  }), { messages: [] }, "an expired long-poll window carries no messages and no new cursor");
+  assert.deepEqual(pollCursors, ["cursor-current"]);
+
+  // Only the Channel's own deadline becomes an empty poll; a real stop still
+  // ends the poll as an aborted call.
+  controller.abort();
+  await assert.rejects(remote.poll({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    token: "wire-token",
+    cursor: "cursor-current",
+    timeoutMs: 40_000,
+    signal: controller.signal,
+  }), error => (error as Error).name === "AbortError");
 });
 
 test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_id", async t => {
@@ -1386,6 +1489,49 @@ test("uses the server's long-poll timeout for the next poll", async t => {
 
   await eventually(() => timeouts.length >= 4);
   assert.deepEqual(timeouts.slice(0, 4), [40_000, 12_000, 5_000, 60_000]);
+  await adapter.stop();
+});
+
+test("keeps polling an idle channel when the long poll simply finds no updates", async t => {
+  const paths = await weixinPaths();
+  const polled: Array<{ cursor: string; timeoutMs: number }> = [];
+  let polls = 0;
+  let starts = 0;
+  const remote: WeixinRemote = {
+    start: async () => { starts += 1; },
+    async poll(request) {
+      polled.push({ cursor: request.cursor, timeoutMs: request.timeoutMs });
+      polls += 1;
+      if (polls === 1) return { longpollTimeoutMs: 60, messages: [] };
+      // A remote reports an idle long poll as a result with no updates, never
+      // as a failure; the HTTP remote proves that conversion in its own test.
+      // The short wait stands in for the poll window and keeps this test from
+      // spinning the event loop as fast as the promises resolve.
+      await new Promise<void>(resolve => setTimeout(resolve, 5));
+      return { messages: [] };
+    },
+    downloadMedia: async () => { throw new Error("no media expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+  const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+
+  // An idle long poll that finds nothing is a healthy channel: it must not be
+  // counted as a failure, must not degrade the channel, and must not drop back
+  // into the reconnect path that awaits notify-start again.
+  await eventually(() => polls >= 3);
+  await new Promise<void>(resolve => setTimeout(resolve, 120));
+  const status = adapter.status();
+  assert.equal(status.state, "connected");
+  assert.equal(status.lastError, undefined);
+  assert.equal(starts, 1);
+  // A poll that reports nothing never advances past the last known cursor.
+  assert.deepEqual([...new Set(polled.map(item => item.cursor))], [""]);
   await adapter.stop();
 });
 

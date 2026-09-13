@@ -114,12 +114,24 @@ class HttpWeixinRemote implements WeixinRemote {
     timeoutMs: number;
     signal: AbortSignal;
   }): Promise<WeixinRemotePollResult> {
-    const response = await post<UpdatesResponse>({
-      ...request,
-      endpoint: "ilink/bot/getupdates",
-      body: { get_updates_buf: request.cursor },
-      timeoutMs: request.timeoutMs,
-    });
+    let response: UpdatesResponse;
+    try {
+      response = await post<UpdatesResponse>({
+        ...request,
+        endpoint: "ilink/bot/getupdates",
+        body: { get_updates_buf: request.cursor },
+        timeoutMs: request.timeoutMs,
+      });
+    } catch (error) {
+      // A long poll that ends because its own window expired is the healthy
+      // idle case, not a failure: the server simply had nothing to report
+      // within the window the client asked for. Reporting it as an error would
+      // degrade a working channel, re-establish the remote, and hold the next
+      // real message behind a retry backoff. The cursor stays where it was, so
+      // the next poll still receives everything after it.
+      if (isOwnPollTimeout(error)) return { messages: [] };
+      throw error;
+    }
     assertApiSuccess("getupdates", response);
     return {
       ...(response.get_updates_buf !== undefined ? { cursor: response.get_updates_buf } : {}),
@@ -651,10 +663,10 @@ async function post<T>(options: {
   timeoutMs: number;
   signal?: AbortSignal;
 }): Promise<T> {
+  const url = new URL(options.endpoint, withTrailingSlash(options.baseUrl));
   const timeout = AbortSignal.timeout(options.timeoutMs);
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  const url = new URL(options.endpoint, withTrailingSlash(options.baseUrl));
-  const response = await fetch(url, {
+  const response = await fetchWithOwnTimeout(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -671,6 +683,8 @@ async function post<T>(options: {
         bot_agent: "Loom",
       },
     }),
+    callerSignal: options.signal,
+    timeoutSignal: timeout,
     signal,
   });
   const source = await response.text();
@@ -680,6 +694,38 @@ async function post<T>(options: {
   } catch {
     throw new Error(`${options.endpoint} returned invalid JSON`);
   }
+}
+
+/**
+ * Runs one request under a caller deadline and a timeout of our own, keeping
+ * the two abort reasons distinguishable: a request that ended because our own
+ * window expired is a normal end of a long poll, while the caller's abort is a
+ * real cancellation that must stay an error. `AbortSignal.any` reports both as
+ * abort rejections, so the reason is normalized here instead of at each caller.
+ */
+async function fetchWithOwnTimeout(
+  url: URL,
+  init: RequestInit & { callerSignal: AbortSignal | undefined; timeoutSignal: AbortSignal; signal: AbortSignal },
+): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const reason: unknown = init.timeoutSignal.reason;
+    // The caller aborting this Channel is never an idle long poll, even when
+    // both deadlines have already elapsed.
+    if (!init.callerSignal?.aborted && isOwnPollTimeout(reason)) throw ownTimeoutError();
+    throw error;
+  }
+}
+
+function isOwnPollTimeout(reason: unknown): boolean {
+  return reason instanceof Error && reason.name === "TimeoutError";
+}
+
+function ownTimeoutError(): Error {
+  const error = new Error("Weixin request exceeded its own timeout window");
+  error.name = "TimeoutError";
+  return error;
 }
 
 function assertApiSuccess(endpoint: string, response: ApiResponse): void {

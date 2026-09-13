@@ -10,7 +10,7 @@ import type {
   OutboundDelivery,
   RuntimeInput,
 } from "../../runtime/index.js";
-import type { AttachmentStore } from "../../attachments/index.js";
+import type { AttachmentStore, PutAttachment } from "../../attachments/index.js";
 import type { InteractionChannel, InteractionChannelFailureCategory, InteractionChannelIngressStatus } from "../channel.js";
 import type { InteractionChannelAgentSurface } from "../surface.js";
 import { parseAttachmentReference, type AttachmentReference } from "../../attachments/index.js";
@@ -750,16 +750,11 @@ async function toRuntimeInput(
   // the first representable item still arrive.
   const selected = firstMediaItem(items, Boolean(transcription));
   const attachment = selected.media
-    ? await attachmentStore.put({
-        kind: "file",
-        mediaType: selected.media.mediaType ?? "application/octet-stream",
-        ...(selected.media.fileName ? { fileName: selected.media.fileName } : {}),
-        content: (await remote.downloadMedia({
-          cdnBaseUrl: configuration.cdnBaseUrl,
-          media: selected.media,
-          signal,
-        })).content,
-      })
+    ? await attachmentStore.put(storedAttachment(selected.media, await remote.downloadMedia({
+        cdnBaseUrl: configuration.cdnBaseUrl,
+        media: selected.media,
+        signal,
+      })))
     : undefined;
   // The peer's own words come first; what only the Channel can know — that a
   // voice message arrived untranscribed, or that a media item arrived — is
@@ -838,6 +833,26 @@ function firstMediaItem(
     return {};
   });
   return candidates.find(candidate => candidate.media) ?? candidates.find(candidate => candidate.note) ?? {};
+}
+
+/**
+ * Maps one downloaded media item onto the Attachment the Runtime stores. The
+ * download result owns the type and file name because it is the only side that
+ * inspected the bytes: an image item declares no type on the wire, so losing
+ * that result would degrade a real image into an untyped file the Main Agent
+ * never receives as an image. `kind` follows the item's meaning instead, since
+ * a voice recording or a video must not be offered as a native image.
+ */
+function storedAttachment(
+  media: WeixinRemoteMedia,
+  downloaded: { content: Uint8Array; mediaType: string; fileName?: string },
+): PutAttachment {
+  return {
+    kind: media.kind === "image" ? "image" : "file",
+    mediaType: downloaded.mediaType || media.mediaType || "application/octet-stream",
+    ...(downloaded.fileName || media.fileName ? { fileName: downloaded.fileName || media.fileName! } : {}),
+    content: downloaded.content,
+  };
 }
 
 function parseMessagePayload(value: unknown): { text: string; attachment?: AttachmentReference } {
