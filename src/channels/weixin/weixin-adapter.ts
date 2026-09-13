@@ -11,10 +11,11 @@ import type {
   RuntimeInput,
 } from "../../runtime/index.js";
 import type { AttachmentStore } from "../../attachments/index.js";
-import type { InteractionChannel } from "../channel.js";
+import type { InteractionChannel, InteractionChannelFailureCategory, InteractionChannelIngressStatus } from "../channel.js";
 import type { InteractionChannelAgentSurface } from "../surface.js";
 import { parseAttachmentReference, type AttachmentReference } from "../../attachments/index.js";
 import { createWeixinHttpRemote } from "./weixin-http.js";
+import { isWeixinSessionExpired, WeixinFailure } from "./weixin-failures.js";
 
 /**
  * Deterministic, channel-namespaced opaque ref for one Weixin peer. The raw
@@ -30,6 +31,20 @@ export function weixinOpaqueRef(kind: "place" | "destination", routeRef: string,
 }
 
 const RECONNECT_DELAY_MS = 2_000;
+const FAILURE_BACKOFF_AFTER = 3;
+const FAILURE_BACKOFF_DELAY_MS = 30_000;
+/** An expired bot session is re-established outside the Channel. */
+const SESSION_EXPIRED_DELAY_MS = 10 * 60_000;
+const DEFAULT_POLL_TIMEOUT_MS = 40_000;
+const MIN_POLL_TIMEOUT_MS = 5_000;
+const MAX_POLL_TIMEOUT_MS = 60_000;
+/**
+ * Attempts one transiently failing inbound message gets before it is recorded
+ * as failed. Bounded on purpose: a download that can never succeed must not
+ * hold the cursor forever.
+ */
+const INBOUND_TRANSIENT_ATTEMPTS = 5;
+const FAILED_INGRESS_LIMIT = 10;
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
 /** Typing keepalive and the longest a single session may stay visible. */
 const TYPING_KEEPALIVE_MS = 5_000;
@@ -41,6 +56,15 @@ const TYPING_TICKET_RETRY_MAX_MS = 60 * 60_000;
 export interface WeixinTypingTimings {
   keepaliveMs: number;
   maxDurationMs: number;
+}
+
+export interface WeixinRetryTimings {
+  /** Delay before re-polling after a single failure. */
+  reconnectMs: number;
+  /** Delay once failures repeat, instead of reconnecting in a tight loop. */
+  failureBackoffMs: number;
+  /** Delay after an expired bot session, which only re-authentication fixes. */
+  sessionExpiredMs: number;
 }
 
 export interface WeixinRemoteMessage {
@@ -66,12 +90,20 @@ export interface WeixinRemoteImage {
 
 export interface WeixinRemotePollResult {
   cursor?: string;
+  /** Server-suggested duration for the next long poll. */
+  longpollTimeoutMs?: number;
   messages?: WeixinRemoteMessage[];
 }
 
 export interface WeixinRemote {
   start(request: { baseUrl: string; token: string; signal: AbortSignal }): Promise<void>;
-  poll(request: { baseUrl: string; token: string; cursor: string; signal: AbortSignal }): Promise<WeixinRemotePollResult>;
+  poll(request: {
+    baseUrl: string;
+    token: string;
+    cursor: string;
+    timeoutMs: number;
+    signal: AbortSignal;
+  }): Promise<WeixinRemotePollResult>;
   downloadImage(request: {
     cdnBaseUrl: string;
     image: WeixinRemoteImage;
@@ -124,6 +156,8 @@ export interface WeixinAdapterStatus {
   state: "stopped" | "connecting" | "connected" | "degraded";
   lastPollAt?: string;
   lastError?: string;
+  /** Channel-neutral ingress health: messages held for retry or given up on. */
+  ingress?: InteractionChannelIngressStatus;
 }
 
 export interface WeixinAdapter extends InteractionChannel, OutboundDelivery {
@@ -142,6 +176,8 @@ export interface OpenWeixinAdapterOptions {
   remote?: WeixinRemote;
   /** Typing timings, resolved here so the adapter only executes parsed values. */
   typing?: WeixinTypingTimings;
+  /** Retry timings, resolved here so the adapter only executes parsed values. */
+  retry?: WeixinRetryTimings;
 }
 
 
@@ -176,6 +212,10 @@ class DefaultWeixinAdapter implements WeixinAdapter {
   #typing: { keepalive: NodeJS.Timeout; deadline: NodeJS.Timeout } | undefined;
   #typingTicket: { value: string; expiresAt: number } | undefined;
   #typingTicketRetry: { retryAt: number; delayMs: number } | undefined;
+  /** Ingress messages currently held for retry by message id. */
+  #heldInbound = 0;
+  #ingressAttempts = new Map<string, number>();
+  #ingressFailures = new Map<string, { category: InteractionChannelFailureCategory; at: string }>();
 
   readonly routeRef: string;
 
@@ -184,6 +224,7 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     private readonly remote: WeixinRemote,
     private readonly attachmentStore: AttachmentStore,
     private readonly typingTimings: WeixinTypingTimings,
+    private readonly retryTimings: WeixinRetryTimings,
     stateFile: string,
   ) {
     this.routeRef = configuration.routeRef;
@@ -217,7 +258,8 @@ class DefaultWeixinAdapter implements WeixinAdapter {
   }
 
   status(): WeixinAdapterStatus {
-    return this.#state;
+    const ingress = this.#ingressStatus();
+    return { ...this.#state, ...(ingress ? { ingress } : {}) };
   }
 
   channelGuidance(): string {
@@ -418,6 +460,8 @@ class DefaultWeixinAdapter implements WeixinAdapter {
 
   async #run(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>, signal: AbortSignal): Promise<void> {
     let remoteStarted = false;
+    let failures = 0;
+    let pollTimeoutMs = DEFAULT_POLL_TIMEOUT_MS;
     try {
       while (!signal.aborted) {
         try {
@@ -433,20 +477,36 @@ class DefaultWeixinAdapter implements WeixinAdapter {
             baseUrl: this.configuration.baseUrl,
             token: this.configuration.token,
             cursor: this.#readState().cursor,
+            timeoutMs: pollTimeoutMs,
             signal,
           });
           if (signal.aborted) break;
+          if (response.longpollTimeoutMs !== undefined) {
+            pollTimeoutMs = clampPollTimeout(response.longpollTimeoutMs);
+          }
           await this.#acceptPoll(response, acceptInput, signal);
           const now = new Date().toISOString();
           this.#writeState({ lastPollAt: now, lastError: null });
           this.#state = { state: "connected", lastPollAt: now };
+          failures = 0;
         } catch (error) {
           if (signal.aborted) break;
           const message = errorMessage(error);
           remoteStarted = false;
           this.#writeState({ lastError: message });
           this.#state = { ...this.#state, state: "degraded", lastError: message };
-          await waitForReconnect(signal);
+          // An expired bot session is re-established outside the Channel;
+          // polling again after a long wait keeps the adapter from hammering
+          // the API while the operator re-authenticates.
+          if (isWeixinSessionExpired(error)) {
+            await waitForReconnect(signal, this.retryTimings.sessionExpiredMs);
+            continue;
+          }
+          failures += 1;
+          await waitForReconnect(
+            signal,
+            failures >= FAILURE_BACKOFF_AFTER ? this.retryTimings.failureBackoffMs : this.retryTimings.reconnectMs,
+          );
         }
       }
     } finally {
@@ -474,25 +534,87 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>,
     signal: AbortSignal,
   ): Promise<void> {
+    const held: WeixinFailure[] = [];
+    this.#heldInbound = 0;
     for (const message of response.messages ?? []) {
-      const input = await toRuntimeInput(
-        message,
-        this.configuration,
-        this.remote,
-        this.attachmentStore,
-        signal,
-      );
-      if (!input) continue;
-      await acceptInput(input);
-      if (message.contextToken) this.#writeState({ contextToken: message.contextToken });
-      // Typing starts only once the Runtime durably accepted the Input: the
-      // peer should see the individual working on a message it will actually
-      // answer, not on one ingress dropped.
-      this.#beginTyping();
+      const messageId = message.messageId ?? "";
+      try {
+        const input = await toRuntimeInput(
+          message,
+          this.configuration,
+          this.remote,
+          this.attachmentStore,
+          signal,
+        );
+        // A message with nothing Loom can represent carries no Input; it is
+        // not a failure and must not hold the cursor.
+        if (!input) continue;
+        await acceptInput(input);
+        if (message.contextToken) this.#writeState({ contextToken: message.contextToken });
+        // Typing starts only once the Runtime durably accepted the Input: the
+        // peer should see the individual working on a message it will actually
+        // answer, not on one ingress dropped.
+        this.#beginTyping();
+        this.#ingressAttempts.delete(messageId);
+        this.#ingressFailures.delete(messageId);
+      } catch (error) {
+        const failure = toIngressFailure(error);
+        if (failure.category === "invalid_message") {
+          this.#recordFailedIngress(messageId, failure);
+          continue;
+        }
+        const attempts = (this.#ingressAttempts.get(messageId) ?? 0) + 1;
+        this.#ingressAttempts.set(messageId, attempts);
+        if (attempts >= INBOUND_TRANSIENT_ATTEMPTS) {
+          this.#recordFailedIngress(messageId, failure);
+          continue;
+        }
+        held.push(failure);
+        this.#heldInbound += 1;
+      }
+    }
+    if (held.length > 0) {
+      // Holding the cursor makes the remote replay this batch; already accepted
+      // siblings come back as duplicates the Runtime already deduplicates, so
+      // one unreadable message never hides the others or wedges the Channel.
+      throw held[0];
     }
     this.#writeState({
       ...(response.cursor !== undefined ? { cursor: response.cursor } : {}),
     });
+  }
+
+  #recordFailedIngress(messageId: string, failure: WeixinFailure): void {
+    this.#ingressAttempts.delete(messageId);
+    this.#ingressFailures.delete(messageId);
+    this.#ingressFailures.set(messageId, { category: failure.category, at: new Date().toISOString() });
+    while (this.#ingressFailures.size > FAILED_INGRESS_LIMIT) {
+      const oldest = this.#ingressFailures.keys().next();
+      if (oldest.done) break;
+      this.#ingressFailures.delete(oldest.value);
+    }
+  }
+
+  #ingressStatus(): InteractionChannelIngressStatus | undefined {
+    const failed = [...this.#ingressFailures.entries()];
+    if (failed.length === 0 && this.#heldInbound === 0) return undefined;
+    const times = failed.map(([, failure]) => failure.at).sort();
+    const firstFailureAt = times[0];
+    const lastFailureAt = times.at(-1);
+    const latest = failed.at(-1);
+    return {
+      pending: 0,
+      retrying: this.#heldInbound,
+      failed: failed.length,
+      // The Adapter holds no recovery spool: a message it cannot read is
+      // either retried from the remote's own replay window or recorded above.
+      spooled: 0,
+      ...(firstFailureAt !== undefined && lastFailureAt !== undefined
+        ? { firstFailureAt, lastFailureAt }
+        : {}),
+      ...(latest ? { lastFailureCategory: latest[1].category } : {}),
+      failedItemIds: failed.map(([messageId]) => messageId),
+    };
   }
 
   #readState(): StateRow {
@@ -531,6 +653,11 @@ export async function openWeixinAdapter(options: OpenWeixinAdapterOptions): Prom
     options.remote ?? createWeixinHttpRemote(),
     options.attachmentStore,
     options.typing ?? { keepaliveMs: TYPING_KEEPALIVE_MS, maxDurationMs: TYPING_MAX_DURATION_MS },
+    options.retry ?? {
+      reconnectMs: RECONNECT_DELAY_MS,
+      failureBackoffMs: FAILURE_BACKOFF_DELAY_MS,
+      sessionExpiredMs: SESSION_EXPIRED_DELAY_MS,
+    },
     options.stateFile,
   );
 }
@@ -587,7 +714,9 @@ async function toRuntimeInput(
     .filter(Boolean)
     .join("\n");
   const imageItems = (message.items ?? []).filter(item => item.type === "image" && item.image);
-  if (imageItems.length > 1) throw new Error("Weixin first attachment slice accepts one image per message");
+  // One Input carries at most one attachment. Extra media in the same message
+  // is dropped here rather than failing the whole message: the peer's text and
+  // first image still arrive.
   const downloaded = imageItems[0]?.image
     ? await remote.downloadImage({
         cdnBaseUrl: configuration.cdnBaseUrl,
@@ -727,10 +856,25 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function waitForReconnect(signal: AbortSignal): Promise<void> {
+/**
+ * Unknown failures stay transient on purpose: retrying a message Loom cannot
+ * classify is recoverable, while dropping it would lose the peer's words.
+ */
+function toIngressFailure(error: unknown): WeixinFailure {
+  return error instanceof WeixinFailure
+    ? error
+    : new WeixinFailure(errorMessage(error), "remote_unavailable");
+}
+
+function clampPollTimeout(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs)) return DEFAULT_POLL_TIMEOUT_MS;
+  return Math.min(Math.max(timeoutMs, MIN_POLL_TIMEOUT_MS), MAX_POLL_TIMEOUT_MS);
+}
+
+async function waitForReconnect(signal: AbortSignal, delayMs: number): Promise<void> {
   if (signal.aborted) return;
   await new Promise<void>(resolve => {
-    const timeout = setTimeout(resolve, RECONNECT_DELAY_MS);
+    const timeout = setTimeout(resolve, delayMs);
     signal.addEventListener("abort", () => {
       clearTimeout(timeout);
       resolve();

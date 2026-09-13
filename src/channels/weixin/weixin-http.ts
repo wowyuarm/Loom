@@ -6,6 +6,7 @@ import type {
   WeixinRemotePollResult,
 } from "./weixin-adapter.js";
 import type { AttachmentReference } from "../../attachments/index.js";
+import { WeixinFailure } from "./weixin-failures.js";
 
 const CHANNEL_VERSION = "2.3.1";
 const APP_ID = "bot";
@@ -35,6 +36,7 @@ interface ApiResponse {
 
 interface UpdatesResponse extends ApiResponse {
   get_updates_buf?: string;
+  longpolling_timeout_ms?: number;
   msgs?: RawMessage[];
 }
 
@@ -95,17 +97,21 @@ class HttpWeixinRemote implements WeixinRemote {
     baseUrl: string;
     token: string;
     cursor: string;
+    timeoutMs: number;
     signal: AbortSignal;
   }): Promise<WeixinRemotePollResult> {
     const response = await post<UpdatesResponse>({
       ...request,
       endpoint: "ilink/bot/getupdates",
       body: { get_updates_buf: request.cursor },
-      timeoutMs: 40_000,
+      timeoutMs: request.timeoutMs,
     });
     assertApiSuccess("getupdates", response);
     return {
       ...(response.get_updates_buf !== undefined ? { cursor: response.get_updates_buf } : {}),
+      ...(response.longpolling_timeout_ms !== undefined
+        ? { longpollTimeoutMs: response.longpolling_timeout_ms }
+        : {}),
       messages: (response.msgs ?? []).map(normalizeMessage),
     };
   }
@@ -162,11 +168,13 @@ class HttpWeixinRemote implements WeixinRemote {
     const maximumDownloadedBytes = MAX_IMAGE_BYTES + (encrypted ? 16 : 0);
     const declaredSize = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredSize) && declaredSize > maximumDownloadedBytes) {
-      throw new Error("Weixin image exceeds the 15 MiB inbound limit");
+      throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
     }
     const downloaded = await readBoundedBody(response, maximumDownloadedBytes);
     const content = decryptImage(downloaded, request.image);
-    if (content.length > MAX_IMAGE_BYTES) throw new Error("Weixin image exceeds the 15 MiB inbound limit");
+    if (content.length > MAX_IMAGE_BYTES) {
+      throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
+    }
     const detected = detectImage(content);
     return {
       content,
@@ -331,10 +339,10 @@ function imageDownloadUrl(
   const source = image.fullUrl ?? (image.encryptedQueryParam
     ? `${cdnBaseUrl}/download?encrypted_query_param=${encodeURIComponent(image.encryptedQueryParam)}`
     : undefined);
-  if (!source) throw new Error("Weixin image has no download reference");
+  if (!source) throw new WeixinFailure("Weixin image has no download reference", "invalid_message");
   const url = new URL(source);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("Weixin image download URL must use HTTP");
+    throw new WeixinFailure("Weixin image download URL must use HTTP", "invalid_message");
   }
   return url.toString();
 }
@@ -347,7 +355,7 @@ function decryptImage(
     ? Buffer.from(image.aesKeyHex, "hex")
     : image.aesKey ? parseAesKey(image.aesKey) : undefined;
   if (!key) return downloaded;
-  if (key.length !== 16) throw new Error("Weixin image AES key must contain 16 bytes");
+  if (key.length !== 16) throw new WeixinFailure("Weixin image AES key must contain 16 bytes", "invalid_message");
   const decipher = crypto.createDecipheriv("aes-128-ecb", key, null);
   return Buffer.concat([decipher.update(downloaded), decipher.final()]);
 }
@@ -358,7 +366,7 @@ function parseAesKey(source: string): Buffer {
   if (decoded.length === 32 && /^[a-f0-9]{32}$/i.test(decoded.toString("ascii"))) {
     return Buffer.from(decoded.toString("ascii"), "hex");
   }
-  throw new Error("Weixin image AES key is invalid");
+  throw new WeixinFailure("Weixin image AES key is invalid", "invalid_message");
 }
 
 function detectImage(content: Buffer): { mediaType: string; extension: string } {
@@ -376,7 +384,7 @@ function detectImage(content: Buffer): { mediaType: string; extension: string } 
     && content.subarray(8, 12).toString("ascii") === "WEBP") {
     return { mediaType: "image/webp", extension: ".webp" };
   }
-  throw new Error("Weixin image content is not a supported PNG, JPEG, GIF, or WebP image");
+  throw new WeixinFailure("Weixin image content is not a supported PNG, JPEG, GIF, or WebP image", "invalid_message");
 }
 
 async function readBoundedBody(response: Response, maximumBytes: number): Promise<Buffer> {
@@ -392,7 +400,7 @@ async function readBoundedBody(response: Response, maximumBytes: number): Promis
       byteSize += chunk.length;
       if (byteSize > maximumBytes) {
         await reader.cancel();
-        throw new Error("Weixin image exceeds the 15 MiB inbound limit");
+        throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
       }
       chunks.push(chunk);
     }
@@ -557,7 +565,13 @@ async function post<T>(options: {
 }
 
 function assertApiSuccess(endpoint: string, response: ApiResponse): void {
-  if (hasApiError(response)) throw new Error(apiErrorMessage(endpoint, response));
+  if (hasApiError(response)) {
+    throw new WeixinFailure(apiErrorMessage(endpoint, response), "remote_unavailable", apiErrorCode(response));
+  }
+}
+
+function apiErrorCode(response: ApiResponse): number | undefined {
+  return response.errcode !== undefined ? response.errcode : response.ret;
 }
 
 function hasApiError(response: ApiResponse): boolean {

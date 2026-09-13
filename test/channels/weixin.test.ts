@@ -10,7 +10,10 @@ import {
   createWeixinHttpRemote,
   openWeixinAdapter,
   weixinOpaqueRef,
+  WeixinFailure,
+  WEIXIN_SESSION_EXPIRED_CODE,
   type WeixinRemote,
+  type WeixinRemoteMessage,
 } from "../../src/channels/weixin/index.js";
 import { openAttachmentStore } from "../../src/attachments/index.js";
 import { parseAttachmentReference } from "../../src/attachments/index.js";
@@ -447,6 +450,7 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
     baseUrl,
     token: "wire-token",
     cursor: "cursor-old",
+    timeoutMs: 40_000,
     signal: controller.signal,
   });
   assert.deepEqual(polled, {
@@ -815,6 +819,297 @@ test("spaces consecutive outbound Weixin messages without dropping either", asyn
   const gap = arrivals[1]! - arrivals[0]!;
   assert.ok(gap >= 120, `expected consecutive sends to be spaced, saw ${gap}ms`);
 });
+
+test("does not let an unrepresentable inbound message block later messages or the cursor", async t => {
+  const paths = await weixinPaths();
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from("first-image", "utf8"),
+  ]);
+  const cursors: string[] = [];
+  const remote: WeixinRemote = {
+    start: async () => {},
+    async poll(request) {
+      cursors.push(request.cursor);
+      // The remote replays everything after the last acknowledged cursor, so an
+      // unprocessable message keeps coming back until the adapter moves past it.
+      if (request.cursor !== "") {
+        await aborted(request.signal);
+        return { messages: [] };
+      }
+      return {
+        cursor: "cursor-after-batch",
+        messages: [
+          {
+            messageId: "poison",
+            from: "peer-1",
+            messageType: "user",
+            messageState: "finished",
+            items: [
+              { type: "image", image: { encryptedQueryParam: "image-1", aesKey: "key-1" } },
+              { type: "image", image: { encryptedQueryParam: "image-2", aesKey: "key-2" } },
+            ],
+          },
+          {
+            messageId: "sibling",
+            from: "peer-1",
+            messageType: "user",
+            messageState: "finished",
+            items: [{ type: "text", text: "second message" }],
+          },
+        ],
+      };
+    },
+    downloadImage: async () => ({ content: image, mediaType: "image/png", fileName: "first.png" }),
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+  const adapter = await openWeixinAdapter({ ...paths, remote });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await eventually(() => inputs.some(input => input.sourceId === "sibling"));
+  await eventually(() => cursors.includes("cursor-after-batch"));
+  await adapter.stop();
+});
+
+test("records an unreadable inbound message as failed ingress and keeps the channel connected", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const remote = batchRemote({
+    cursors,
+    messages: [imageMessage("oversized", "image-poison"), textMessage("sibling", "text that must still arrive")],
+    downloadImage: async () => {
+      throw new WeixinFailure("Weixin image exceeds the 15 MiB inbound limit", "invalid_message");
+    },
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await eventually(() => inputs.some(input => input.sourceId === "sibling"));
+  await eventually(() => cursors.includes("cursor-after-batch"));
+  const status = adapter.status();
+  assert.equal(status.state, "connected");
+  assert.equal(status.lastError, undefined);
+  assert.equal(status.ingress?.failed, 1);
+  assert.equal(status.ingress?.retrying, 0);
+  assert.equal(status.ingress?.lastFailureCategory, "invalid_message");
+  assert.deepEqual(status.ingress?.failedItemIds, ["oversized"]);
+  await adapter.stop();
+});
+
+test("holds the cursor and retries a transiently failing message until it succeeds", async t => {
+  const paths = await weixinPaths();
+  const image = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from("retried-image", "utf8"),
+  ]);
+  const cursors: string[] = [];
+  let downloads = 0;
+  const remote = batchRemote({
+    cursors,
+    messages: [imageMessage("image-message", "image-retry")],
+    downloadImage: async () => {
+      downloads += 1;
+      if (downloads === 1) throw new Error("Weixin image download returned HTTP 503");
+      return { content: image, mediaType: "image/png", fileName: "retried.png" };
+    },
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await eventually(() => inputs.some(input => input.sourceId === "image-message"));
+  await eventually(() => cursors.includes("cursor-after-batch"));
+  assert.equal(downloads, 2);
+  // A recovered message leaves no failed or retrying ingress behind.
+  assert.equal(adapter.status().ingress, undefined);
+  await adapter.stop();
+});
+
+test("gives up on a message that keeps failing transiently instead of wedging the channel", async t => {
+  const paths = await weixinPaths();
+  const cursors: string[] = [];
+  const remote = batchRemote({
+    cursors,
+    messages: [imageMessage("image-message", "image-retry"), textMessage("sibling", "text that must still arrive")],
+    downloadImage: async () => { throw new Error("Weixin image download returned HTTP 503"); },
+  });
+  const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: `input-${input.sourceId}` };
+  });
+
+  await eventually(() => inputs.some(input => input.sourceId === "sibling"));
+  await eventually(() => cursors.includes("cursor-after-batch"));
+  const status = adapter.status();
+  assert.equal(status.ingress?.failed, 1);
+  assert.equal(status.ingress?.lastFailureCategory, "remote_unavailable");
+  assert.deepEqual(status.ingress?.failedItemIds, ["image-message"]);
+  await adapter.stop();
+});
+
+test("uses the server's long-poll timeout for the next poll", async t => {
+  const paths = await weixinPaths();
+  const timeouts: number[] = [];
+  let polls = 0;
+  const remote: WeixinRemote = {
+    start: async () => {},
+    async poll(request) {
+      timeouts.push(request.timeoutMs);
+      polls += 1;
+      if (polls === 1) return { longpollTimeoutMs: 12_000, messages: [] };
+      if (polls === 2) return { longpollTimeoutMs: 1, messages: [] };
+      if (polls === 3) return { longpollTimeoutMs: 10 * 60_000, messages: [] };
+      await aborted(request.signal);
+      return { messages: [] };
+    },
+    downloadImage: async () => { throw new Error("no image expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+  const adapter = await openWeixinAdapter({ ...paths, remote, retry: fastRetry() });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+
+  await eventually(() => timeouts.length >= 4);
+  assert.deepEqual(timeouts.slice(0, 4), [40_000, 12_000, 5_000, 60_000]);
+  await adapter.stop();
+});
+
+test("backs off after repeated poll failures", async t => {
+  const paths = await weixinPaths();
+  const attempts: number[] = [];
+  const remote: WeixinRemote = {
+    start: async () => {},
+    async poll() {
+      attempts.push(Date.now());
+      throw new Error("Weixin getupdates returned HTTP 500");
+    },
+    downloadImage: async () => { throw new Error("no image expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote,
+    retry: { reconnectMs: 10, failureBackoffMs: 250, sessionExpiredMs: 1_000 },
+  });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+
+  await eventually(() => attempts.length >= 5);
+  await adapter.stop();
+  const firstGap = attempts[1]! - attempts[0]!;
+  const backedOffGap = attempts[4]! - attempts[3]!;
+  assert.ok(firstGap < 150, `expected an immediate retry first, saw ${firstGap}ms`);
+  assert.ok(backedOffGap >= 200, `expected backoff after repeated failures, saw ${backedOffGap}ms`);
+});
+
+test("waits for an expired bot session instead of hot-looping the poll", async t => {
+  const paths = await weixinPaths();
+  let polls = 0;
+  const remote: WeixinRemote = {
+    start: async () => {},
+    async poll() {
+      polls += 1;
+      throw new WeixinFailure("getupdates rejected: ret=-14", "remote_unavailable", WEIXIN_SESSION_EXPIRED_CODE);
+    },
+    downloadImage: async () => { throw new Error("no image expected"); },
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote,
+    retry: { reconnectMs: 5, failureBackoffMs: 5, sessionExpiredMs: 150 },
+  });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "unused" }));
+
+  await eventually(() => polls >= 2);
+  await new Promise<void>(resolve => setTimeout(resolve, 300));
+  await adapter.stop();
+  assert.ok(polls <= 5, `expected long waits between session-expired polls, saw ${polls} polls`);
+  assert.match(adapter.status().lastError ?? "", /ret=-14/);
+});
+
+/** The same batch is replayed until the adapter acknowledges a cursor, like the remote does. */
+function batchRemote(options: {
+  cursors: string[];
+  messages: WeixinRemoteMessage[];
+  downloadImage: WeixinRemote["downloadImage"];
+}): WeixinRemote {
+  return {
+    start: async () => {},
+    async poll(request) {
+      options.cursors.push(request.cursor);
+      if (request.cursor !== "") {
+        await aborted(request.signal);
+        return { messages: [] };
+      }
+      return { cursor: "cursor-after-batch", messages: options.messages };
+    },
+    downloadImage: options.downloadImage,
+    sendAttachment: async () => { throw new Error("no attachment expected"); },
+    sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
+    stop: async () => {},
+  };
+}
+
+function imageMessage(messageId: string, reference: string): WeixinRemoteMessage {
+  return {
+    messageId,
+    from: "peer-1",
+    messageType: "user",
+    messageState: "finished",
+    items: [{ type: "image", image: { encryptedQueryParam: reference, aesKey: `key-${reference}` } }],
+  };
+}
+
+function textMessage(messageId: string, text: string): WeixinRemoteMessage {
+  return {
+    messageId,
+    from: "peer-1",
+    messageType: "user",
+    messageState: "finished",
+    items: [{ type: "text", text }],
+  };
+}
+
+function fastRetry(): { reconnectMs: number; failureBackoffMs: number; sessionExpiredMs: number } {
+  return { reconnectMs: 5, failureBackoffMs: 10, sessionExpiredMs: 10 };
+}
 
 function pollThenStopFailRemote(): WeixinRemote {
   let polls = 0;
