@@ -15,6 +15,17 @@ const FINISHED_MESSAGE = 2;
 const TEXT_ITEM = 1;
 const IMAGE_ITEM = 2;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const TYPING_STATUS_TYPING = 1;
+const TYPING_STATUS_CANCEL = 2;
+const TYPING_REQUEST_TIMEOUT_MS = 5_000;
+/**
+ * Minimum interval between two outbound messages to the same peer. Weixin
+ * rate-limits bursts, so pacing belongs to the wire boundary where every send
+ * — including an attachment caption and its file — is spaced. A paced wait
+ * only delays one Delivery attempt; it never drops the Effect, which keeps its
+ * durable pending state in the Runtime.
+ */
+const MIN_SEND_INTERVAL_MS = 1_500;
 
 interface ApiResponse {
   ret?: number;
@@ -30,6 +41,10 @@ interface UpdatesResponse extends ApiResponse {
 interface UploadUrlResponse extends ApiResponse {
   upload_param?: string;
   upload_full_url?: string;
+}
+
+interface ConfigResponse extends ApiResponse {
+  typing_ticket?: string;
 }
 
 interface UploadedAttachment {
@@ -61,6 +76,11 @@ interface RawMessage {
 }
 
 class HttpWeixinRemote implements WeixinRemote {
+  /** Last outbound message time, used to space bursts to the same peer. */
+  #lastSendAt = 0;
+
+  constructor(private readonly minimumSendIntervalMs: number = MIN_SEND_INTERVAL_MS) {}
+
   async start(request: { baseUrl: string; token: string; signal: AbortSignal }): Promise<void> {
     const response = await post<ApiResponse>({
       ...request,
@@ -101,6 +121,7 @@ class HttpWeixinRemote implements WeixinRemote {
     | { disposition: "sent"; remoteId: string }
     | { disposition: "rejected"; error: string; code?: number }
   > {
+    await this.#paceSend();
     const response = await post<ApiResponse>({
       ...request,
       endpoint: "ilink/bot/sendmessage",
@@ -190,7 +211,7 @@ class HttpWeixinRemote implements WeixinRemote {
     }
 
     try {
-      const result = await sendAttachmentItem(request, uploaded);
+      const result = await sendAttachmentItem(request, uploaded, () => this.#paceSend());
       if (result.disposition === "rejected" && captionSent) {
         throw new Error(`Weixin attachment was rejected after its caption was sent: ${result.error}`);
       }
@@ -212,10 +233,65 @@ class HttpWeixinRemote implements WeixinRemote {
     });
     assertApiSuccess("notifystop", response);
   }
+
+  async typingTicket(request: {
+    baseUrl: string;
+    token: string;
+    peerId: string;
+    contextToken?: string;
+  }): Promise<string | undefined> {
+    const response = await post<ConfigResponse>({
+      baseUrl: request.baseUrl,
+      endpoint: "ilink/bot/getconfig",
+      token: request.token,
+      timeoutMs: TYPING_REQUEST_TIMEOUT_MS,
+      body: {
+        ilink_user_id: request.peerId,
+        ...(request.contextToken ? { context_token: request.contextToken } : {}),
+      },
+    });
+    assertApiSuccess("getconfig", response);
+    const ticket = response.typing_ticket?.trim();
+    return ticket || undefined;
+  }
+
+  async sendTyping(request: {
+    baseUrl: string;
+    token: string;
+    peerId: string;
+    typingTicket: string;
+    status: "typing" | "cancel";
+  }): Promise<void> {
+    const response = await post<ApiResponse>({
+      baseUrl: request.baseUrl,
+      endpoint: "ilink/bot/sendtyping",
+      token: request.token,
+      timeoutMs: TYPING_REQUEST_TIMEOUT_MS,
+      body: {
+        ilink_user_id: request.peerId,
+        typing_ticket: request.typingTicket,
+        status: request.status === "typing" ? TYPING_STATUS_TYPING : TYPING_STATUS_CANCEL,
+      },
+    });
+    assertApiSuccess("sendtyping", response);
+  }
+
+  /**
+   * Spaces consecutive outbound messages. The wait is bounded by the
+   * configured interval and only postpones this send; nothing is dropped and
+   * no Delivery result is invented here.
+   */
+  async #paceSend(): Promise<void> {
+    const elapsed = Date.now() - this.#lastSendAt;
+    if (elapsed < this.minimumSendIntervalMs) {
+      await new Promise<void>(resolve => setTimeout(resolve, this.minimumSendIntervalMs - elapsed));
+    }
+    this.#lastSendAt = Date.now();
+  }
 }
 
-export function createWeixinHttpRemote(): WeixinRemote {
-  return new HttpWeixinRemote();
+export function createWeixinHttpRemote(options: { minimumSendIntervalMs?: number } = {}): WeixinRemote {
+  return new HttpWeixinRemote(options.minimumSendIntervalMs);
 }
 
 function normalizeMessage(message: RawMessage): WeixinRemoteMessage {
@@ -390,6 +466,7 @@ async function sendAttachmentItem(
     contextToken?: string;
   },
   uploaded: UploadedAttachment,
+  pace: () => Promise<void>,
 ): Promise<
   | { disposition: "sent"; remoteId: string }
   | { disposition: "rejected"; error: string; code?: number }
@@ -410,6 +487,7 @@ async function sendAttachmentItem(
           len: String(uploaded.plaintextSize),
         },
       };
+  await pace();
   const response = await post<ApiResponse>({
     baseUrl: request.baseUrl,
     endpoint: "ilink/bot/sendmessage",

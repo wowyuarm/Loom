@@ -31,6 +31,17 @@ export function weixinOpaqueRef(kind: "place" | "destination", routeRef: string,
 
 const RECONNECT_DELAY_MS = 2_000;
 const DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com";
+/** Typing keepalive and the longest a single session may stay visible. */
+const TYPING_KEEPALIVE_MS = 5_000;
+const TYPING_MAX_DURATION_MS = 2 * 60_000;
+const TYPING_TICKET_TTL_MS = 24 * 60 * 60_000;
+const TYPING_TICKET_RETRY_INITIAL_MS = 2_000;
+const TYPING_TICKET_RETRY_MAX_MS = 60 * 60_000;
+
+export interface WeixinTypingTimings {
+  keepaliveMs: number;
+  maxDurationMs: number;
+}
 
 export interface WeixinRemoteMessage {
   messageId?: string;
@@ -91,6 +102,21 @@ export interface WeixinRemote {
     | { disposition: "sent"; remoteId: string }
     | { disposition: "rejected"; error: string; code?: number }
   >;
+  /** Resolves the peer's typing ticket, or undefined when the peer offers no typing. */
+  typingTicket(request: {
+    baseUrl: string;
+    token: string;
+    peerId: string;
+    contextToken?: string;
+  }): Promise<string | undefined>;
+  /** Publishes or cancels the peer's typing state. Failures are not authoritative. */
+  sendTyping(request: {
+    baseUrl: string;
+    token: string;
+    peerId: string;
+    typingTicket: string;
+    status: "typing" | "cancel";
+  }): Promise<void>;
   stop(request: { baseUrl: string; token: string }): Promise<void>;
 }
 
@@ -114,6 +140,8 @@ export interface OpenWeixinAdapterOptions {
   stateFile: string;
   attachmentStore: AttachmentStore;
   remote?: WeixinRemote;
+  /** Typing timings, resolved here so the adapter only executes parsed values. */
+  typing?: WeixinTypingTimings;
 }
 
 
@@ -140,6 +168,14 @@ class DefaultWeixinAdapter implements WeixinAdapter {
   #controller: AbortController | undefined;
   #running: Promise<void> | undefined;
   #stopped = false;
+  /**
+   * One best-effort typing session for the configured peer. A second accepted
+   * message extends the same session instead of restarting it, so overlapping
+   * inbound messages do not flicker the peer's typing state.
+   */
+  #typing: { keepalive: NodeJS.Timeout; deadline: NodeJS.Timeout } | undefined;
+  #typingTicket: { value: string; expiresAt: number } | undefined;
+  #typingTicketRetry: { retryAt: number; delayMs: number } | undefined;
 
   readonly routeRef: string;
 
@@ -147,6 +183,7 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     private readonly configuration: WeixinConfiguration,
     private readonly remote: WeixinRemote,
     private readonly attachmentStore: AttachmentStore,
+    private readonly typingTimings: WeixinTypingTimings,
     stateFile: string,
   ) {
     this.routeRef = configuration.routeRef;
@@ -210,6 +247,10 @@ class DefaultWeixinAdapter implements WeixinAdapter {
     if (this.#stopped) return;
     this.#stopped = true;
     this.#controller?.abort();
+    // Cancelling typing is part of stopping, not of ingress or Delivery: a
+    // failed cancel is bounded by the request timeout and cannot keep the
+    // Channel from converging to stopped.
+    await this.#endTyping();
     try {
       await this.#running;
     } finally {
@@ -276,7 +317,103 @@ class DefaultWeixinAdapter implements WeixinAdapter {
       return { status: "delivered", remoteId: result.remoteId };
     } catch (error) {
       return { status: "unknown", error: errorMessage(error) };
+    } finally {
+      // The individual's answer exists once the attempt ran, whatever its
+      // outcome, so the peer stops seeing typing instead of waiting for a
+      // message the Channel already tried to send.
+      await this.#endTyping();
     }
+  }
+
+  /**
+   * Starts or extends the peer's typing state. Typing is lossy feedback: every
+   * failure below is swallowed and can never change ingress, Delivery, or the
+   * Channel's reported state.
+   */
+  #beginTyping(): void {
+    if (this.#stopped) return;
+    if (this.#typing) {
+      clearTimeout(this.#typing.deadline);
+      this.#typing.deadline = this.#typingDeadline();
+      return;
+    }
+    const typing = {
+      keepalive: setInterval(() => void this.#pingTyping("typing"), this.typingTimings.keepaliveMs),
+      deadline: this.#typingDeadline(),
+    };
+    typing.keepalive.unref();
+    this.#typing = typing;
+    void this.#pingTyping("typing");
+  }
+
+  #typingDeadline(): NodeJS.Timeout {
+    const deadline = setTimeout(() => void this.#endTyping(), this.typingTimings.maxDurationMs);
+    deadline.unref();
+    return deadline;
+  }
+
+  async #endTyping(): Promise<void> {
+    const typing = this.#typing;
+    if (!typing) return;
+    this.#typing = undefined;
+    clearInterval(typing.keepalive);
+    clearTimeout(typing.deadline);
+    await this.#pingTyping("cancel");
+  }
+
+  async #pingTyping(status: "typing" | "cancel"): Promise<void> {
+    try {
+      const typingTicket = await this.#resolveTypingTicket();
+      if (!typingTicket) return;
+      await this.remote.sendTyping({
+        baseUrl: this.configuration.baseUrl,
+        token: this.configuration.token,
+        peerId: this.configuration.peerId,
+        typingTicket,
+        status,
+      });
+    } catch {
+      // A rejected typing ticket, expired session, or transport failure only
+      // costs the peer this indicator; it is not evidence about the message,
+      // the Delivery, or the Channel's health.
+    }
+  }
+
+  async #resolveTypingTicket(): Promise<string | undefined> {
+    const now = Date.now();
+    const cached = this.#typingTicket;
+    if (cached && now < cached.expiresAt) return cached.value;
+    const retry = this.#typingTicketRetry;
+    if (retry && now < retry.retryAt) return cached?.value;
+    try {
+      const contextToken = this.#readState().context_token;
+      const typingTicket = await this.remote.typingTicket({
+        baseUrl: this.configuration.baseUrl,
+        token: this.configuration.token,
+        peerId: this.configuration.peerId,
+        ...(contextToken ? { contextToken } : {}),
+      });
+      if (!typingTicket) {
+        this.#deferTypingTicket(now);
+        return cached?.value;
+      }
+      this.#typingTicket = { value: typingTicket, expiresAt: now + TYPING_TICKET_TTL_MS };
+      this.#typingTicketRetry = undefined;
+      return typingTicket;
+    } catch {
+      // Refresh failure keeps a previously resolved ticket usable and backs
+      // off so a broken ticket path cannot turn every message into a retry.
+      this.#deferTypingTicket(now);
+      return cached?.value;
+    }
+  }
+
+  #deferTypingTicket(now: number): void {
+    const delayMs = Math.min(
+      (this.#typingTicketRetry?.delayMs ?? TYPING_TICKET_RETRY_INITIAL_MS / 2) * 2,
+      TYPING_TICKET_RETRY_MAX_MS,
+    );
+    this.#typingTicketRetry = { retryAt: now + delayMs, delayMs };
   }
 
   async #run(acceptInput: (input: RuntimeInput) => Promise<AcceptedInput>, signal: AbortSignal): Promise<void> {
@@ -348,6 +485,10 @@ class DefaultWeixinAdapter implements WeixinAdapter {
       if (!input) continue;
       await acceptInput(input);
       if (message.contextToken) this.#writeState({ contextToken: message.contextToken });
+      // Typing starts only once the Runtime durably accepted the Input: the
+      // peer should see the individual working on a message it will actually
+      // answer, not on one ingress dropped.
+      this.#beginTyping();
     }
     this.#writeState({
       ...(response.cursor !== undefined ? { cursor: response.cursor } : {}),
@@ -389,6 +530,7 @@ export async function openWeixinAdapter(options: OpenWeixinAdapterOptions): Prom
     configuration,
     options.remote ?? createWeixinHttpRemote(),
     options.attachmentStore,
+    options.typing ?? { keepaliveMs: TYPING_KEEPALIVE_MS, maxDurationMs: TYPING_MAX_DURATION_MS },
     options.stateFile,
   );
 }

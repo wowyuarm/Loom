@@ -619,6 +619,203 @@ test("retries once without an expired peer context inside the same Delivery atte
   assert.equal(sends[0]?.clientId, sends[1]?.clientId);
 });
 
+test("shows the peer typing from accepted Input until the Delivery attempt ends", async t => {
+  const paths = await weixinPaths();
+  const typing: Array<{ status: string; peerId: string; typingTicket: string }> = [];
+  const remote = blockingRemote({
+    cursors: [],
+    firstPoll: {
+      cursor: "cursor-typing",
+      messages: [{
+        messageId: "typing-1",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        contextToken: "context-typing",
+        items: [{ type: "text", text: "are you there" }],
+      }],
+    },
+    sendTyping: async request => {
+      typing.push({ status: request.status, peerId: request.peerId, typingTicket: request.typingTicket });
+    },
+  });
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote,
+    typing: { keepaliveMs: 60_000, maxDurationMs: 60_000 },
+  });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "input-typing" }));
+
+  await eventually(() => typing.length === 1);
+  assert.deepEqual(typing[0], { status: "typing", peerId: "peer-1", typingTicket: "typing-ticket" });
+
+  assert.deepEqual(await adapter.deliver({
+    attemptId: "attempt-typing",
+    effectId: "effect-typing",
+    kind: "message",
+    payload: { text: "still here" },
+    routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
+    idempotencyKey: "effect-typing:1",
+  }), { status: "delivered", remoteId: "unused" });
+  assert.deepEqual(typing[1], { status: "cancel", peerId: "peer-1", typingTicket: "typing-ticket" });
+  assert.equal(adapter.status().state, "connected");
+  await adapter.stop();
+});
+
+test("cancels a typing session that outlives its maximum duration", async t => {
+  const paths = await weixinPaths();
+  const typing: string[] = [];
+  const remote = blockingRemote({
+    cursors: [],
+    firstPoll: {
+      messages: [{
+        messageId: "typing-timeout",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{ type: "text", text: "no answer is coming" }],
+      }],
+    },
+    sendTyping: async request => { typing.push(request.status); },
+  });
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote,
+    typing: { keepaliveMs: 60_000, maxDurationMs: 25 },
+  });
+  t.after(() => adapter.stop());
+  adapter.start(async () => ({ disposition: "accepted", inputId: "input-typing-timeout" }));
+
+  await eventually(() => typing.includes("cancel"));
+  assert.deepEqual(typing, ["typing", "cancel"]);
+});
+
+test("keeps ingress and Delivery working when the peer's typing calls fail", async t => {
+  const paths = await weixinPaths();
+  const remote = blockingRemote({
+    cursors: [],
+    firstPoll: {
+      cursor: "cursor-typing-failure",
+      messages: [{
+        messageId: "typing-failure",
+        from: "peer-1",
+        messageType: "user",
+        messageState: "finished",
+        items: [{ type: "text", text: "typing is best effort" }],
+      }],
+    },
+    typingTicket: async () => { throw new Error("getconfig unavailable"); },
+    sendTyping: async () => { throw new Error("sendtyping unavailable"); },
+  });
+  const adapter = await openWeixinAdapter({
+    ...paths,
+    remote,
+    typing: { keepaliveMs: 60_000, maxDurationMs: 60_000 },
+  });
+  t.after(() => adapter.stop());
+  const inputs: RuntimeInput[] = [];
+  adapter.start(async input => {
+    inputs.push(input);
+    return { disposition: "accepted", inputId: "input-typing-failure" };
+  });
+
+  await eventually(() => inputs.length === 1);
+  await eventually(() => adapter.status().state === "connected");
+  assert.equal(adapter.status().lastError, undefined);
+  assert.deepEqual(await adapter.deliver({
+    attemptId: "attempt-typing-failure",
+    effectId: "effect-typing-failure",
+    kind: "message",
+    payload: { text: "delivery still works" },
+    routeRef: "primary-route",
+    destinationRef: weixinOpaqueRef("destination", "primary-route", "peer-1"),
+    idempotencyKey: "effect-typing-failure:1",
+  }), { status: "delivered", remoteId: "unused" });
+  await adapter.stop();
+});
+
+test("resolves a typing ticket and publishes typing over the Weixin wire", async t => {
+  const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+  let baseUrl = "";
+  const server = createServer((request, response) => {
+    let source = "";
+    request.setEncoding("utf8");
+    request.on("data", chunk => { source += chunk; });
+    request.on("end", () => {
+      requests.push({ path: request.url ?? "", body: JSON.parse(source || "{}") as Record<string, unknown> });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url === "/ilink/bot/getconfig"
+        ? { ret: 0, typing_ticket: "ticket-wire" }
+        : { ret: 0 }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+  const remote = createWeixinHttpRemote();
+
+  assert.equal(await remote.typingTicket({
+    baseUrl,
+    token: "wire-token",
+    peerId: "peer-1",
+    contextToken: "context-wire",
+  }), "ticket-wire");
+  await remote.sendTyping({ baseUrl, token: "wire-token", peerId: "peer-1", typingTicket: "ticket-wire", status: "typing" });
+  await remote.sendTyping({ baseUrl, token: "wire-token", peerId: "peer-1", typingTicket: "ticket-wire", status: "cancel" });
+
+  const config = requests.find(item => item.path === "/ilink/bot/getconfig")?.body;
+  assert.equal(config?.ilink_user_id, "peer-1");
+  assert.equal(config?.context_token, "context-wire");
+  const typingCalls = requests.filter(item => item.path === "/ilink/bot/sendtyping").map(item => item.body);
+  assert.deepEqual(typingCalls, [
+    { ilink_user_id: "peer-1", typing_ticket: "ticket-wire", status: 1, base_info: { channel_version: "2.3.1", bot_agent: "Loom" } },
+    { ilink_user_id: "peer-1", typing_ticket: "ticket-wire", status: 2, base_info: { channel_version: "2.3.1", bot_agent: "Loom" } },
+  ]);
+});
+
+test("spaces consecutive outbound Weixin messages without dropping either", async t => {
+  const arrivals: number[] = [];
+  const server = createServer((request, response) => {
+    let source = "";
+    request.setEncoding("utf8");
+    request.on("data", chunk => { source += chunk; });
+    request.on("end", () => {
+      arrivals.push(Date.now());
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ret: 0 }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const remote = createWeixinHttpRemote({ minimumSendIntervalMs: 150 });
+
+  assert.deepEqual(await remote.sendText({
+    baseUrl,
+    token: "wire-token",
+    peerId: "peer-1",
+    text: "first",
+    clientId: "effect-pace:1",
+  }), { disposition: "sent", remoteId: "effect-pace:1" });
+  assert.deepEqual(await remote.sendText({
+    baseUrl,
+    token: "wire-token",
+    peerId: "peer-1",
+    text: "second",
+    clientId: "effect-pace:2",
+  }), { disposition: "sent", remoteId: "effect-pace:2" });
+
+  assert.equal(arrivals.length, 2);
+  const gap = arrivals[1]! - arrivals[0]!;
+  assert.ok(gap >= 120, `expected consecutive sends to be spaced, saw ${gap}ms`);
+});
+
 function pollThenStopFailRemote(): WeixinRemote {
   let polls = 0;
   return {
@@ -631,6 +828,8 @@ function pollThenStopFailRemote(): WeixinRemote {
     downloadImage: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
     stop: async () => { throw new Error("remote shutdown failed"); },
   };
 }
@@ -648,6 +847,8 @@ function failingStopRemote(): WeixinRemote {
     downloadImage: async () => { throw new Error("no image expected"); },
     sendAttachment: async () => { throw new Error("no attachment expected"); },
     sendText: async () => ({ disposition: "sent", remoteId: "unused" }),
+    typingTicket: async () => undefined,
+    sendTyping: async () => {},
     stop: async () => { throw new Error("remote shutdown failed"); },
   };
 }
@@ -658,6 +859,8 @@ function blockingRemote(options: {
   sendText?: WeixinRemote["sendText"];
   downloadImage?: WeixinRemote["downloadImage"];
   sendAttachment?: WeixinRemote["sendAttachment"];
+  typingTicket?: WeixinRemote["typingTicket"];
+  sendTyping?: WeixinRemote["sendTyping"];
 }): WeixinRemote {
   let polls = 0;
   return {
@@ -672,6 +875,8 @@ function blockingRemote(options: {
     downloadImage: options.downloadImage ?? (async () => { throw new Error("no image expected"); }),
     sendAttachment: options.sendAttachment ?? (async () => { throw new Error("no attachment expected"); }),
     sendText: options.sendText ?? (async () => ({ disposition: "sent", remoteId: "unused" })),
+    typingTicket: options.typingTicket ?? (async () => "typing-ticket"),
+    sendTyping: options.sendTyping ?? (async () => {}),
     stop: async () => {},
   };
 }
