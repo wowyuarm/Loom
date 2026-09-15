@@ -447,6 +447,12 @@ test("returns bounded nmem Memory evidence through explicit recall", async t => 
     }],
   });
   assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /external historical evidence/i);
+  const visible = result.content[0]?.type === "text" ? result.content[0].text : "";
+  assert.match(visible, /reference: nmem:memory:memory-1/);
+  assert.match(visible, /eventDate: 2026-07-18/);
+  assert.match(visible, /A repaired misunderstanding/);
+  assert.match(visible, /Directly concerns the corrected attribution\./);
+  assert.match(visible, /They corrected who had made the decision and preserved the correction\./);
 });
 
 test("keeps recall failure-soft when nmem is absent or degraded", async t => {
@@ -538,6 +544,37 @@ test("bounds content returned by recall and marks truncation", async () => {
   assert.equal(result.details.results[0]?.content.length, 4_000);
   assert.equal(result.details.results[0]?.contentTruncated, true);
   assert.deepEqual(result.details.results[0]?.metadata, { useful: "kept" });
+  const visible = result.content[0]?.type === "text" ? result.content[0].text : "";
+  assert.match(visible, /reference: nmem:memory:memory-long/);
+  assert.ok(visible.includes("x".repeat(4_000)));
+  assert.equal(visible.includes("x".repeat(4_001)), false);
+  assert.match(visible, /content truncated/);
+});
+
+test("keeps the visible recall evidence within its bounded budget", async () => {
+  const tool = createNmemRecallTool({
+    endpoint: "http://nmem.test",
+    fetch: async input => {
+      const resource = String(input);
+      if (resource.endsWith("/capabilities")) {
+        return Response.json({ features: { memories: true, search: true } });
+      }
+      return Response.json(["First", "Second", "Third"].map((title, index) => ({
+        memory: { id: `memory-${index}`, title, content: "y".repeat(4_000) },
+        similarity_score: 0.5,
+        related_entities: [],
+      })));
+    },
+  });
+
+  const result = await executeRecall(tool, "many old memories");
+  assert.equal(result.details.results.length, 3);
+  const visible = result.content[0]?.type === "text" ? result.content[0].text : "";
+  assert.match(visible, /reference: nmem:memory:memory-0/);
+  assert.match(visible, /reference: nmem:memory:memory-1/);
+  assert.equal(visible.includes("reference: nmem:memory:memory-2"), false);
+  assert.match(visible, /1 further item\(s\) omitted/);
+  assert.ok(visible.length < 12_000 + 400);
 });
 
 function completedExecution(): AgentExecution {
