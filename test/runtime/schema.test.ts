@@ -109,7 +109,7 @@ test("upgrades version 19 active_segment with overdue columns (issue #4)", async
   assert.ok(columns.includes("overdue_reason_json"));
   assert.ok(columns.includes("next_overdue_check_at"));
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 22);
+  assert.equal(version.user_version, 23);
   const row = database.prepare(
     "SELECT overdue_since FROM active_segment WHERE id = 'segment-1'",
   ).get() as { overdue_since: string | null };
@@ -193,8 +193,17 @@ test("upgrades version 20 organ domain rows with budget columns", async () => {
   assert.ok(columnsOf("attention_maintenance").includes("needs_human"));
   assert.ok(columnsOf("memory_reflection").includes("needs_human"));
   assert.ok(columnsOf("proactive_pulse").includes("needs_human"));
+  for (const table of [
+    "activities",
+    "thread_maintenance",
+    "attention_maintenance",
+    "memory_reflection",
+    "proactive_pulse",
+  ]) {
+    assert.ok(columnsOf(table).includes("transient_since"));
+  }
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 22);
+  assert.equal(version.user_version, 23);
   const row = database.prepare(
     "SELECT next_eligible_at, needs_human FROM activities WHERE id = 'activity-1'",
   ).get() as { next_eligible_at: string | null; needs_human: number };
@@ -252,7 +261,7 @@ test("upgrades version 21 by mapping blocked ledger work to needs_human rows", a
   initializeRuntimeSchema(database);
 
   const version = database.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
-  assert.equal(version.user_version, 22);
+  assert.equal(version.user_version, 23);
   // The stale recording claim is released and the blocked work lands as
   // needs_human on the domain row; the ledger tables are gone.
   const row = database.prepare(

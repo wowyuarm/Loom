@@ -668,6 +668,105 @@ test("exhausted attention failures enter needs_human cooldown instead of busy", 
   db.close();
 });
 
+test("transient attention failures ride out the episode, then escalate past the window", async t => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-transient-attention-"));
+  let now = new Date("2026-07-19T11:00:00.000Z");
+  let maintainCalls = 0;
+  let mode: "transient" | "ok" = "transient";
+  const runtime = openRuntime({
+    root,
+    execution: completingExecution,
+    activityLifecycle: activityLifecycle(),
+    activityRecorder: {
+      record: async activity => receiptFor(activity, `record-${activity.segmentId}`),
+      cancel: async () => {},
+    },
+    attentionMaintenance: {
+      maintain: async () => {
+        maintainCalls += 1;
+        if (mode === "ok") {
+          return { outcome: "no_change", runId: `attention-${maintainCalls}`, path: "attention.md" };
+        }
+        throw new Error(
+          '429: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"rate_limit_error"}',
+        );
+      },
+      cancel: async () => {},
+    },
+    now: () => now,
+  });
+  t.after(() => runtime.close());
+
+  await runtime.acceptInput({ source: "test", sourceId: "transient-attention", kind: "interaction", payload: {} });
+  await runtime.advance();
+  await runtime.closeActivity();
+  await runtime.advance();
+
+  const options = {
+    initialDelayMs: 1,
+    cadenceMs: 60_000,
+    retryDelayMs: 30_000,
+    agentWork: "allow" as const,
+  };
+  const laneRow = () => {
+    const db = new DatabaseSync(path.join(root, "runtime.db"));
+    try {
+      return db.prepare(`
+        SELECT attempt_count, needs_human, transient_since, next_run_after
+        FROM attention_maintenance WHERE singleton = 1
+      `).get() as Record<string, unknown>;
+    } finally {
+      db.close();
+    }
+  };
+
+  assert.equal((await runtime.runAttentionMaintenance({ ...options, observedAt: now })).disposition, "waiting");
+  now = new Date("2026-07-19T11:00:00.001Z");
+  const first = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+  assert.equal(first.disposition, "failed");
+  assert.equal(first.nextRunAt, "2026-07-19T11:10:00.001Z");
+  // A transient failure parks briefly without consuming the attempt budget,
+  // and the episode start persists on the row.
+  assert.deepEqual({ ...laneRow() }, {
+    attempt_count: 0,
+    needs_human: 0,
+    transient_since: "2026-07-19T11:00:00.001Z",
+    next_run_after: "2026-07-19T11:10:00.001Z",
+  });
+
+  now = new Date("2026-07-19T11:10:00.001Z");
+  const second = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+  assert.equal(second.disposition, "failed");
+  assert.equal(second.nextRunAt, "2026-07-19T11:20:00.001Z");
+  assert.equal(laneRow().transient_since, "2026-07-19T11:00:00.001Z");
+  assert.equal(laneRow().attempt_count, 0);
+
+  // A success ends the episode: the next transient starts a fresh window.
+  mode = "ok";
+  now = new Date("2026-07-19T11:20:00.001Z");
+  assert.equal((await runtime.runAttentionMaintenance({ ...options, observedAt: now })).disposition, "completed");
+  assert.equal(laneRow().transient_since, null);
+
+  mode = "transient";
+  now = new Date("2026-07-19T11:21:00.001Z");
+  const fresh = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+  assert.equal(fresh.disposition, "failed");
+  assert.equal(laneRow().transient_since, "2026-07-19T11:21:00.001Z");
+
+  // Past the two-hour window the same transient escalates to a human.
+  now = new Date("2026-07-19T13:21:00.001Z");
+  const escalated = await runtime.runAttentionMaintenance({ ...options, observedAt: now });
+  assert.equal(escalated.disposition, "failed");
+  assert.equal(escalated.nextRunAt, "2026-07-20T13:21:00.001Z");
+  assert.deepEqual({ ...laneRow() }, {
+    attempt_count: 0,
+    needs_human: 1,
+    transient_since: "2026-07-19T11:21:00.001Z",
+    next_run_after: "2026-07-20T13:21:00.001Z",
+  });
+  assert.equal(maintainCalls, 5);
+});
+
 test("a retried attention window picks up activities that arrived during the backoff", async t => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-cognitive-organ-fresh-window-"));
   let now = new Date("2026-07-19T11:00:00.000Z");

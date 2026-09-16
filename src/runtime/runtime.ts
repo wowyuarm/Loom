@@ -170,6 +170,7 @@ interface PulseRow {
   next_pulse_after: string;
   consecutive_failures: number;
   needs_human: number;
+  transient_since: string | null;
   last_error: string | null;
 }
 
@@ -1066,7 +1067,7 @@ class SqliteRuntime implements Runtime {
           UPDATE attention_maintenance
           SET last_completed_at = ?, next_run_after = ?, cursor_sequence = ?,
               window_end_sequence = NULL, attempt_count = ?, needs_human = 0,
-              last_result_json = ?, last_error = NULL
+              transient_since = NULL, last_result_json = ?, last_error = NULL
           WHERE singleton = 1
         `).run(
           this.#now().toISOString(),
@@ -1095,19 +1096,23 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       this.#database.prepare(`
         UPDATE attention_maintenance
-        SET next_run_after = ?, attempt_count = ?, needs_human = ?, last_error = ?
+        SET next_run_after = ?, attempt_count = ?, needs_human = ?, transient_since = ?, last_error = ?
         WHERE singleton = 1
-      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, message.slice(0, 2_000));
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, budget.transientSince, message.slice(0, 2_000));
       this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
     });
     return { disposition: "failed", nextRunAt: budget.nextEligibleAt!, error: message };
   }
 
-  #readAttentionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+  #readAttentionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman" | "transientSince"> {
     const row = this.#database.prepare(`
-      SELECT attempt_count, needs_human FROM attention_maintenance WHERE singleton = 1
-    `).get() as unknown as { attempt_count: number; needs_human: number } | undefined;
-    return { attempts: row?.attempt_count ?? 0, needsHuman: (row?.needs_human ?? 0) === 1 };
+      SELECT attempt_count, needs_human, transient_since FROM attention_maintenance WHERE singleton = 1
+    `).get() as unknown as { attempt_count: number; needs_human: number; transient_since: string | null } | undefined;
+    return {
+      attempts: row?.attempt_count ?? 0,
+      needsHuman: (row?.needs_human ?? 0) === 1,
+      transientSince: row?.transient_since ?? null,
+    };
   }
 
 
@@ -1195,19 +1200,23 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       this.#database.prepare(`
         UPDATE memory_reflection
-        SET next_run_after = ?, attempt_count = ?, needs_human = ?, last_error = ?
+        SET next_run_after = ?, attempt_count = ?, needs_human = ?, transient_since = ?, last_error = ?
         WHERE singleton = 1
-      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, message.slice(0, 2_000));
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, budget.transientSince, message.slice(0, 2_000));
       this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
     });
     return { disposition: "failed", reflectionDay, nextRunAt: budget.nextEligibleAt!, error: message };
   }
 
-  #readReflectionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+  #readReflectionBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman" | "transientSince"> {
     const row = this.#database.prepare(`
-      SELECT attempt_count, needs_human FROM memory_reflection WHERE singleton = 1
-    `).get() as unknown as { attempt_count: number; needs_human: number } | undefined;
-    return { attempts: row?.attempt_count ?? 0, needsHuman: (row?.needs_human ?? 0) === 1 };
+      SELECT attempt_count, needs_human, transient_since FROM memory_reflection WHERE singleton = 1
+    `).get() as unknown as { attempt_count: number; needs_human: number; transient_since: string | null } | undefined;
+    return {
+      attempts: row?.attempt_count ?? 0,
+      needsHuman: (row?.needs_human ?? 0) === 1,
+      transientSince: row?.transient_since ?? null,
+    };
   }
 
   async closeActivity(options: CloseActivityOptions = {}): Promise<CloseActivityResult> {
@@ -1760,35 +1769,35 @@ class SqliteRuntime implements Runtime {
         case "attention-maintainer":
           clear(`
             UPDATE attention_maintenance
-            SET needs_human = 0, attempt_count = 0, last_error = NULL
+            SET needs_human = 0, attempt_count = 0, transient_since = NULL, last_error = NULL
             WHERE singleton = 1 AND needs_human = 1
           `);
           break;
         case "memory-reflector":
           clear(`
             UPDATE memory_reflection
-            SET needs_human = 0, attempt_count = 0, last_error = NULL
+            SET needs_human = 0, attempt_count = 0, transient_since = NULL, last_error = NULL
             WHERE singleton = 1 AND needs_human = 1
           `);
           break;
         case "orientation":
           clear(`
             UPDATE proactive_pulse
-            SET needs_human = 0, consecutive_failures = 0, last_error = NULL
+            SET needs_human = 0, consecutive_failures = 0, transient_since = NULL, last_error = NULL
             WHERE singleton = 1 AND needs_human = 1
           `);
           break;
         case "life-recorder":
           clear(`
             UPDATE activities
-            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, last_error = NULL
+            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, transient_since = NULL, last_error = NULL
             WHERE needs_human = 1 AND status <> 'recorded'
           `);
           break;
         case "thread-maintainer":
           clear(`
             UPDATE thread_maintenance
-            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, last_error = NULL
+            SET needs_human = 0, attempt_count = 0, next_eligible_at = NULL, transient_since = NULL, last_error = NULL
             WHERE needs_human = 1 AND status <> 'completed'
           `);
           break;
@@ -1918,7 +1927,7 @@ class SqliteRuntime implements Runtime {
 
   #readPulseSchedule(): PulseRow | undefined {
     return this.#database.prepare(`
-      SELECT last_pulse_at, next_pulse_after, consecutive_failures, needs_human, last_error
+      SELECT last_pulse_at, next_pulse_after, consecutive_failures, needs_human, transient_since, last_error
       FROM proactive_pulse WHERE singleton = 1
     `).get() as unknown as PulseRow | undefined;
   }
@@ -2207,7 +2216,7 @@ class SqliteRuntime implements Runtime {
     this.#database.prepare(`
       UPDATE memory_reflection
       SET next_day = ?, next_run_after = ?, attempt_count = 0, needs_human = 0,
-          last_completed_day = ?, last_result_json = ?, last_error = NULL
+          transient_since = NULL, last_completed_day = ?, last_result_json = ?, last_error = NULL
       WHERE singleton = 1
     `).run(nextDay, nextRunAt, reflectionDay, result ? JSON.stringify(result) : null);
   }
@@ -2236,6 +2245,7 @@ class SqliteRuntime implements Runtime {
         next_pulse_after: nextPulseAfter,
         consecutive_failures: 0,
         needs_human: 0,
+        transient_since: null,
         last_error: null,
       };
     });
@@ -2249,7 +2259,7 @@ class SqliteRuntime implements Runtime {
     const changed = this.#database.prepare(`
       UPDATE proactive_pulse
       SET last_pulse_at = ?, next_pulse_after = ?, consecutive_failures = 0, needs_human = 0,
-          last_error = NULL
+          transient_since = NULL, last_error = NULL
       WHERE singleton = 1
     `).run(observedAt.toISOString(), nextRunAt);
     if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
@@ -2264,11 +2274,12 @@ class SqliteRuntime implements Runtime {
     );
   }
 
-  #readPulseBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman"> {
+  #readPulseBudget(): Pick<OrganBudgetFields, "attempts" | "needsHuman" | "transientSince"> {
     const row = this.#readPulseSchedule();
     return {
       attempts: row?.consecutive_failures ?? 0,
       needsHuman: (row?.needs_human ?? 0) === 1,
+      transientSince: row?.transient_since ?? null,
     };
   }
 
@@ -2277,9 +2288,9 @@ class SqliteRuntime implements Runtime {
       const changed = this.#database.prepare(`
         UPDATE proactive_pulse
         SET next_pulse_after = ?, consecutive_failures = ?, needs_human = ?,
-            last_error = ?
+            transient_since = ?, last_error = ?
         WHERE singleton = 1
-      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, (budget.lastError ?? "").slice(0, 2_000));
+      `).run(budget.nextEligibleAt!, budget.attempts, budget.needsHuman ? 1 : 0, budget.transientSince, (budget.lastError ?? "").slice(0, 2_000));
       if (changed.changes !== 1) throw new Error("Opportunity Pulse schedule is missing");
       this.#recordTransition(
         "proactive_pulse",
@@ -2928,7 +2939,7 @@ class SqliteRuntime implements Runtime {
   }
 
  #settleThreadMaintenance(
-    head: { activity_id: string; attempt_count: number; needs_human: number },
+    head: { activity_id: string; attempt_count: number; needs_human: number; transient_since: string | null },
     agentRunId: string,
     outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: ThreadMaintenanceResult },
   ): AdvanceResult {
@@ -2939,7 +2950,7 @@ class SqliteRuntime implements Runtime {
         const changed = this.#database.prepare(`
           UPDATE thread_maintenance
           SET status = 'completed', result_json = ?, last_error = NULL,
-              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, completed_at = ?
+              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, transient_since = NULL, completed_at = ?
           WHERE activity_id = ? AND status <> 'completed'
         `).run(JSON.stringify(result), now.toISOString(), head.activity_id);
         if (changed.changes !== 1) {
@@ -2969,6 +2980,7 @@ class SqliteRuntime implements Runtime {
     const budget = failureBudget(this.#now(), {
       attempts: head.attempt_count,
       needsHuman: head.needs_human === 1,
+      transientSince: head.transient_since,
     }, {
       class: organFailureClass(error),
       error: message,
@@ -2977,9 +2989,9 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       this.#database.prepare(`
         UPDATE thread_maintenance
-        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, last_error = ?
+        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, transient_since = ?, last_error = ?
         WHERE activity_id = ? AND status <> 'completed'
-      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, message.slice(0, 2_000), head.activity_id);
+      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, budget.transientSince, message.slice(0, 2_000), head.activity_id);
       this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
     });
     return {
@@ -2995,11 +3007,13 @@ class SqliteRuntime implements Runtime {
     observations: ThreadActivityObservation[];
     attempt_count: number;
     needs_human: number;
+    transient_since: string | null;
     next_eligible_at: string | null;
   } | undefined {
     const next = this.#database.prepare(`
       SELECT thread_maintenance.activity_id, thread_maintenance.observations_json,
              thread_maintenance.attempt_count, thread_maintenance.needs_human,
+             thread_maintenance.transient_since,
              thread_maintenance.next_eligible_at, activities.frozen_activity_json
       FROM thread_maintenance
       JOIN activities ON activities.id = thread_maintenance.activity_id
@@ -3011,6 +3025,7 @@ class SqliteRuntime implements Runtime {
       observations_json: string;
       attempt_count: number;
       needs_human: number;
+      transient_since: string | null;
       next_eligible_at: string | null;
       frozen_activity_json: string;
     } | undefined;
@@ -3021,6 +3036,7 @@ class SqliteRuntime implements Runtime {
       observations: JSON.parse(next.observations_json) as ThreadActivityObservation[],
       attempt_count: next.attempt_count,
       needs_human: next.needs_human,
+      transient_since: next.transient_since,
       next_eligible_at: next.next_eligible_at,
     };
   }
@@ -3081,7 +3097,7 @@ class SqliteRuntime implements Runtime {
     // FIFO: the first non-recorded Activity is the head. A head waiting in
     // backoff or needs_human cooldown blocks later rows until its deadline.
     const head = this.#database.prepare(`
-      SELECT id, frozen_activity_json, attempt_count, needs_human, next_eligible_at
+      SELECT id, frozen_activity_json, attempt_count, needs_human, transient_since, next_eligible_at
       FROM activities
       WHERE status <> 'recorded'
       ORDER BY sequence
@@ -3091,6 +3107,7 @@ class SqliteRuntime implements Runtime {
       frozen_activity_json: string;
       attempt_count: number;
       needs_human: number;
+      transient_since: string | null;
       next_eligible_at: string | null;
     } | undefined;
     if (!head) return { disposition: "idle" };
@@ -3129,7 +3146,7 @@ class SqliteRuntime implements Runtime {
   }
 
   #settleActivityRecording(
-    head: { id: string; attempt_count: number; needs_human: number },
+    head: { id: string; attempt_count: number; needs_human: number; transient_since: string | null },
     agentRunId: string,
     outcome: { cancelled: boolean; failure: { error: unknown } | undefined; result?: LifeRecorderReceipt },
   ): AdvanceResult {
@@ -3140,7 +3157,7 @@ class SqliteRuntime implements Runtime {
         const changed = this.#database.prepare(`
           UPDATE activities
           SET status = 'recorded', receipt_json = ?, last_error = NULL,
-              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, recorded_at = ?
+              attempt_count = 0, needs_human = 0, next_eligible_at = NULL, transient_since = NULL, recorded_at = ?
           WHERE id = ? AND status <> 'recorded'
         `).run(JSON.stringify(receipt), now.toISOString(), head.id);
         if (changed.changes !== 1) {
@@ -3162,6 +3179,7 @@ class SqliteRuntime implements Runtime {
     const budget = failureBudget(this.#now(), {
       attempts: head.attempt_count,
       needsHuman: head.needs_human === 1,
+      transientSince: head.transient_since,
     }, {
       class: organFailureClass(error),
       error: message,
@@ -3170,9 +3188,9 @@ class SqliteRuntime implements Runtime {
     this.#transaction(() => {
       this.#database.prepare(`
         UPDATE activities
-        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, last_error = ?
+        SET attempt_count = ?, needs_human = ?, next_eligible_at = ?, transient_since = ?, last_error = ?
         WHERE id = ? AND status <> 'recorded'
-      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, message.slice(0, 2_000), head.id);
+      `).run(budget.attempts, budget.needsHuman ? 1 : 0, budget.nextEligibleAt, budget.transientSince, message.slice(0, 2_000), head.id);
       this.#finishAgentRun(agentRunId, "failed", undefined, this.#now(), agentFailureCategory(error));
     });
     return {
