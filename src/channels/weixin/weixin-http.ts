@@ -240,12 +240,17 @@ class HttpWeixinRemote implements WeixinRemote {
 
     let captionSent = false;
     if (request.text) {
+      // The caption reuses the attempt key verbatim: that is exactly what a
+      // plain outbound text sends, a shape the peer has been observed to
+      // display. The attachment below mints its own bare id instead, so both
+      // halves stay in id shapes the peer is known to display — and both ids
+      // remain recoverable from the ledger (idempotency key / remote id).
       const caption = await this.sendText({
         baseUrl: request.baseUrl,
         token: request.token,
         peerId: request.peerId,
         text: request.text,
-        clientId: `${request.clientId}:text`,
+        clientId: request.clientId,
         ...(request.contextToken ? { contextToken: request.contextToken } : {}),
       });
       if (caption.disposition === "rejected") return caption;
@@ -594,13 +599,22 @@ async function uploadAttachment(request: {
   };
 }
 
+/**
+ * Fresh bare client id for one outbound attachment message. The peer has only
+ * ever been observed to display colon-free ids on this path, so the file half
+ * mints its own instead of sharing a suffixed key with its caption. The
+ * Runtime still owns attempt-level idempotency above this boundary.
+ */
+function generateClientId(): string {
+  return `loom-weixin-${Date.now().toString(36)}-${crypto.randomBytes(4).toString("hex")}`;
+}
+
 async function sendAttachmentItem(
   request: {
     baseUrl: string;
     token: string;
     peerId: string;
     attachment: AttachmentReference;
-    clientId: string;
     contextToken?: string;
   },
   uploaded: UploadedAttachment,
@@ -609,10 +623,13 @@ async function sendAttachmentItem(
   | { disposition: "sent"; remoteId: string }
   | { disposition: "rejected"; error: string; code?: number }
 > {
-  const clientId = `${request.clientId}:attachment`;
+  const clientId = generateClientId();
   const media = {
     encrypt_query_param: uploaded.encryptedQueryParam,
-    aes_key: uploaded.aesKey.toString("base64"),
+    // Base64 of the hex key text (44 chars), not of the raw 16 bytes: this is
+    // the encoding the peer was observed to display, and it carries the same
+    // key getuploadurl negotiated as hex above.
+    aes_key: Buffer.from(uploaded.aesKey.toString("hex"), "utf8").toString("base64"),
     encrypt_type: 1,
   };
   const item = request.attachment.kind === "image"

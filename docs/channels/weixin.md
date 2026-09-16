@@ -53,7 +53,7 @@ Inbound 只接受配置 peer 的完成消息。文字直接进入 Input。图片
 
 Runtime 持久接受 Input 后，Adapter 立刻向 peer 发送 typing，并周期性续期；一次 Delivery attempt 结束、Channel 停止或超过 2 分钟上限时取消。typing 只依赖 peer 的 typing ticket，任何失败都只影响这个指示本身，不改变 Ingress 或 Delivery 结果；个别不回复的 Turn 仍可能让 typing 停留到上限。出站消息在同一 peer 上按最小间隔排队，间隔只推迟某一次 Delivery attempt，不丢弃 Effect，也不改变投递结果。
 
-Outbound 在接受 Effect 前把 `message.send` 指定的 Agent Workspace 文件快照进 Attachment Store，之后的文件修改不影响投递。Runtime Delivery attempt 的 idempotency key 是稳定前缀；带文字的附件分别使用 `:text` 和 `:attachment` client id。明确 API 拒绝进入 `not_sent` 退避；网络或 HTTP 结果不明进入 `unknown`。若文字已送达而附件失败，整个 Delivery 进入 `unknown`，不会自动重发文字。context token 明确过期时，Adapter 在同一 attempt 内清掉 token 并重试一次。
+Outbound 在接受 Effect 前把 `message.send` 指定的 Agent Workspace 文件快照进 Attachment Store，之后的文件修改不影响投递。带文字的附件分两次单发：文字沿用 Delivery attempt 的 idempotency key，附件每次生成新的无冒号 client id（两半的 id 可分别从投递记录的 idempotency key 与 remote id 追溯）；附件 `aes_key` 使用与上传协商一致的 hex 文本 base64 形式。明确 API 拒绝进入 `not_sent` 退避；网络或 HTTP 结果不明进入 `unknown`。若文字已送达而附件失败，整个 Delivery 进入 `unknown`，不会自动重发文字。context token 明确过期时，Adapter 在同一 attempt 内清掉 token 并重试一次。
 
 入站失败被隔离：无法表示的消息按 `invalid_message` 记录并跳过，可重试的失败保留 cursor 重试，连续 5 次后记录并放行，后续消息和 cursor 不受一条坏消息影响。轮询按服务端 `longpolling_timeout_ms`（限制在 5–60 秒）等待；等待窗口内没有新消息是正常空轮询，cursor 不动、Channel 保持 `connected`，不计失败也不进入重连。真正的失败（HTTP 错误、连接中断）连续 3 次后退避到 30 秒，`ret=-14`（bot session 过期）等待 10 分钟并依赖外部重新登录。`status().ingress` 暴露失败的条数、id 和分类。
 

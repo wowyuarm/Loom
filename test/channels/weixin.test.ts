@@ -643,7 +643,7 @@ test("reports unknown when an attachment fails after its caption was sent", asyn
     request.on("data", chunk => { source += chunk; });
     request.on("end", () => {
       const body = JSON.parse(source || "{}") as {
-        msg?: { client_id?: string };
+        msg?: { client_id?: string; item_list?: Array<{ type?: number }> };
       };
       response.setHeader("content-type", "application/json");
       if (request.url === "/ilink/bot/getuploadurl") {
@@ -653,7 +653,7 @@ test("reports unknown when an attachment fails after its caption was sent", asyn
       if (request.url === "/ilink/bot/sendmessage") {
         if (body.msg?.client_id) clientIds.push(body.msg.client_id);
         response.end(JSON.stringify(
-          body.msg?.client_id?.endsWith(":attachment")
+          body.msg?.item_list?.some(item => item.type === 4)
             ? { ret: -1, errmsg: "attachment rejected" }
             : { ret: 0 },
         ));
@@ -696,7 +696,12 @@ test("reports unknown when an attachment fails after its caption was sent", asyn
 
   assert.equal(result.status, "unknown");
   assert.match(result.error ?? "", /after its caption was sent/);
-  assert.deepEqual(clientIds, ["effect-partial:1:text", "effect-partial:1:attachment"]);
+  // The caption reuses the attempt key verbatim; the attachment mints a fresh
+  // bare id with no colon-suffixed shape.
+  assert.equal(clientIds.length, 2);
+  assert.equal(clientIds[0], "effect-partial:1");
+  const attachmentId = clientIds[1];
+  assert.ok(attachmentId && !attachmentId.includes(":") && attachmentId !== clientIds[0]);
 });
 
 test("stops an inbound image stream when it exceeds 15 MiB", async t => {
@@ -905,7 +910,7 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
     byteSize: outboundContent.length,
     fileName: "wire.txt",
   };
-  assert.deepEqual(await remote.sendAttachment({
+  const attachmentResult = await remote.sendAttachment({
     baseUrl,
     cdnBaseUrl: `${baseUrl}/cdn`,
     token: "wire-token",
@@ -915,7 +920,7 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
     content: outboundContent,
     clientId: "effect-wire-attachment:2",
     contextToken: "context-73",
-  }), { disposition: "sent", remoteId: "effect-wire-attachment:2:attachment" });
+  });
   await remote.stop({ baseUrl, token: "wire-token" });
 
   const pollBody = requests.find(item => item.path === "/ilink/bot/getupdates")?.body;
@@ -937,11 +942,26 @@ test("maps Weixin HTTP updates and sends the Runtime idempotency key as client_i
   assert.deepEqual(Buffer.concat([uploadDecipher.update(uploads[0]!), uploadDecipher.final()]), outboundContent);
   const attachmentSend = requests.find(item => {
     if (item.path !== "/ilink/bot/sendmessage") return false;
-    const body = item.body as { msg?: { client_id?: string } };
-    return body.msg?.client_id === "effect-wire-attachment:2:attachment";
-  })?.body as { msg?: { item_list?: Array<{ type?: number; file_item?: { file_name?: string } }> } } | undefined;
+    const body = item.body as { msg?: { item_list?: Array<{ type?: number }> } };
+    return body.msg?.item_list?.some(entry => entry.type === 4);
+  })?.body as {
+    msg?: {
+      client_id?: string;
+      item_list?: Array<{ type?: number; file_item?: { file_name?: string; media?: { aes_key?: string } } }>;
+    };
+  } | undefined;
+  // The attachment mints a fresh bare id with no colon-suffixed shape, and
+  // the reported remote id is that same wire id.
+  assert.deepEqual(attachmentResult, { disposition: "sent", remoteId: attachmentSend?.msg?.client_id });
+  assert.ok(attachmentSend?.msg?.client_id && !attachmentSend.msg.client_id.includes(":"));
   assert.equal(attachmentSend?.msg?.item_list?.[0]?.type, 4);
   assert.equal(attachmentSend?.msg?.item_list?.[0]?.file_item?.file_name, "wire.txt");
+  // The sendmessage aes_key carries the same key the upload negotiated, in
+  // the base64-of-hex form the peer was observed to display.
+  assert.equal(
+    attachmentSend?.msg?.item_list?.[0]?.file_item?.media?.aes_key,
+    Buffer.from(uploadRequest?.aeskey ?? "", "utf8").toString("base64"),
+  );
 });
 
 test("maps Weixin voice, file, and video items and downloads audio without image detection", async t => {
