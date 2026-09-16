@@ -307,6 +307,46 @@ test("keeps earlier writes and recovers when an episode cites unsupported eviden
   assert.equal((await readdir(path.join(workspaceRoot, "episodes", "2026-07-19"))).length, 1);
 });
 
+test("rejects a Daily that cites an episode path that does not resolve", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-dangling-"));
+  const workspaceRoot = await createRecorderWorkspace(root);
+  await mkdir(path.join(workspaceRoot, "episodes", "2026-07-19"), { recursive: true });
+  await writeFile(
+    path.join(workspaceRoot, "episodes", "2026-07-19", "episode-earlier.md"),
+    "# Earlier scene\n",
+    "utf8",
+  );
+  const { faux, model, modelRuntime } = await createTestPi(root, "life-recorder-dangling");
+  faux.setResponses([
+    fauxAssistantMessage(
+      fauxToolCall("read_activity", { offset: 0 }, { id: "read-activity" }),
+      { stopReason: "toolUse" },
+    ),
+    fauxAssistantMessage(fauxToolCall("write_daily", {
+      content: "# 2026-07-19\n\nSee [a scene](episodes/2026-07-19/episode-typo.md).\n",
+    }, { id: "write-daily-broken" }), { stopReason: "toolUse" }),
+    context => {
+      assert.match(JSON.stringify(context.messages), /cites episode paths that do not resolve/);
+      assert.match(JSON.stringify(context.messages), /episode-typo\.md/);
+      return fauxAssistantMessage(fauxToolCall("write_daily", {
+        content: "# 2026-07-19\n\nSee [a scene](episodes/2026-07-19/episode-earlier.md).\n",
+      }, { id: "write-daily-fixed" }), { stopReason: "toolUse" });
+    },
+    fauxAssistantMessage(fauxToolCall("finish", {}, { id: "finish" }), { stopReason: "toolUse" }),
+  ]);
+  const recorder = await createPiLifeRecorder({
+    agentWorkspace: new AgentWorkspace(workspaceRoot),
+    agentDir: path.join(root, "agent"),
+    transcriptDirectory: path.join(root, "transcripts"),
+    modelRuntime,
+    model,
+  });
+
+  const receipt = await recorder.record(activity());
+  assert.equal(receipt.daily.status, "updated");
+  assert.match(await readFile(path.join(workspaceRoot, "daily", "2026-07-19.md"), "utf8"), /episode-earlier\.md/);
+});
+
 test("restores all Workspace files when the provider fails after writes", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "loom-life-recorder-rollback-"));
   const workspaceRoot = await createRecorderWorkspace(root);

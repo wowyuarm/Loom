@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { OperationalEventObserver } from "../operational-events.js";
 
@@ -157,6 +157,7 @@ class PiLifeRecorder implements ActivityRecorder {
     });
     if (opened.state === "completed") return opened.result;
     const mutation = opened.mutation;
+    const workspaceRoot = this.options.agentWorkspace.root;
     const runId = this.options.nextRunId?.() ?? randomUUID();
     const recordedAt = (this.options.now?.() ?? new Date()).toISOString();
     const dailyPath = `daily/${activity.recordingDay}.md`;
@@ -227,7 +228,7 @@ class PiLifeRecorder implements ActivityRecorder {
       defineTool({
         name: "write_daily",
         label: "Write Daily Narrative",
-        description: "Replace the complete Daily Narrative for this frozen activity's recording day.",
+        description: "Replace the complete Daily Narrative for this frozen activity's recording day. Every Episode link it cites must resolve to a file already in the Agent Workspace.",
         parameters: Type.Object({
           content: Type.String({ minLength: 1 }),
         }),
@@ -236,6 +237,10 @@ class PiLifeRecorder implements ActivityRecorder {
           if (dailyUpdated) throw new Error("Daily Narrative was already written in this recorder run");
           if (readEventIndexes.size !== activity.events.length) {
             throw new Error("All frozen activity events must be read before writing the Daily Narrative");
+          }
+          const dangling = await findDanglingEpisodeLinks(workspaceRoot, params.content);
+          if (dangling.length > 0) {
+            throw new Error(`Daily Narrative cites episode paths that do not resolve: ${dangling.join(", ")}. Record the episode first, then copy the workspace-relative path exactly as record_episode returned it.`);
           }
           const write = await mutation.write(dailyPath, requireNonBlank(params.content, "Daily Narrative"));
           organSession.acceptWrite(write);
@@ -524,6 +529,39 @@ function uniqueStrings(values: string[], field: string): string[] {
   const normalized = values.map(value => requireNonBlank(value, field));
   if (new Set(normalized).size !== normalized.length) throw new Error(`${field} contains duplicates`);
   return normalized;
+}
+
+/**
+ * Every Episode citation in the Daily Narrative must resolve to a file the
+ * Individual can actually reopen. Only markdown link targets are citations;
+ * prose that merely mentions the episodes directory is not checked.
+ */
+async function findDanglingEpisodeLinks(workspaceRoot: string, daily: string): Promise<string[]> {
+  const cited = new Set<string>();
+  for (const match of daily.matchAll(/\]\((episodes\/[^)\s]+)\)/g)) {
+    const link = match[1]?.split("#")[0];
+    if (link) cited.add(link);
+  }
+  const dangling: string[] = [];
+  for (const link of [...cited].sort()) {
+    if (!isResolvableEpisodeLink(link) || !(await isWorkspaceFile(workspaceRoot, link))) {
+      dangling.push(link);
+    }
+  }
+  return dangling;
+}
+
+function isResolvableEpisodeLink(link: string): boolean {
+  return link.endsWith(".md")
+    && link.split("/").every(part => part !== "" && part !== "." && part !== "..");
+}
+
+async function isWorkspaceFile(workspaceRoot: string, link: string): Promise<boolean> {
+  try {
+    return (await stat(path.join(workspaceRoot, link))).isFile();
+  } catch {
+    return false;
+  }
 }
 
 function singleLine(value: string, field: string): string {
