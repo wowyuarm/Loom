@@ -20,6 +20,7 @@
 | 主题 | 状态 | 入口 |
 | --- | --- | --- |
 | deepseek-harness | active —— 评估 DSH 作为 Loom 的 Interaction Channel（探索阶段，尚未形成实施方案） | [`deepseek-harness/as-channel/map.md`](deepseek-harness/as-channel/map.md) |
+| jev-proactivity | ready-for-human —— Jev 抬高主动性上限的评测已出结论（压制门不成立）；是否新开并行"通用脉冲"等 Human 拍板，当前搁置 | [`jev-proactivity/README.md`](jev-proactivity/README.md) |
 
 ## 归档主题
 
