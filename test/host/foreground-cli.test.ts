@@ -494,7 +494,9 @@ async function runCli(
   args: string[],
   env?: NodeJS.ProcessEnv,
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  const child = spawn(process.execPath, [cli, ...args], {
+  // node:sqlite is experimental below Node 24.15, and the runtime notice is the only
+  // thing this spawn would otherwise add to stderr; CLI-authored stderr stays asserted empty.
+  const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", cli, ...args], {
     stdio: ["pipe", "pipe", "pipe"],
     ...(env ? { env } : {}),
   });
