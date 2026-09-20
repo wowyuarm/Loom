@@ -31,7 +31,7 @@ Use this authority order:
 ## Conventions
 
 - 代码风格见 [typescript-conventions](docs/agents/typescript-conventions.md)：命名、类型和结构自解释，注释只写代码看不出的约束、原因和安全条件。
-- 非平凡改动若改变公开合同或工作流，同步更新受影响的正式文档和测试；不为迎合新代码回写已归档的 `.scratch/` 材料。
+- 非平凡改动若改变公开合同或工作流，同步更新受影响的正式文档和测试（路由见 [docs/AGENTS.md](docs/AGENTS.md)）；不为迎合新代码回写已归档的 `.scratch/` 材料。
 - 一个提交对应一个闭合工作单元。交付时说明提交、验证结果、剩余边界和下一位动作。
 - commit message 使用简短的一行英语叙述，格式为全小写 `type(scope): 描述`（如 `feat(runtime): …`、`fix(thread-maintainer): …`、`docs: …`），描述小写开头；type 取 feat、fix、docs、test、refactor、chore、scratch，scope 缺省可省略。
 - 测试是行为证据，不是产品合同本身；旧测试与已确认行为冲突时修正测试，不为通过测试扭曲正确逻辑。

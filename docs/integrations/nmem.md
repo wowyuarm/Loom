@@ -44,6 +44,7 @@ or perform nmem I/O. Configuration changes take effect after Host restart.
 ## Runtime Behavior
 
 - `nmem_recall` searches bounded historical Memory evidence for the Main Agent.
+- 召回证据以文字形式进入模型可见的结果（有界，超限截断并注明）；`details` 元数据不到达模型。
 - Life Recorder receipts authorize Episode projection; completed Frozen
   Activities authorize conversation Thread projection.
 - Working Memory is optional evidence for Memory Reflector. A previously fetched

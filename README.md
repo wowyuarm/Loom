@@ -14,6 +14,8 @@ Loom 提供一个主动、好奇、独立且以人为中心的运行环境。它
 
 ## 文档体系
 
+完整索引与阅读起点见 [`docs/README.md`](docs/README.md)。
+
 - [`CONTEXT.md`](CONTEXT.md)：稳定术语和边界
 - [`docs/architecture.md`](docs/architecture.md)：模块关系与数据流
 - [`docs/adr/`](docs/adr/)：难以逆转的长期取舍
