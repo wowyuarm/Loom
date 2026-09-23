@@ -1,1 +1,3 @@
-export * from './runtime-state/index.ts'
+export * as runtimeState from './runtime-state/index.ts'
+export * as clock from './clock/index.ts'
+export * as materials from './materials/index.ts'
