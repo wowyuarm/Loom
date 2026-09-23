@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
-import type { LoomClock } from '../clock/index.ts'
+import type { Clock } from '../contracts/index.ts'
 import {
   materialPath,
   materialPaths,
@@ -42,10 +42,10 @@ function noteWithStamp(body: string, stamp: Stamp): string {
  * single files the agent edits with the generic fs tools; only this pairing needs a tool.
  */
 export function registerMemoryWrite(ctx: Context, workspace: string): void {
-  ctx.tools.register(createMemoryWriteTool(ctx.loomClock, workspace))
+  ctx.tools.register(createMemoryWriteTool(ctx.clock, workspace))
 }
 
-export function createMemoryWriteTool(clock: LoomClock, workspace: string): ToolDefinition {
+export function createMemoryWriteTool(clock: Clock, workspace: string): ToolDefinition {
   return defineTool({
     name: 'memory_write',
     description:

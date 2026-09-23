@@ -7,10 +7,10 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
-import type { AcceptedInput, LoomState } from '../src/runtime-state/index.ts'
+import type { AcceptedInput, RuntimeState } from '../src/contracts/index.ts'
 
 interface Booted {
-  loom: LoomState
+  loom: RuntimeState
   dispose: () => Promise<void>
 }
 
@@ -20,8 +20,8 @@ async function boot(path: string): Promise<Booted> {
   const fSqlite = await ctx.plugin(StorageSqlite, { path })
   const fDomain = await ctx.plugin(StorageDomain, { backend: 'sqlite' })
   const fLoom = await ctx.plugin(RuntimeStatePlugin)
-  await vi.waitFor(() => { expect(ctx.loomState).toBeDefined() })
-  const loom = ctx.loomState
+  await vi.waitFor(() => { expect(ctx.runtimeState).toBeDefined() })
+  const loom = ctx.runtimeState
   // Reverse-order teardown releases the sqlite medium so a later boot can reopen it.
   const dispose = async () => {
     await fLoom.dispose()

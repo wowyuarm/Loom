@@ -10,7 +10,7 @@ export interface MaterialsConfig {
 }
 
 export const name = 'loom-materials'
-export const inject = ['systemPrompt', 'tools', 'loomClock']
+export const inject = ['systemPrompt', 'tools', 'clock']
 
 export function apply(ctx: Context, config: MaterialsConfig): void {
   const caps: MaterialCaps = { ...defaultCaps, ...config.caps }
