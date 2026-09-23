@@ -5,6 +5,7 @@
  * same service and be swapped in without touching consumers.
  */
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 
 /** The single time source. Everything reads "now" here instead of calling Date.now() directly. */
 export interface Clock {
@@ -45,7 +46,17 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     clock: Clock
     runtimeState: RuntimeState
+    agentRuntime: AgentRuntime
   }
+}
+
+/**
+ * The one live agent of a deployment. Boot resumes it from the runtime-state pointer or creates
+ * a first one; consumers (channels, continuity) reach the current agent through this.
+ */
+export interface AgentRuntime {
+  /** The live agent, or undefined before boot completes or after disposal. */
+  current(): Agent | undefined
 }
 
 export type { SessionId }
