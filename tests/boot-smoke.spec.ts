@@ -116,4 +116,32 @@ describe('loom boot smoke', () => {
       await loom.dispose()
     }
   })
+
+  it('rolls the context over to a fresh session when the model calls context_rollover, carrying lineage', async () => {
+    const loom = await bootLoom(new MockAdapter([
+      toolCallResponse('c1', 'context_rollover', { handoff: 'Continue as the same agent in a fresh context; nothing was rolled back.' }),
+      textResponse('rolling over'),
+      textResponse('fresh start'),
+      textResponse('ok'),
+    ]))
+    try {
+      const original = loom.ctx.runtimeState.getCurrentSession()?.sessionId
+      expect(original).toBeDefined()
+
+      const agent = loom.ctx.agentRuntime.current()
+      agent?.followup(createUserMessage({ content: [{ type: 'text', text: 'please roll over' }], source: { kind: 'user' } }))
+
+      // The swap settles asynchronously at the idle boundary after the triggering turn ends.
+      await vi.waitFor(() => {
+        expect(loom.ctx.runtimeState.getCurrentSession()?.sessionId).not.toBe(original)
+      }, { timeout: 5000 })
+
+      const after = loom.ctx.runtimeState.getCurrentSession()
+      expect(after?.sessionId).toMatch(/^loom-rollover-/)
+      expect(after?.parentLineage).toContain(original)
+      expect(loom.ctx.agentRuntime.current()?.id).toBe(after?.sessionId)
+    } finally {
+      await loom.dispose()
+    }
+  })
 })

@@ -38,7 +38,7 @@ async function realRuntimeState(): Promise<{ runtimeState: RuntimeState; dispose
 function fakeAgents() {
   const created: { sessionId: SessionId }[] = []
   const resumed: { resumeSessionId: SessionId }[] = []
-  const handle = (id: SessionId): AgentHandle => ({ agent: { id } as AgentHandle['agent'], dispose: () => Promise.resolve() })
+  const handle = (id: SessionId): AgentHandle => ({ agent: { id, session: { id } } as AgentHandle['agent'], dispose: () => Promise.resolve() })
   return {
     created,
     resumed,
@@ -99,6 +99,7 @@ function trackAgents() {
     byId.set(id, rec)
     const agent = {
       id,
+      session: { id },
       steer: (m: UserMessage) => { rec.order.push('steer'); rec.steered.push(m) },
       followup: (m: UserMessage) => { rec.order.push('followup'); rec.followed.push(m) },
     }

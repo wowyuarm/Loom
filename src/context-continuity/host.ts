@@ -1,15 +1,22 @@
 import { createHash } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
 import {
   ContextContinuityCoordinator,
   ContextMessageCodec,
+  createContinuityTools,
   type ContextContinuityHost,
+  type ContextProjectionConfig,
+  type ContextProjectionHost,
   type ContextProjectionState,
   type ContextSubject,
+  type ContinuityToolAdapter,
+  type ContinuityTools,
   type RolloverIdentity,
+  type RolloverToolRequest,
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
 
@@ -59,7 +66,7 @@ export interface LoomContinuityOptions {
   readonly log: (message: string) => void
 }
 
-export class LoomContextContinuityHost implements ContextContinuityHost<LoomSubjectId> {
+export class LoomContextContinuityHost implements ContextContinuityHost<LoomSubjectId>, ContextProjectionHost {
   constructor(private readonly options: LoomContinuityOptions) {}
 
   agentForSubject(_id: LoomSubjectId): Agent | undefined {
@@ -93,6 +100,18 @@ export class LoomContextContinuityHost implements ContextContinuityHost<LoomSubj
     }
   }
 
+  /** Collision-resistant checkpoint ref keyed by the recording session and the successful call. */
+  checkpointRefFor(sessionId: string, toolCallId: string): string {
+    const digest = createHash('sha256').update(JSON.stringify([sessionId, toolCallId])).digest('hex')
+    return `loom-checkpoint-${digest}`
+  }
+
+  /** Collision-resistant boundary ref; the session identity keeps repeated seqs across generations distinct. */
+  boundaryRefFor(sessionId: string, seq: number): string {
+    const digest = createHash('sha256').update(JSON.stringify([sessionId, seq])).digest('hex')
+    return `loom-boundary-${digest}`
+  }
+
   /**
    * v1 carries every queued message across a swap (returns false). The proactivity module will
    * later mark its own pulses/notices as ephemeral so the successor rederives rather than
@@ -113,4 +132,42 @@ export function createLoomContextManagement(
   options: LoomContinuityOptions,
 ): ContextContinuityCoordinator<LoomSubjectId> {
   return new ContextContinuityCoordinator(new LoomContextContinuityHost(options), LOOM_CONTEXT_CODEC)
+}
+
+/**
+ * The projection config the engine folds each session's continuity state with. It recognizes
+ * this host's own envelopes (codec) and derives refs through the host; v1 anchors no domain
+ * boundaries (no `domainBoundaryOf`), so nothing is offered as a "return to this topic" target.
+ */
+export function createLoomContextProjectionConfig(host: ContextProjectionHost): ContextProjectionConfig {
+  return { codec: LOOM_CONTEXT_CODEC, host }
+}
+
+/**
+ * The host half of the model-facing continuity tools. v1 exposes only the rollover tool, so the
+ * checkpoint/timeline methods are unreachable and reject if ever called. requestRollover simply
+ * acknowledges: the tool's successful result is the durable fact the projection folds, and the
+ * swap follows at the next idle boundary.
+ */
+export class LoomContinuityToolAdapter implements ContinuityToolAdapter {
+  requestRollover(_request: RolloverToolRequest, _exec: ToolRunContext): Promise<{ readonly mode: string }> {
+    return Promise.resolve({ mode: 'scheduled' })
+  }
+
+  isRestorableRef(_checkpointRef: string, _exec: ToolRunContext): Promise<boolean> {
+    return Promise.resolve(false)
+  }
+
+  recordCheckpoint(): Promise<never> {
+    return Promise.reject(new Error('loom: checkpoints are not supported in v1'))
+  }
+
+  timeline(): Promise<never> {
+    return Promise.reject(new Error('loom: the context timeline is not supported in v1'))
+  }
+}
+
+/** The model-facing context tools Loom registers; v1 uses the rollover tool only. */
+export function createLoomContinuityTools(): ContinuityTools {
+  return createContinuityTools(new LoomContinuityToolAdapter())
 }
