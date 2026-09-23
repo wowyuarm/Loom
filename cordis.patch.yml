@@ -1,0 +1,63 @@
+# The Loom bundle patch: one deployment, one continuous agent.
+#
+# Layered over `@deepseek-ai/dsh-base`, which supplies the standard stack (llm, session,
+# agent, agent-loop, tools, system-prompt, sandbox, skills, compaction, credentials). This
+# patch adds only what makes that stack one long-lived agent instead of a CLI session.
+#
+# Two kinds of entry below: a top-level `id` row patches that base row in place (its whole
+# `config` is replaced, not merged, so each restates its complete configuration), and
+# `insert` adds rows base does not have.
+#
+# Paths live under the DSH home: one home is one deployment, so the agent's workspace and
+# runtime state sit beside its sessions and credentials.
+
+# Loom's durable local state is routed to sqlite; base's own domains stay on json. The
+# accepted-input ledger only grows and is point-queried per inbound message, which neither
+# json layout (whole-file rewrite, or one file per record) suits.
+- id: storage-domain
+  config:
+    backend: json
+    routes:
+      loom_runtime_state: sqlite
+
+# The agent's file tools are rooted in its own workspace, not the launching cwd.
+- id: fs-sandbox
+  config:
+    cwd: !!js dshHomePath('loom/workspace')
+
+- insert:
+    # The sqlite medium behind the routed domain above.
+    - id: storage-sqlite
+      name: '@deepseek-ai/dsh-storage-sqlite'
+      config:
+        path: !!js dshHomePath('loom/runtime-state.db')
+
+    # The single time source. Everything that needs "now" reads it here, so behavior eval
+    # can drive time deterministically.
+    - id: clock
+      name: 'loom/clock'
+
+    # Durable current-session pointer and accepted-input ledger.
+    - id: runtime-state
+      name: 'loom/runtime-state'
+
+    # Harness mechanics as a system-prompt section, just after the deployment persona
+    # prefix. Who the agent is stays out of it: base leaves `personaPrefix` empty and
+    # identity lives in the workspace's identity.md, which the agent itself maintains.
+    - id: orientation
+      name: 'loom/orientation'
+
+    # The agent's resident context: identity, memory, threads, and attention are read fresh
+    # into every turn, and `memory_write` maintains the memory file and its routing index.
+    - id: resident-context
+      name: 'loom/resident-context'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')
+
+    # Boots the one agent (resume the pointed-to session, or create the first one) and owns
+    # every context rollover. Model and provider come from base's default-model plugin, so
+    # no agentOptions here.
+    - id: agent-runtime
+      name: 'loom/agent-runtime'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')

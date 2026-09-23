@@ -9,10 +9,39 @@
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./contracts": {
+      "types": "./lib/contracts/index.d.ts",
+      "default": "./lib/contracts/index.js"
+    },
+    "./clock": {
+      "types": "./lib/clock/index.d.ts",
+      "default": "./lib/clock/index.js"
+    },
+    "./runtime-state": {
+      "types": "./lib/runtime-state/index.d.ts",
+      "default": "./lib/runtime-state/index.js"
+    },
+    "./resident-context": {
+      "types": "./lib/resident-context/index.d.ts",
+      "default": "./lib/resident-context/index.js"
+    },
+    "./context-continuity": {
+      "types": "./lib/context-continuity/host.d.ts",
+      "default": "./lib/context-continuity/host.js"
+    },
+    "./agent-runtime": {
+      "types": "./lib/agent-runtime/index.d.ts",
+      "default": "./lib/agent-runtime/index.js"
+    },
+    "./orientation": {
+      "types": "./lib/orientation/index.d.ts",
+      "default": "./lib/orientation/index.js"
     }
   },
   "files": [
-    "lib/**/*"
+    "lib/**/*",
+    "cordis.patch.yml"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
@@ -23,9 +52,12 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/cordis-plugin-include": "^1.0.9",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
     "@deepseek-ai/dsh-agent": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-agent-loop": "^0.1.6-alpha.2",
+    "@deepseek-ai/dsh-base": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-llm": "0.1.6-alpha.2",
     "@deepseek-ai/dsh-llm-deepseek": "^0.1.6-alpha.2",
     "@deepseek-ai/dsh-session": "0.1.6-alpha.2",
@@ -45,5 +77,10 @@
   },
   "dependencies": {
     "zod": "^4.6.5"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }
