@@ -8,8 +8,12 @@ import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import type { TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import { bootAgent } from '../src/agent-runtime/boot.ts'
+import { LoomAgentRuntime } from '../src/agent-runtime/runtime.ts'
 import type { RuntimeState } from '../src/contracts/index.ts'
 
 /** Real runtime-state over an in-memory sqlite medium; only ctx.agents is faked. */
@@ -74,6 +78,88 @@ describe('bootAgent', () => {
       expect(reg.resumed).toEqual([{ resumeSessionId: SessionId('s-live') }])
       expect(reg.created).toEqual([])
       expect(handle.agent.id).toBe(SessionId('s-live'))
+    } finally {
+      await dispose()
+    }
+  })
+})
+
+interface TrackedAgent {
+  disposed: boolean
+  steered: UserMessage[]
+  followed: UserMessage[]
+  order: string[]
+}
+
+/** Fake registry whose agents record steer/followup/dispose, keyed by session id. */
+function trackAgents() {
+  const byId = new Map<string, TrackedAgent>()
+  const track = (id: SessionId): AgentHandle => {
+    const rec: TrackedAgent = { disposed: false, steered: [], followed: [], order: [] }
+    byId.set(id, rec)
+    const agent = {
+      id,
+      steer: (m: UserMessage) => { rec.order.push('steer'); rec.steered.push(m) },
+      followup: (m: UserMessage) => { rec.order.push('followup'); rec.followed.push(m) },
+    }
+    return { agent: agent as AgentHandle['agent'], dispose: () => { rec.disposed = true; return Promise.resolve() } }
+  }
+  return {
+    agent: (id: string): TrackedAgent => {
+      const rec = byId.get(id)
+      if (rec === undefined) throw new Error(`no agent ${id}`)
+      return rec
+    },
+    agents: {
+      create: (opts: { sessionId: SessionId }) => Promise.resolve(track(opts.sessionId)),
+      resume: (opts: { resumeSessionId: SessionId }) => Promise.resolve(track(opts.resumeSessionId)),
+    } as never,
+  }
+}
+
+function textOf(message: UserMessage): string {
+  return message.content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+}
+
+describe('LoomAgentRuntime.executeTransition', () => {
+  it('disposes the old generation, creates the successor at the plan id, commits lineage, and delivers handoff before carried input', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = trackAgents()
+      const runtime = new LoomAgentRuntime({
+        agents: reg.agents,
+        runtimeState,
+        workspace: '/ws',
+        newSessionId: () => SessionId('s0'),
+      })
+      await runtime.boot()
+      expect(runtime.current()?.id).toBe(SessionId('s0'))
+
+      const carried = createUserMessage({ content: [{ type: 'text', text: 'do this next' }], source: { kind: 'user' } })
+      const plan: TransitionPlan = {
+        previousSessionId: SessionId('s0'),
+        newSessionId: SessionId('s1'),
+        handoff: 'HANDOFF-BODY',
+        handoffEventSeq: 3,
+        trigger: 'model',
+        relatedFiles: [],
+        requestId: 'req-1',
+        carriedInput: [carried],
+      }
+      await runtime.executeTransition(plan)
+
+      expect(reg.agent('s0').disposed).toBe(true)
+      expect(runtime.current()?.id).toBe(SessionId('s1'))
+      expect(runtimeState.getCurrentSession()).toEqual({ sessionId: 's1', parentLineage: ['s0'] })
+
+      const s1 = reg.agent('s1')
+      expect(s1.order).toEqual(['steer', 'followup'])
+      expect(s1.steered).toHaveLength(1)
+      expect(textOf(s1.steered[0]!)).toContain('HANDOFF-BODY')
+      expect(s1.followed).toEqual([carried])
     } finally {
       await dispose()
     }
