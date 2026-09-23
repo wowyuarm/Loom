@@ -37,6 +37,10 @@
     "./orientation": {
       "types": "./lib/orientation/index.d.ts",
       "default": "./lib/orientation/index.js"
+    },
+    "./channels": {
+      "types": "./lib/channels/index.d.ts",
+      "default": "./lib/channels/index.js"
     }
   },
   "files": [

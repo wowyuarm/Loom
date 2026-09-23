@@ -57,6 +57,13 @@ declare module '@deepseek-ai/cordis' {
 export interface AgentRuntime {
   /** The live agent, or undefined before boot completes or after disposal. */
   current(): Agent | undefined
+  /**
+   * Submit external text to the live agent as a new-turn followup. Returns false when there is
+   * no live agent to receive it (before boot, or after disposal). Owning input delivery here
+   * keeps the single agent handle's whole lifecycle — boot, rollover carry, external input — in
+   * one place.
+   */
+  deliver(text: string): boolean
 }
 
 export type { SessionId }

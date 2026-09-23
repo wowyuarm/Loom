@@ -52,6 +52,9 @@ describe('loom bundle manifest', () => {
     expect(byId.get('resident-context')?.name).toBe('loom/resident-context')
     expect(byId.get('agent-runtime')?.name).toBe('loom/agent-runtime')
     expect(byId.get('storage-sqlite')?.name).toBe('@deepseek-ai/dsh-storage-sqlite')
+    expect(byId.get('channels')?.name).toBe('loom/channels')
+    expect(byId.get('channel-gateway')?.name).toBe('@wowyuarm/dsh-channel-gateway')
+    expect(byId.get('channel-telegram')?.name).toBe('@wowyuarm/dsh-channel-gateway/telegram')
 
     // Base's stack is still there.
     expect(byId.get('agent-loop')?.name).toBe('@deepseek-ai/dsh-agent-loop')
@@ -71,6 +74,10 @@ describe('loom bundle manifest', () => {
     // Identity is the agent's own: base leaves the deployment persona empty and Loom keeps it
     // that way, so identity.md (a resident file the agent maintains) carries it.
     expect(byId.get('system-prompt')?.config).toMatchObject({ personaPrefix: '' })
+
+    // The gateway admits nobody until a deployment lists actors: unauthenticated access is
+    // not a default.
+    expect(byId.get('channel-gateway')?.config).toMatchObject({ allow: [] })
 
     // The loop creates no agent from configuration; agent-runtime boots the one agent.
     expect(byId.get('agent-loop')?.config).toMatchObject({ agents: [] })

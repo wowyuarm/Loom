@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle, AgentOptions, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   ContextContinuityCoordinator,
   createContextProjectionDefinition,
@@ -61,6 +62,13 @@ export class LoomAgentRuntime implements AgentRuntime {
 
   current(): Agent | undefined {
     return this.handle?.agent
+  }
+
+  deliver(text: string): boolean {
+    const agent = this.handle?.agent
+    if (agent === undefined) return false
+    agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+    return true
   }
 
   /**

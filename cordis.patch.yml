@@ -61,3 +61,23 @@
       name: 'loom/agent-runtime'
       config:
         workspace: !!js dshHomePath('loom/workspace')
+
+    # The chat transport seam: normalizes a provider into channel/inbound events and sends
+    # outbound. `allow` is the authorization allowlist as `channel:actorId` (or `channel:*`,
+    # or `*`); empty admits nobody, so a deployment MUST list who may talk to the agent —
+    # e.g. `telegram:123456789`. Left empty here on purpose: unauthenticated access is not a
+    # default.
+    - id: channel-gateway
+      name: '@wowyuarm/dsh-channel-gateway'
+      config:
+        allow: []
+
+    # Telegram over long polling; the bot token comes from DSH_TELEGRAM_TOKEN. Without a token
+    # the channel simply does not register (the adapter logs and returns).
+    - id: channel-telegram
+      name: '@wowyuarm/dsh-channel-gateway/telegram'
+
+    # Loom's consumer: dedup inbound against the durable ledger, deliver each to the agent as a
+    # turn, and expose send_message so the agent replies to the conversation in focus.
+    - id: channels
+      name: 'loom/channels'
