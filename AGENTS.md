@@ -17,6 +17,7 @@ Use this authority order:
 
 - **从任务出发**：先读任务和它明确引用的代码、测试、scratch 记录，再按缺口展开；不要因为文件存在就通读整个仓库。
 - **设计或实现任何能力前，先读 DSH 对应子系统的源码和已有插件，照它的做法来。** DSH 是“怎么做”的第一参考，不是只在术语对不上时才查：组合（bundle / `cordis.patch.yml` / profile）、service 与 event 接缝、`defineTool`、`storage-domain`、patch 层、命名、测试方式——有现成惯例就照搬，不自创。实例仓：`~/projects/deepseek-harness`（当前 0.1.6-alpha.2）、`~/projects/dsh-agent-team`（单一适配先例）、`~/projects/dsh-context-continuity`。
+- 已摸清的 DSH 组合模型、接缝清单、跑部署的方法和踩过的坑写在 [`docs/dsh-platform.md`](docs/dsh-platform.md)：**先读它再翻源码**，发现它与实际不符就修正它。
 - `docs/README.md` 的索引表按问题取用（“什么时候读”那一列）；一个能力一篇 `docs/subsystems/<capability>.md`，随模块落地补入。
 - 稳定术语和边界见 `CONTEXT.md`（落地后建立），不可逆的持久化/恢复取舍见 `docs/adr/`。
 

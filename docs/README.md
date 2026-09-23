@@ -6,12 +6,13 @@
 
 ## 现状
 
-代码尚未落地，`docs/` 处于建立中。稳定的模块文档随每个模块讨论收敛、实现落地后逐条补入本表——现在为空是正常的。进行中的设计见 [`.scratch/active/`](../.scratch/README.md)。
+六个插件已落地并通电（clock、runtime-state、resident-context、context-continuity、agent-runtime、orientation），`cordis.patch.yml` 把它们组合成一个叠在 `dsh-base` 上的 bundle，完整部署已用真 launcher 与真模型跑通。模块级 subsystem 文档随各能力收口后逐条补入下表。进行中的设计见 [`.scratch/active/`](../.scratch/README.md)。
 
 ## 文档入口
 
 | 文档 | 用途 | 什么时候读 |
 | --- | --- | --- |
+| [`dsh-platform.md`](dsh-platform.md) | DSH 的组合模型、Loom 用到的接缝、怎么跑一个部署、踩过的坑 | 动手改任何能力之前；写或改 bundle 清单时；要把部署跑起来时 |
 | `CONTEXT.md`（待建） | 稳定的 Loom 术语与所有权边界 | 改动领域语义、类型命名或材料契约时 |
 | `docs/architecture.md`（待建） | 模块/包关系、Host 边界、事实分层 | 改动跨越模块或包边界时 |
 | `docs/subsystems/<capability>.md`（随模块补入） | 单个能力的实现契约（一个能力一篇） | 改动那个能力时 |
@@ -23,6 +24,6 @@ DSH 的 `packages/` 与 `docs/subsystems/` 是一份能力菜单。Loom 的每�
 
 ## 从哪里开始
 
+- **理解 DSH 底座、写 bundle 清单、把部署跑起来**：[`dsh-platform.md`](dsh-platform.md)。
 - **理解连续性/记忆设计**：先看 `.scratch/active/continuity-and-memory/DESIGN.md`。
-- **理解 DSH 底座**：`@deepseek-ai/dsh` 的 `docs/architecture.md` 与 `docs/subsystems/`（Cordis、profile/bundle、session、system-prompt）。
 - **改代码**：以对应包的源码和测试为权威，用本索引定位相关 subsystem 文档。
