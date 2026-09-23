@@ -6,7 +6,7 @@ import {
   LOOM_SUBJECT_ID,
   LoomContextContinuityHost,
   type LoomContinuityOptions,
-} from '../src/continuity/host.ts'
+} from '../src/context-continuity/host.ts'
 
 function host(overrides: Partial<LoomContinuityOptions> = {}): LoomContextContinuityHost {
   return new LoomContextContinuityHost({

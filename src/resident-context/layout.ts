@@ -1,10 +1,10 @@
 import { join } from 'node:path'
 
 /**
- * Filesystem layout of the resident materials under the agent workspace. Each material is a
+ * Filesystem layout of the resident files under the agent workspace. Each file is a
  * plain markdown file the agent maintains; the projection reads them into every turn's context.
  */
-export const materialPaths = {
+export const residentFiles = {
   identity: 'identity/identity.md',
   memory: 'memory/memory.md',
   threadsIndex: 'threads/index.md',
@@ -18,7 +18,7 @@ export function notePath(workspace: string, concept: string): string {
   return join(workspace, notesDir, `${concept}.md`)
 }
 
-export function materialPath(workspace: string, rel: string): string {
+export function residentPath(workspace: string, rel: string): string {
   return join(workspace, rel)
 }
 

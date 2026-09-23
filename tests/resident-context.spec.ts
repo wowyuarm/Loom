@@ -5,31 +5,31 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { ManualClock } from '../src/clock/index.ts'
-import { registerMaterials, defaultCaps } from '../src/materials/projection.ts'
-import { createMemoryWriteTool } from '../src/materials/memory-write.ts'
+import { registerResidentContext, defaultCaps } from '../src/resident-context/projection.ts'
+import { createMemoryWriteTool } from '../src/resident-context/memory-write.ts'
 
 async function tmpWorkspace(): Promise<string> {
-  return mkdtemp(join(tmpdir(), 'loom-materials-'))
+  return mkdtemp(join(tmpdir(), 'loom-resident-context-'))
 }
 
-async function writeMaterial(workspace: string, rel: string, text: string): Promise<void> {
+async function writeResidentFile(workspace: string, rel: string, text: string): Promise<void> {
   const path = join(workspace, rel)
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, text, 'utf8')
 }
 
-describe('materials projection', () => {
-  it('injects materials in wake-bundle order; an absent material contributes empty text', async () => {
+describe('resident-context projection', () => {
+  it('injects resident files in wake-bundle order; an absent file contributes empty text', async () => {
     const ws = await tmpWorkspace()
     try {
-      await writeMaterial(ws, 'identity/identity.md', 'I am the agent.')
-      await writeMaterial(ws, 'attention/attention.md', 'Right now: testing.')
-      await writeMaterial(ws, 'memory/memory.md', 'Settled fact.\n\n## Notes\n- alpha → memory/notes/alpha.md\n')
+      await writeResidentFile(ws, 'identity/identity.md', 'I am the agent.')
+      await writeResidentFile(ws, 'attention/attention.md', 'Right now: testing.')
+      await writeResidentFile(ws, 'memory/memory.md', 'Settled fact.\n\n## Notes\n- alpha → memory/notes/alpha.md\n')
       // threads/index.md intentionally absent.
 
       const ctx = new Context()
       await ctx.plugin(SystemPrompt)
-      registerMaterials(ctx, ws, defaultCaps)
+      registerResidentContext(ctx, ws, defaultCaps)
 
       const assembly = await ctx.systemPrompt.assemble()
       const ours = assembly.contexts.filter(c =>
@@ -45,13 +45,13 @@ describe('materials projection', () => {
     }
   })
 
-  it('truncates a material that exceeds its cap', async () => {
+  it('truncates a file that exceeds its cap', async () => {
     const ws = await tmpWorkspace()
     try {
-      await writeMaterial(ws, 'identity/identity.md', 'z'.repeat(5000))
+      await writeResidentFile(ws, 'identity/identity.md', 'z'.repeat(5000))
       const ctx = new Context()
       await ctx.plugin(SystemPrompt)
-      registerMaterials(ctx, ws, { ...defaultCaps, identity: 100 })
+      registerResidentContext(ctx, ws, { ...defaultCaps, identity: 100 })
 
       const assembly = await ctx.systemPrompt.assemble()
       const identity = assembly.contexts.find(c => c.name === 'identity')

@@ -25,7 +25,7 @@ export const LOOM_SUBJECT_ID = 'loom'
 export type LoomSubjectId = typeof LOOM_SUBJECT_ID
 
 /** Plugin identity that attributes context-continuity envelopes written by this host. */
-export const LOOM_CONTINUITY_PLUGIN_ID = '@loom/continuity'
+export const LOOM_CONTEXT_CONTINUITY_PLUGIN_ID = '@loom/context-continuity'
 
 /**
  * The one writer of context-continuity messages. The prose is neutral and mechanical: it
@@ -34,7 +34,7 @@ export const LOOM_CONTINUITY_PLUGIN_ID = '@loom/continuity'
  * the same identity, so changing them would rewrite the past.
  */
 export const LOOM_CONTEXT_CODEC = new ContextMessageCodec({
-  pluginId: LOOM_CONTINUITY_PLUGIN_ID,
+  pluginId: LOOM_CONTEXT_CONTINUITY_PLUGIN_ID,
   handoffIntro: 'Context handoff: you are the same agent continuing in a fresh context window.',
   handoffVerifyNote:
     'Your handoff from the previous context follows. A context change never rolls back files, '

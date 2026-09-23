@@ -1,6 +1,6 @@
 export * as contracts from './contracts/index.ts'
 export * as clock from './clock/index.ts'
 export * as runtimeState from './runtime-state/index.ts'
-export * as materials from './materials/index.ts'
-export * as continuity from './continuity/host.ts'
+export * as residentContext from './resident-context/index.ts'
+export * as contextContinuity from './context-continuity/host.ts'
 export * as agentRuntime from './agent-runtime/index.ts'

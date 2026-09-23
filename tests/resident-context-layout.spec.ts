@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { applyBudget } from '../src/materials/budget.ts'
+import { applyBudget } from '../src/resident-context/budget.ts'
 import {
   memoryCoreOf,
   memoryIndexOf,
   memoryRoutingLine,
   upsertMemoryRouting,
-} from '../src/materials/layout.ts'
+} from '../src/resident-context/layout.ts'
 
 describe('memory.md core/index split', () => {
   const memory = 'Core knowledge line one.\nCore line two.\n\n## Notes\n- alpha → memory/notes/alpha.md\n'

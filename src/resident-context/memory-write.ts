@@ -4,8 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import type { Clock } from '../contracts/index.ts'
 import {
-  materialPath,
-  materialPaths,
+  residentPath,
+  residentFiles,
   notePath,
   notesDir,
   upsertMemoryRouting,
@@ -98,7 +98,7 @@ export function createMemoryWriteTool(clock: Clock, workspace: string): ToolDefi
       await mkdir(dirname(note), { recursive: true })
       await writeFile(note, noteWithStamp(body, stamp), 'utf8')
 
-      const memoryFile = materialPath(workspace, materialPaths.memory)
+      const memoryFile = residentPath(workspace, residentFiles.memory)
       const current = await readMemoryOrEmpty(memoryFile)
       await writeFile(memoryFile, upsertMemoryRouting(current, concept), 'utf8')
 
