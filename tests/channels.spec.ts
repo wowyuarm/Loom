@@ -139,9 +139,9 @@ describe('channels consumer', () => {
     }
   })
 
-  it('replies to the active conversation via send_message', async () => {
+  it('replies to the active conversation via reply', async () => {
     const h = await bootWithChannels(new MockAdapter([
-      toolCallResponse('s1', 'send_message', { text: 'hi Alice' }),
+      toolCallResponse('s1', 'reply', { text: 'hi Alice' }),
       textResponse('done'),
     ]))
     try {

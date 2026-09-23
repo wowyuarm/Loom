@@ -78,6 +78,6 @@
       name: '@wowyuarm/dsh-channel-gateway/telegram'
 
     # Loom's consumer: dedup inbound against the durable ledger, deliver each to the agent as a
-    # turn, and expose send_message so the agent replies to the conversation in focus.
+    # turn, and expose the reply tool so the agent answers to the conversation in focus.
     - id: channels
       name: 'loom/channels'
