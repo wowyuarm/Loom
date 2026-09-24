@@ -82,11 +82,11 @@ function framedText(message: InboundMessage): string {
 
 function createSendMessageTool(ctx: Context, focus: ActiveConversationTracker): ToolDefinition {
   return defineTool({
-    name: 'reply',
+    name: 'message',
     description:
-      'Reply to the person you are currently talking with over their channel (e.g. Telegram). '
-      + 'Your assistant text is not shown to anyone; this tool is the only way to reach them. '
-      + 'The destination is the conversation the last incoming message came from.',
+      'Send a message to the person you are currently talking with over their channel (e.g. '
+      + 'Telegram). Your assistant text is not shown to anyone; this tool is the only way to '
+      + 'reach them. The destination is the conversation the last incoming message came from.',
     parameters: {
       text: {
         type: 'string',
@@ -108,7 +108,7 @@ function createSendMessageTool(ctx: Context, focus: ActiveConversationTracker): 
     async execute(args) {
       const active = focus.get()
       if (active === undefined) {
-        throw new Error('reply: no active conversation — there is no incoming message to reply to yet')
+        throw new Error('message: no active conversation — there is no incoming message to reply to yet')
       }
       const result = await ctx.channels.send({ channel: active.channel, route: active.route, text: args.text })
       return { channel: active.channel, providerMessageId: result.providerMessageId }

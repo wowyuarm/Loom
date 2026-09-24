@@ -27,6 +27,7 @@ import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import * as ResidentContextPlugin from '../src/resident-context/index.ts'
 import * as AgentRuntimePlugin from '../src/agent-runtime/index.ts'
 import * as ChannelsPlugin from '../src/channels/index.ts'
+import { provideFakePresets } from './support/fake-presets.ts'
 import { MockAdapter, textResponse, toolCallResponse } from './support/mock-adapter.ts'
 
 /** A scripted in-memory transport: hand it inbound messages, read back what was sent. */
@@ -94,6 +95,7 @@ async function bootWithChannels(mock: MockAdapter): Promise<Harness> {
   await load(ClockPlugin)
   await load(RuntimeStatePlugin)
   await load(ResidentContextPlugin, { workspace })
+  provideFakePresets(ctx)
   await load(AgentRuntimePlugin, { workspace, agentOptions: { provider: 'mock', model: 'mock' } })
   await load(ChannelGatewayPlugin, { allow: ['*'] })
   await load(ChannelsPlugin)
@@ -139,9 +141,9 @@ describe('channels consumer', () => {
     }
   })
 
-  it('replies to the active conversation via reply', async () => {
+  it('replies to the active conversation via message', async () => {
     const h = await bootWithChannels(new MockAdapter([
-      toolCallResponse('s1', 'reply', { text: 'hi Alice' }),
+      toolCallResponse('s1', 'message', { text: 'hi Alice' }),
       textResponse('done'),
     ]))
     try {
