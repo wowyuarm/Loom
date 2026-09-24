@@ -13,10 +13,13 @@ export interface Clock {
   now(): number
 }
 
-/** The session the agent is currently bound to, with its rollover lineage. */
+/**
+ * The session the agent is currently bound to. Just the id: this is the "which generation is
+ * live now" pointer. Rollover lineage is not kept here — it lives on each successor session's
+ * `parentSession` header, which is where the context-continuity engine walks it.
+ */
 export interface CurrentSession {
   sessionId: string
-  parentLineage?: string[] | undefined
 }
 
 /** One external Input durably accepted before it was handed to the agent. */

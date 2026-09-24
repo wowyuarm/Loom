@@ -13,7 +13,6 @@ import type { AcceptedInput } from '../contracts/index.ts'
 // schema that drifts from a contract is a compile error at the domain definition below.
 const currentSessionSchema = z.object({
   sessionId: z.string(),
-  parentLineage: z.array(z.string()).optional(),
 })
 
 const acceptedInputSchema = z.object({

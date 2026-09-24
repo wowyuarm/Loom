@@ -133,15 +133,19 @@ export class LoomAgentRuntime implements AgentRuntime {
 
   /**
    * One generation swap at an idle boundary: build the handoff, dispose the old agent (releasing
-   * the single-active lease), create the successor at the plan's deterministic session id, commit
-   * the pointer with lineage, then deliver the handoff ahead of any carried input. The engine
-   * derived newSessionId/requestId, so a crash mid-swap re-drives to the same identity; a throw
-   * here leaves the previous generation recoverable, which the coordinator relies on.
+   * the single-active lease), create the successor at the plan's deterministic session id chained
+   * to its predecessor, commit the current-generation pointer, then deliver the handoff ahead of
+   * any carried input. The engine derived newSessionId/requestId, so a crash mid-swap re-drives to
+   * the same identity; a throw here leaves the previous generation recoverable, which the
+   * coordinator relies on.
+   *
+   * The successor's `parentSession` is the previous generation. That header field is the lineage:
+   * the context-continuity engine walks it to classify a searched generation as current, prior, or
+   * archived, and to decide which past generation a `context_rollover` may return to. The pointer
+   * carries no lineage of its own — duplicating it there would be a second record nothing reads.
    */
   async executeTransition(plan: TransitionPlan): Promise<void> {
     const handoff = this.coordinator.handoffMessageFor(plan)
-    const previous = this.deps.runtimeState.getCurrentSession()
-    const lineage = [...(previous?.parentLineage ?? []), plan.previousSessionId]
     const setup = presetSetup(this.deps.mountPreset)
 
     if (this.handle !== undefined) {
@@ -150,11 +154,11 @@ export class LoomAgentRuntime implements AgentRuntime {
     }
     const successor = await this.deps.agents.create({
       sessionId: plan.newSessionId,
-      meta: { cwd: this.deps.workspace },
+      meta: { cwd: this.deps.workspace, parentSession: plan.previousSessionId },
       ...(this.deps.agentOptions === undefined ? {} : { agentOptions: this.deps.agentOptions }),
       ...(setup === undefined ? {} : { setup }),
     })
-    await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId, parentLineage: lineage })
+    await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId })
     this.handle = successor
 
     successor.agent.steer(handoff)

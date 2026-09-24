@@ -147,8 +147,12 @@ describe('loom boot smoke', () => {
 
       const after = loom.ctx.runtimeState.getCurrentSession()
       expect(after?.sessionId).toMatch(/^loom-rollover-/)
-      expect(after?.parentLineage).toContain(original)
       expect(loom.ctx.agentRuntime.current()?.id).toBe(after?.sessionId)
+
+      // Lineage lives on the successor's session header, not the pointer: the context-continuity
+      // engine walks parentSession to reach prior generations.
+      const header = loom.ctx.agentRuntime.current()?.session.header as { parentSession?: string } | undefined
+      expect(header?.parentSession).toBe(original)
 
       // The successor joined the same preset, so a rolled-over agent keeps the tools its
       // predecessor had rather than waking up with an empty catalog.

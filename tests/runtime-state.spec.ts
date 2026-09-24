@@ -46,13 +46,13 @@ function sampleInput(overrides: Partial<AcceptedInput> = {}): AcceptedInput {
 }
 
 describe('continuity store — currentSession pointer', () => {
-  it('is absent until set, then round-trips including lineage', async () => {
+  it('is absent until set, then round-trips the current-generation pointer', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
     const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
     try {
       expect(loom.getCurrentSession()).toBeUndefined()
-      await loom.setCurrentSession({ sessionId: 's-1', parentLineage: ['s-0'] })
-      expect(loom.getCurrentSession()).toEqual({ sessionId: 's-1', parentLineage: ['s-0'] })
+      await loom.setCurrentSession({ sessionId: 's-1' })
+      expect(loom.getCurrentSession()).toEqual({ sessionId: 's-1' })
       await loom.setCurrentSession({ sessionId: 's-2' })
       expect(loom.getCurrentSession()).toEqual({ sessionId: 's-2' })
     } finally {

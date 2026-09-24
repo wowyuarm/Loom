@@ -94,6 +94,7 @@ interface TrackedAgent {
 /** Fake registry whose agents record steer/followup/dispose, keyed by session id. */
 function trackAgents() {
   const byId = new Map<string, TrackedAgent>()
+  const metaById = new Map<string, unknown>()
   const track = (id: SessionId): AgentHandle => {
     const rec: TrackedAgent = { disposed: false, steered: [], followed: [], order: [] }
     byId.set(id, rec)
@@ -111,8 +112,9 @@ function trackAgents() {
       if (rec === undefined) throw new Error(`no agent ${id}`)
       return rec
     },
+    createdMeta: (id: string): unknown => metaById.get(id),
     agents: {
-      create: (opts: { sessionId: SessionId }) => Promise.resolve(track(opts.sessionId)),
+      create: (opts: { sessionId: SessionId; meta?: unknown }) => { metaById.set(opts.sessionId, opts.meta); return Promise.resolve(track(opts.sessionId)) },
       resume: (opts: { resumeSessionId: SessionId }) => Promise.resolve(track(opts.resumeSessionId)),
     } as never,
   }
@@ -126,7 +128,7 @@ function textOf(message: UserMessage): string {
 }
 
 describe('LoomAgentRuntime.executeTransition', () => {
-  it('disposes the old generation, creates the successor at the plan id, commits lineage, and delivers handoff before carried input', async () => {
+  it('disposes the old generation, creates the successor chained to its predecessor, commits the pointer, and delivers handoff before carried input', async () => {
     const { runtimeState, dispose } = await realRuntimeState()
     try {
       const reg = trackAgents()
@@ -154,7 +156,11 @@ describe('LoomAgentRuntime.executeTransition', () => {
 
       expect(reg.agent('s0').disposed).toBe(true)
       expect(runtime.current()?.id).toBe(SessionId('s1'))
-      expect(runtimeState.getCurrentSession()).toEqual({ sessionId: 's1', parentLineage: ['s0'] })
+      // The pointer is just the live generation; lineage lives on the successor's session header.
+      expect(runtimeState.getCurrentSession()).toEqual({ sessionId: 's1' })
+      // The successor is chained to its predecessor via parentSession — the field the
+      // context-continuity engine walks to reach prior generations.
+      expect(reg.createdMeta('s1')).toEqual({ cwd: '/ws', parentSession: SessionId('s0') })
 
       const s1 = reg.agent('s1')
       expect(s1.order).toEqual(['steer', 'followup'])
