@@ -43,6 +43,12 @@
 - id: tool-ralph
   disabled: true
 
+# A private long-term individual emits no session telemetry. base mounts session-telemetry-otel
+# pointing at a DeepSeek endpoint and releases records (with context) on explicit feedback. Loom
+# wires no feedback surface, so it never fires today — disabled so it cannot start if one is added.
+- id: session-telemetry-otel
+  disabled: true
+
 # Move the agent's whole model-facing surface to the agent plane.
 #
 # Base mounts these rows globally as the default for a deployment that has no opinion. Loom has

@@ -7,7 +7,7 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 
-/** The single time source. Everything reads "now" here instead of calling Date.now() directly. */
+/** The single time source. Loom's own code reads "now" here instead of calling Date.now(). */
 export interface Clock {
   /** Current time in epoch milliseconds. */
   now(): number
