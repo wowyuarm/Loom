@@ -25,6 +25,14 @@ class RuntimeStateService implements RuntimeState {
   async recordAccepted(input: AcceptedInput): Promise<void> {
     await this.domain.table('accepted_input').put(acceptedInputKey(input.channel, input.providerMessageId), input)
   }
+
+  async recordSession(sessionId: string): Promise<void> {
+    await this.domain.table('owned_session').put(sessionId, { sessionId })
+  }
+
+  ownedSessions(): string[] {
+    return [...this.domain.table('owned_session').keys()]
+  }
 }
 
 export const name = 'runtime-state'

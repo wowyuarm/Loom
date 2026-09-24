@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -11,6 +12,9 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
@@ -48,6 +52,9 @@ async function bootLoom(mock: MockAdapter): Promise<Loom> {
   await load(LlmRuntime)
   await load(SessionStore)
   await load(SessionProjectionRegistry)
+  await load(SessionPersistence, { root: join(workspace, '.sessions') })
+  await load(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
+  await load(TokenMeter)
   await load(SystemPrompt)
   await load(ToolRuntime)
   await load(AgentRegistry)
@@ -157,6 +164,49 @@ describe('loom boot smoke', () => {
       // The successor joined the same preset, so a rolled-over agent keeps the tools its
       // predecessor had rather than waking up with an empty catalog.
       expect(loom.presetsMounted).toHaveLength(2)
+    } finally {
+      await loom.dispose()
+    }
+  })
+
+  it('returns to a checkpoint: a rollover citing a restorable ref seeds the successor with the prefix', async () => {
+    const mock = new MockAdapter([
+      toolCallResponse('ck1', 'context_checkpoint', { name: 'before risk' }),
+      textResponse('checkpoint recorded'),
+    ])
+    const loom = await bootLoom(mock)
+    try {
+      const s0 = loom.ctx.runtimeState.getCurrentSession()?.sessionId
+      expect(s0).toBeDefined()
+      const agent = loom.ctx.agentRuntime.current()
+      agent?.followup(createUserMessage({ content: [{ type: 'text', text: 'checkpoint please' }], source: { kind: 'user' } }))
+      await agent?.whenIdle()
+
+      // The checkpoint resolved at the turn end; its ref is derived from the recording session
+      // and the tool call id, the same rule recordCheckpoint used.
+      const ref = `loom-checkpoint-${createHash('sha256').update(JSON.stringify([s0, 'ck1'])).digest('hex')}`
+
+      // The model returns to it. The rollover response is enqueued now that s0 (and thus the ref)
+      // is known.
+      mock.enqueue(
+        toolCallResponse('rb1', 'context_rollover', { handoff: 'returning to before the risky phase', checkpointRef: ref }),
+        textResponse('returning'),
+        textResponse('resumed'),
+        textResponse('ok'),
+      )
+      loom.ctx.agentRuntime.current()?.followup(createUserMessage({ content: [{ type: 'text', text: 'return to before risk' }], source: { kind: 'user' } }))
+
+      await vi.waitFor(() => {
+        expect(loom.ctx.runtimeState.getCurrentSession()?.sessionId).not.toBe(s0)
+      }, { timeout: 5000 })
+
+      // A checkpoint return seeds the successor with the exact prefix and parents at the
+      // checkpoint's source generation, unlike a fresh rollover which seeds nothing.
+      const successor = loom.ctx.agentRuntime.current()
+      expect(Number(successor?.session.inheritedEventCount)).toBeGreaterThan(0)
+      const header = successor?.session.header as { parentSession?: string; isSeeded?: boolean } | undefined
+      expect(header?.parentSession).toBe(s0)
+      expect(header?.isSeeded).toBe(true)
     } finally {
       await loom.dispose()
     }

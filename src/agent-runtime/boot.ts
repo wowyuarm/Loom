@@ -70,5 +70,6 @@ export async function bootAgent(deps: BootDeps): Promise<AgentHandle> {
     ...(setup === undefined ? {} : { setup }),
   })
   await deps.runtimeState.setCurrentSession({ sessionId })
+  await deps.runtimeState.recordSession(String(sessionId))
   return handle
 }

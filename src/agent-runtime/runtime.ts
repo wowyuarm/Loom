@@ -1,23 +1,42 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle, AgentOptions, AgentRegistry } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   ContextContinuityCoordinator,
   createContextProjectionDefinition,
+  createContinuityTools,
+  type ContextProjectionConfig,
   type ContextProjectionState,
+  type ContextSearchPort,
+  type StoredSessionReadResult,
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
 import type { AgentRuntime, RuntimeState } from '../contracts/index.ts'
 import {
   createLoomContextProjectionConfig,
-  createLoomContinuityTools,
   LOOM_CONTEXT_CODEC,
   LOOM_SUBJECT_ID,
   LoomContextContinuityHost,
   type LoomSubjectId,
 } from '../context-continuity/host.ts'
+import { LoomContextRetrieval, type ContextBudget } from '../context-continuity/retrieval.ts'
 import { bootAgent, presetSetup, type BootDeps } from './boot.ts'
+
+/**
+ * The ctx-derived capabilities the retrieval and return surface needs: reading archived ancestor
+ * logs, the token meter, the handoff budget, and the session-query engine. Present in a real
+ * deployment; omitted in unit tests that exercise the swap mechanics without a search stack, where
+ * only the rollover tool is registered.
+ */
+export interface RetrievalDeps {
+  readAncestor: (sessionId: SessionId) => Promise<StoredSessionReadResult>
+  meter: () => TokenMeter | undefined
+  budgetOf: (agent: Agent) => Promise<ContextBudget | undefined>
+  query: ContextSearchPort
+}
 
 export interface RuntimeDeps {
   agents: Pick<AgentRegistry, 'create' | 'resume'>
@@ -37,6 +56,8 @@ export interface RuntimeDeps {
   log?: (message: string) => void
   /** Session id minter for a first boot; overridable for deterministic tests. */
   newSessionId?: () => SessionId
+  /** Retrieval/return capabilities; omit to register only the rollover tool (unit tests). */
+  retrieval?: RetrievalDeps
 }
 
 /**
@@ -49,6 +70,8 @@ export class LoomAgentRuntime implements AgentRuntime {
   private handle: AgentHandle | undefined
   private readonly host: LoomContextContinuityHost
   private readonly coordinator: ContextContinuityCoordinator<LoomSubjectId>
+  private readonly config: ContextProjectionConfig
+  private readonly retrieval: LoomContextRetrieval | undefined
 
   constructor(private readonly deps: RuntimeDeps) {
     this.host = new LoomContextContinuityHost({
@@ -63,6 +86,19 @@ export class LoomAgentRuntime implements AgentRuntime {
       log: message => { this.deps.log?.(message) },
     })
     this.coordinator = new ContextContinuityCoordinator(this.host, LOOM_CONTEXT_CODEC)
+    this.config = createLoomContextProjectionConfig(this.host)
+    this.retrieval = this.deps.retrieval === undefined
+      ? undefined
+      : new LoomContextRetrieval({
+          agentForSubject: () => this.handle?.agent,
+          host: this.host,
+          config: this.config,
+          readAncestor: this.deps.retrieval.readAncestor,
+          meter: this.deps.retrieval.meter,
+          budgetOf: this.deps.retrieval.budgetOf,
+          ownedSessions: () => this.deps.runtimeState.ownedSessions(),
+          query: this.deps.retrieval.query,
+        })
   }
 
   current(): Agent | undefined {
@@ -84,11 +120,29 @@ export class LoomAgentRuntime implements AgentRuntime {
    */
   install(ctx: Context): void {
     ctx.effect(
-      () => ctx.sessionProjections.register(createContextProjectionDefinition(createLoomContextProjectionConfig(this.host))),
+      () => ctx.sessionProjections.register(createContextProjectionDefinition(this.config)),
       'context-continuity.projection',
     )
-    const tools = createLoomContinuityTools()
-    ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
+    // The rollover tool is always present; the checkpoint, timeline, and retrieval-ladder tools
+    // exist only when the retrieval stack was wired (a real deployment). A rollover result is the
+    // durable fact the projection folds either way.
+    if (this.retrieval === undefined) {
+      const tools = createContinuityTools({
+        requestRollover: () => Promise.resolve({ mode: 'scheduled' }),
+        isRestorableRef: () => Promise.resolve(false),
+        recordCheckpoint: () => Promise.reject(new Error('loom: checkpoints require the retrieval stack')),
+        timeline: () => Promise.reject(new Error('loom: the context timeline requires the retrieval stack')),
+      })
+      ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
+    } else {
+      const tools = createContinuityTools(this.retrieval.toolAdapter())
+      const search = this.retrieval.searchTools()
+      ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
+      ctx.effect(() => ctx.tools.register(tools.checkpoint), 'context-continuity.checkpoint-tool')
+      ctx.effect(() => ctx.tools.register(tools.timeline), 'context-continuity.timeline-tool')
+      ctx.effect(() => ctx.tools.register(search.search), 'context-continuity.search-tool')
+      ctx.effect(() => ctx.tools.register(search.read), 'context-continuity.read-tool')
+    }
 
     ctx.on('session/event', (session, event) => {
       const agent = this.handle?.agent
@@ -143,22 +197,38 @@ export class LoomAgentRuntime implements AgentRuntime {
    * the context-continuity engine walks it to classify a searched generation as current, prior, or
    * archived, and to decide which past generation a `context_rollover` may return to. The pointer
    * carries no lineage of its own — duplicating it there would be a second record nothing reads.
+   *
+   * A fresh rollover seeds nothing and parents at the previous generation. A checkpoint return
+   * (`plan.checkpointRef`) instead seeds the successor with the exact prefix through the cited
+   * anchor and parents at that anchor's source generation. The seed is resolved BEFORE the old
+   * agent is disposed: a violation there fails the whole swap with the previous generation intact,
+   * never a guessed seed over a wrong prefix.
    */
   async executeTransition(plan: TransitionPlan): Promise<void> {
     const handoff = this.coordinator.handoffMessageFor(plan)
     const setup = presetSetup(this.deps.mountPreset)
+    const seed = plan.checkpointRef === undefined || this.retrieval === undefined
+      ? undefined
+      : await this.retrieval.resolveCheckpointSeed(plan.checkpointRef)
 
     if (this.handle !== undefined) {
       await this.handle.dispose()
       this.handle = undefined
     }
+    const parentSession = seed === undefined ? plan.previousSessionId : seed.sourceSessionId
     const successor = await this.deps.agents.create({
       sessionId: plan.newSessionId,
-      meta: { cwd: this.deps.workspace, parentSession: plan.previousSessionId },
+      meta: {
+        cwd: this.deps.workspace,
+        parentSession,
+        ...(seed === undefined ? {} : { isSeeded: true }),
+      },
+      ...(seed === undefined ? {} : { seed: seed.prefix, inheritedEventCount: SessionLogOffset(seed.prefix.length) }),
       ...(this.deps.agentOptions === undefined ? {} : { agentOptions: this.deps.agentOptions }),
       ...(setup === undefined ? {} : { setup }),
     })
     await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId })
+    await this.deps.runtimeState.recordSession(String(plan.newSessionId))
     this.handle = successor
 
     successor.agent.steer(handoff)

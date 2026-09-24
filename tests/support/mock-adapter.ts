@@ -33,6 +33,11 @@ export class MockAdapter extends LlmAdapter {
     super()
   }
 
+  /** Append more scripted turns; lets a test enqueue a response computed from live boot state. */
+  enqueue(...turns: StreamChunk[][]): void {
+    this.script.push(...turns)
+  }
+
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     return Promise.resolve({ provider, id: model, name: model })
   }

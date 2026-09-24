@@ -35,14 +35,24 @@ export interface AcceptedInput {
 }
 
 /**
- * Durable local state for one deployment: the current-session pointer and the accepted-input
- * dedup ledger. Kept outside the session log and the workspace files.
+ * Durable local state for one deployment: the current-session pointer, the accepted-input
+ * dedup ledger, and the owned-session ledger. Kept outside the session log and the workspace
+ * files.
  */
 export interface RuntimeState {
   getCurrentSession(): CurrentSession | undefined
   setCurrentSession(session: CurrentSession): Promise<void>
   isAccepted(channel: string, providerMessageId: string): boolean
   recordAccepted(input: AcceptedInput): Promise<void>
+  /**
+   * Record one session id this deployment created. This is the search-authorization set: every
+   * generation the subject ever lived in, including archived branches a checkpoint return left
+   * off the active lineage. The active lineage is walkable from `parentSession` headers, but an
+   * off-lineage branch is reachable only from this ledger.
+   */
+  recordSession(sessionId: string): Promise<void>
+  /** Every session id this deployment created; the range `context_search` is authorized over. */
+  ownedSessions(): string[]
 }
 
 declare module '@deepseek-ai/cordis' {

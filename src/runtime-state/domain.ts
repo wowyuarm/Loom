@@ -3,10 +3,12 @@ import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import type { AcceptedInput } from '../contracts/index.ts'
 
 /**
- * The runtime-state domain. v1 holds exactly two facts that must survive a restart:
+ * The runtime-state domain. v1 holds the facts that must survive a restart:
  * - currentSession pointer (global singleton), updated at rollover commit, read at boot.
  * - acceptedInput ledger (table), keyed by (channel, providerMessageId), so a redelivery is
  *   not processed twice.
+ * - owned-session ledger (table), keyed by session id: the search-authorization set, every
+ *   generation the subject created including archived off-lineage branches.
  */
 
 // Zod schemas for the two facts. domainTable/global type the values to the contracts, so a
@@ -25,6 +27,13 @@ const acceptedInputSchema = z.object({
   acceptedAt: z.number(),
 })
 
+// One owned session. The key is the session id; the value restates it so a dumped record is
+// self-describing. No timestamp: the ledger authorizes search, and result ordering is the
+// engine's job from event times, not this ledger's.
+const ownedSessionSchema = z.object({
+  sessionId: z.string(),
+})
+
 // The global slot cannot store null (the medium's "never written" sentinel), so wrap the
 // pointer in a thin object; an absent `current` field means "no current session yet".
 const globalSchema = z.object({ current: currentSessionSchema.optional() })
@@ -38,6 +47,7 @@ export const runtimeStateDomain = defineDomain({
   global: { schema: globalSchema, initial: {} as RuntimeGlobal },
   tables: {
     accepted_input: domainTable<string, AcceptedInput>(acceptedInputSchema),
+    owned_session: domainTable<string, { sessionId: string }>(ownedSessionSchema),
   },
 })
 

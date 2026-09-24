@@ -18,7 +18,8 @@ const presetSchema = JSON_SCHEMA.extend(JsExpr)
 interface Entry {
   id?: string
   name?: string
-  config?: Record<string, unknown>
+  config?: Record<string, unknown> | Entry[]
+  group?: boolean
   disabled?: boolean
 }
 
@@ -115,7 +116,18 @@ describe('loom bundle manifest', () => {
     const preset = load(await readFile(join(projectRoot, 'presets', 'loom', 'agent.cordis.yml'), 'utf8'), { schema: presetSchema }) as Entry[]
 
     expect(preset.length).toBeGreaterThan(0)
-    for (const row of preset) {
+    // Flatten group rows (e.g. the compaction isolate realm): the invariant is about the leaf
+    // capability rows, not the `cordis:group` containers that hold them.
+    const leaves: Entry[] = []
+    const collect = (rows: Entry[]): void => {
+      for (const row of rows) {
+        if (row.group === true && Array.isArray(row.config)) collect(row.config as Entry[])
+        else leaves.push(row)
+      }
+    }
+    collect(preset)
+
+    for (const row of leaves) {
       expect(row.id).toBeDefined()
       expect(row.name).toMatch(/^@deepseek-ai\//)
       // A preset row whose base counterpart stayed enabled would sit in the global layer too,

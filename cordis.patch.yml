@@ -25,6 +25,17 @@
   config:
     cwd: !!js dshHomePath('loom/workspace')
 
+# Open the session-query index so the agent can search its own past generations. base ships
+# this row closed (openAt: never, :memory:), which keeps exact reads, filters, and lineage
+# traces available while searchSessions/searchEvents fail with SESSION_QUERY_SEARCH_DISABLED.
+# Loom's context_search needs search, so open the index lazily — first-search defers the
+# node:sqlite import and the whole index build to the first query — over a durable file beside
+# the runtime state; an ephemeral :memory: index would rebuild the whole thing on every start.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('loom/session-query.db')
+    openAt: first-search
+
 # Drop base's task-execution scaffolding. It equips a coding agent working a bounded task;
 # Loom is a continuous individual, and these tools plus their prompt sections are noise here.
 # Subagents stay: spawning helpers is a general capability, not task scaffolding.

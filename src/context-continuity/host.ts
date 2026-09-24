@@ -1,22 +1,17 @@
-import { createHash } from 'node:crypto'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
-import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { createHash } from 'node:crypto'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionId as SessionIdType } from '@deepseek-ai/dsh-session'
 import {
   ContextContinuityCoordinator,
   ContextMessageCodec,
-  createContinuityTools,
   type ContextContinuityHost,
   type ContextProjectionConfig,
   type ContextProjectionHost,
   type ContextProjectionState,
   type ContextSubject,
-  type ContinuityToolAdapter,
-  type ContinuityTools,
   type RolloverIdentity,
-  type RolloverToolRequest,
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
 
@@ -141,33 +136,4 @@ export function createLoomContextManagement(
  */
 export function createLoomContextProjectionConfig(host: ContextProjectionHost): ContextProjectionConfig {
   return { codec: LOOM_CONTEXT_CODEC, host }
-}
-
-/**
- * The host half of the model-facing continuity tools. v1 exposes only the rollover tool, so the
- * checkpoint/timeline methods are unreachable and reject if ever called. requestRollover simply
- * acknowledges: the tool's successful result is the durable fact the projection folds, and the
- * swap follows at the next idle boundary.
- */
-export class LoomContinuityToolAdapter implements ContinuityToolAdapter {
-  requestRollover(_request: RolloverToolRequest, _exec: ToolRunContext): Promise<{ readonly mode: string }> {
-    return Promise.resolve({ mode: 'scheduled' })
-  }
-
-  isRestorableRef(_checkpointRef: string, _exec: ToolRunContext): Promise<boolean> {
-    return Promise.resolve(false)
-  }
-
-  recordCheckpoint(): Promise<never> {
-    return Promise.reject(new Error('loom: checkpoints are not supported in v1'))
-  }
-
-  timeline(): Promise<never> {
-    return Promise.reject(new Error('loom: the context timeline is not supported in v1'))
-  }
-}
-
-/** The model-facing context tools Loom registers; v1 uses the rollover tool only. */
-export function createLoomContinuityTools(): ContinuityTools {
-  return createContinuityTools(new LoomContinuityToolAdapter())
 }

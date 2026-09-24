@@ -1,13 +1,14 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { AgentOptions } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 // Side-effect import: the `agentDefaultModel` Context augmentation, read below when a deployment
 // leaves the model to base's default-model plugin.
 import '@deepseek-ai/dsh-agent-default-model'
 // Side-effect import: the `agentPresets` Context augmentation, the roster this plugin composes
 // each agent from.
 import '@deepseek-ai/dsh-agent-presets'
-import { CONTEXT_CONTINUITY_PROJECTION_KEY } from '@wowyuarm/dsh-context-continuity'
-import { LoomAgentRuntime } from './runtime.ts'
+import { CONTEXT_CONTINUITY_PROJECTION_KEY, StoredSessionReader } from '@wowyuarm/dsh-context-continuity'
+import { contextBudgetFrom, type ContextBudget } from '../context-continuity/retrieval.ts'
+import { LoomAgentRuntime, type RetrievalDeps } from './runtime.ts'
 
 export interface AgentRuntimeConfig {
   /** Absolute workspace path used as the agent's session cwd. */
@@ -19,7 +20,10 @@ export interface AgentRuntimeConfig {
 }
 
 export const name = 'agent-runtime'
-export const inject = ['agents', 'runtimeState', 'sessionProjections', 'tools', 'agentPresets']
+export const inject = [
+  'agents', 'runtimeState', 'sessionProjections', 'tools', 'agentPresets',
+  'sessionPersistence', 'sessionQuery', 'llm',
+]
 
 /**
  * The model the created agent generates with: an explicit config override, else base's
@@ -37,6 +41,37 @@ function resolveAgentOptions(ctx: Context, config: AgentRuntimeConfig): AgentOpt
   }
 }
 
+/**
+ * The retrieval/return capabilities read from ctx: archived-log reads, the token meter, the
+ * handoff budget derived from the route's context window, and the session-query engine. The
+ * budget prefers the session's own persisted request context and falls back to resolving the
+ * default-model selection, so a timeline read does not force a provider round-trip once a
+ * generation has recorded its route.
+ */
+function retrievalDeps(ctx: Context): RetrievalDeps {
+  const reader = new StoredSessionReader(ctx)
+  const meter = (): ReturnType<typeof ctx.get<'tokenMeter'>> => ctx.get('tokenMeter')
+  const budgetOf = async (agent: Agent): Promise<ContextBudget | undefined> => {
+    const usageTokens = meter()?.measure(agent.session)?.totalTokens
+    if (usageTokens === undefined) return undefined
+    let contextWindow = agent.session.requestContext()?.contextWindow
+    if (contextWindow === undefined) {
+      const selection = ctx.get('agentDefaultModel')?.currentSelection()
+      if (selection !== undefined) {
+        contextWindow = (await ctx.llm.resolveModelInfo(selection.provider, selection.model)).context?.contextWindow
+      }
+    }
+    if (contextWindow === undefined) return undefined
+    return contextBudgetFrom(usageTokens, contextWindow)
+  }
+  return {
+    readAncestor: id => reader.read(id),
+    meter,
+    budgetOf,
+    query: ctx.sessionQuery,
+  }
+}
+
 export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<void> {
   const agentOptions = resolveAgentOptions(ctx, config)
   const runtime = new LoomAgentRuntime({
@@ -45,6 +80,7 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     workspace: config.workspace,
     projectionOf: agent => ctx.sessionProjections.stateOf(agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY),
     mountPreset: async agentCtx => { await ctx.agentPresets.mount(agentCtx, config.agentPreset) },
+    retrieval: retrievalDeps(ctx),
     ...(agentOptions === undefined ? {} : { agentOptions }),
   })
   runtime.install(ctx)

@@ -94,6 +94,27 @@ describe('continuity store — accepted-input dedup', () => {
   })
 })
 
+describe('continuity store — owned-session ledger', () => {
+  it('accumulates every recorded session and is idempotent per id', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
+    try {
+      expect(loom.ownedSessions()).toEqual([])
+      await loom.recordSession('s-0')
+      await loom.recordSession('s-1')
+      // An off-lineage branch and the active lineage both land in the same set.
+      await loom.recordSession('s-branch')
+      expect(new Set(loom.ownedSessions())).toEqual(new Set(['s-0', 's-1', 's-branch']))
+      // Re-recording an id does not duplicate it.
+      await loom.recordSession('s-0')
+      expect(loom.ownedSessions()).toHaveLength(3)
+    } finally {
+      await dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('continuity store — durability across restart', () => {
   it('recovers the pointer and dedup ledger after a fresh boot on the same medium', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
@@ -102,12 +123,14 @@ describe('continuity store — durability across restart', () => {
       const first = await boot(path)
       await first.loom.setCurrentSession({ sessionId: 's-live' })
       await first.loom.recordAccepted(sampleInput())
+      await first.loom.recordSession('s-live')
       await first.dispose()
 
       const second = await boot(path)
       try {
         expect(second.loom.getCurrentSession()).toEqual({ sessionId: 's-live' })
         expect(second.loom.isAccepted('telegram', 'm-1')).toBe(true)
+        expect(second.loom.ownedSessions()).toEqual(['s-live'])
       } finally {
         await second.dispose()
       }
