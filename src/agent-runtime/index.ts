@@ -3,6 +3,9 @@ import type { AgentOptions } from '@deepseek-ai/dsh-agent'
 // Side-effect import: the `agentDefaultModel` Context augmentation, read below when a deployment
 // leaves the model to base's default-model plugin.
 import '@deepseek-ai/dsh-agent-default-model'
+// Side-effect import: the `agentPresets` Context augmentation, the roster this plugin composes
+// each agent from.
+import '@deepseek-ai/dsh-agent-presets'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY } from '@wowyuarm/dsh-context-continuity'
 import { LoomAgentRuntime } from './runtime.ts'
 
@@ -11,10 +14,12 @@ export interface AgentRuntimeConfig {
   workspace: string
   /** Loop options (provider/model); omit to take base's default-model selection. */
   agentOptions?: AgentOptions
+  /** Preset id the agent joins; omit for the roster's configured default. */
+  agentPreset?: string
 }
 
 export const name = 'agent-runtime'
-export const inject = ['agents', 'runtimeState', 'sessionProjections', 'tools']
+export const inject = ['agents', 'runtimeState', 'sessionProjections', 'tools', 'agentPresets']
 
 /**
  * The model the created agent generates with: an explicit config override, else base's
@@ -39,6 +44,7 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     runtimeState: ctx.runtimeState,
     workspace: config.workspace,
     projectionOf: agent => ctx.sessionProjections.stateOf(agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY),
+    mountPreset: async agentCtx => { await ctx.agentPresets.mount(agentCtx, config.agentPreset) },
     ...(agentOptions === undefined ? {} : { agentOptions }),
   })
   runtime.install(ctx)
@@ -47,7 +53,7 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
   ctx.effect(() => async () => { await runtime.dispose() }, 'agent-runtime.dispose')
 }
 
-export { bootAgent } from './boot.ts'
+export { bootAgent, presetSetup } from './boot.ts'
 export type { BootDeps } from './boot.ts'
 export { LoomAgentRuntime } from './runtime.ts'
 export type { RuntimeDeps } from './runtime.ts'

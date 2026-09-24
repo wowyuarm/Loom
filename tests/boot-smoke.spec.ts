@@ -18,12 +18,15 @@ import * as ClockPlugin from '../src/clock/index.ts'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import * as ResidentContextPlugin from '../src/resident-context/index.ts'
 import * as AgentRuntimePlugin from '../src/agent-runtime/index.ts'
+import { provideFakePresets } from './support/fake-presets.ts'
 import { MockAdapter, textResponse, toolCallResponse } from './support/mock-adapter.ts'
 
 interface Loom {
   ctx: Context
   mock: MockAdapter
   workspace: string
+  /** Preset ids the agent joined during its creation window. */
+  presetsMounted: string[]
   dispose: () => Promise<void>
 }
 
@@ -56,6 +59,7 @@ async function bootLoom(mock: MockAdapter): Promise<Loom> {
   await load(ClockPlugin)
   await load(RuntimeStatePlugin)
   await load(ResidentContextPlugin, { workspace })
+  const presetsMounted = provideFakePresets(ctx)
   await load(AgentRuntimePlugin, { workspace, agentOptions: { provider: 'mock', model: 'mock' } })
 
   await vi.waitFor(() => { expect(ctx.agentRuntime?.current()).toBeDefined() })
@@ -63,6 +67,7 @@ async function bootLoom(mock: MockAdapter): Promise<Loom> {
     ctx,
     mock,
     workspace,
+    presetsMounted,
     dispose: async () => {
       for (const fiber of fibers.reverse()) await fiber.dispose()
       await rm(workspace, { recursive: true, force: true })
@@ -79,6 +84,10 @@ describe('loom boot smoke', () => {
       // The pointer was written for the freshly created session.
       const pointer = loom.ctx.runtimeState.getCurrentSession()
       expect(pointer).toBeDefined()
+
+      // The agent joined its preset inside the creation window, before it was published — the
+      // point at which the roster installs the tools and prompt sections the model will see.
+      expect(loom.presetsMounted).toHaveLength(1)
 
       const agent = loom.ctx.agentRuntime.current()
       expect(agent).toBeDefined()
@@ -140,6 +149,10 @@ describe('loom boot smoke', () => {
       expect(after?.sessionId).toMatch(/^loom-rollover-/)
       expect(after?.parentLineage).toContain(original)
       expect(loom.ctx.agentRuntime.current()?.id).toBe(after?.sessionId)
+
+      // The successor joined the same preset, so a rolled-over agent keeps the tools its
+      // predecessor had rather than waking up with an empty catalog.
+      expect(loom.presetsMounted).toHaveLength(2)
     } finally {
       await loom.dispose()
     }

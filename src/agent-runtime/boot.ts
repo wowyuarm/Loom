@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { AgentHandle, AgentOptions, AgentRegistry } from '@deepseek-ai/dsh-agent'
+import type { Context } from '@deepseek-ai/cordis'
+import type { AgentHandle, AgentOptions, AgentRegistry, AgentSetup } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { RuntimeState } from '../contracts/index.ts'
 
@@ -14,8 +15,30 @@ export interface BootDeps {
    * (e.g. a test with a mock adapter) passes them here.
    */
   agentOptions?: AgentOptions
+  /**
+   * Compose the agent's capability set from its preset. Runs inside the creation window, before
+   * the agent is published, so the tools and prompt sections exist before its first prompt
+   * assembles. Required in a deployment that moved the model-facing rows to the agent plane:
+   * an agent that joins no preset inherits only the global layer and reaches the model with an
+   * empty tool catalog.
+   */
+  mountPreset?: (agentCtx: Context) => Promise<void>
   /** Session id minter for a first boot; overridable for deterministic tests. */
   newSessionId?: () => SessionId
+}
+
+/**
+ * The agent's creation-window setup: join the preset so its tools and prompt sections exist
+ * before the agent is published. Undefined when the deployment left the model-facing rows on
+ * the host plane, where the global layer already reaches the agent.
+ * @param mountPreset - the roster's compose call, or undefined.
+ * @returns an {@link AgentSetup}, or undefined when there is nothing to compose.
+ */
+export function presetSetup(
+  mountPreset: ((agentCtx: Context) => Promise<void>) | undefined,
+): AgentSetup | undefined {
+  if (mountPreset === undefined) return undefined
+  return async (agentCtx) => { await mountPreset(agentCtx) }
 }
 
 /**
@@ -29,11 +52,13 @@ export interface BootDeps {
  */
 export async function bootAgent(deps: BootDeps): Promise<AgentHandle> {
   const agentOptions = deps.agentOptions
+  const setup = presetSetup(deps.mountPreset)
   const pointer = deps.runtimeState.getCurrentSession()
   if (pointer !== undefined) {
     return deps.agents.resume({
       resumeSessionId: SessionId(pointer.sessionId),
       ...(agentOptions === undefined ? {} : { agentOptions }),
+      ...(setup === undefined ? {} : { setup }),
     })
   }
   const mint = deps.newSessionId ?? (() => SessionId(`loom-${randomUUID()}`))
@@ -42,6 +67,7 @@ export async function bootAgent(deps: BootDeps): Promise<AgentHandle> {
     sessionId,
     meta: { cwd: deps.workspace },
     ...(agentOptions === undefined ? {} : { agentOptions }),
+    ...(setup === undefined ? {} : { setup }),
   })
   await deps.runtimeState.setCurrentSession({ sessionId })
   return handle

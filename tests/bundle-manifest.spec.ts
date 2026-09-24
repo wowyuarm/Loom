@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { JSON_SCHEMA, Type, load } from 'js-yaml'
 import { composeEntries, loadProfileDirectory } from '@deepseek-ai/dsh-app-boot'
 
 const projectRoot = resolve(import.meta.dirname, '..')
+
+/** The loader's `!!js` tag, so a preset parses here the way the roster parses it. */
+const JsExpr = new Type('tag:yaml.org,2002:js', {
+  kind: 'scalar',
+  resolve: (data: unknown) => typeof data === 'string',
+  construct: (data: string) => ({ __jsExpr: data }),
+})
+const presetSchema = JSON_SCHEMA.extend(JsExpr)
 
 interface Entry {
   id?: string
@@ -79,6 +88,14 @@ describe('loom bundle manifest', () => {
     // not a default.
     expect(byId.get('channel-gateway')?.config).toMatchObject({ allow: [] })
 
+    // The agent plane: the roster reads Loom's own preset directory, and no other root can
+    // supply a preset this deployment would then run.
+    expect(byId.get('agent-presets')?.config).toMatchObject({
+      default: 'loom',
+      includeShippedRoot: false,
+      includeUserRoot: false,
+    })
+
     // The loop creates no agent from configuration; agent-runtime boots the one agent.
     expect(byId.get('agent-loop')?.config).toMatchObject({ agents: [] })
 
@@ -90,5 +107,26 @@ describe('loom bundle manifest', () => {
     expect(byId.get('agent-runtime')?.config).toMatchObject({ workspace })
     expect(byId.get('fs-sandbox')?.config).toMatchObject({ cwd: workspace })
     expect(byId.get('storage-sqlite')?.config).toEqual({ path: { __jsExpr: "dshHomePath('loom/runtime-state.db')" } })
+  })
+
+  it('declares every agent-plane row in the preset and leaves none enabled in the bundle', async () => {
+    const entries = await composeLoomOverBase()
+    const byId = new Map(entries.filter(e => e.id !== undefined).map(e => [e.id, e]))
+    const preset = load(await readFile(join(projectRoot, 'presets', 'loom', 'agent.cordis.yml'), 'utf8'), { schema: presetSchema }) as Entry[]
+
+    expect(preset.length).toBeGreaterThan(0)
+    for (const row of preset) {
+      expect(row.id).toBeDefined()
+      expect(row.name).toMatch(/^@deepseek-ai\//)
+      // A preset row whose base counterpart stayed enabled would sit in the global layer too,
+      // which every agent inherits — the tool would reach the model without this file naming it.
+      expect(byId.get(row.id as string)?.disabled, `base row "${row.id}" is still enabled`).toBe(true)
+    }
+
+    // Base's task-execution scaffolding is gone rather than merely undeclared: these rows
+    // inject services and prompt sections of their own, which no preset row can suppress.
+    for (const id of ['plan-mode', 'goal', 'goal-round-driver', 'command-goal', 'tool-goal', 'tool-todo', 'tool-ralph']) {
+      expect(byId.get(id)?.disabled, `scaffolding row "${id}" is still enabled`).toBe(true)
+    }
   })
 })

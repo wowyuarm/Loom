@@ -1,0 +1,50 @@
+# Loom's agent composition: what this agent can actually do.
+#
+# This is the AGENT PLANE. `dsh-agent-presets` mounts it once under a standing scope, and
+# Loom's agent joins that scope at creation (see `agent-runtime`), so every row here registers
+# into the agent's layer rather than the process-global one.
+#
+# The host plane (`dsh-base`, plus Loom's own host plugins) keeps what a composition must not
+# own: the tool registry, the sandbox and approval stack, persistence, and the model route.
+# `cordis.patch.yml` disables base's model-facing rows so this file is the only place the
+# agent's surface is decided — adding a tool here is a deliberate act, and a tool base ships
+# later cannot reach the agent on its own.
+#
+# Every row below registers into the host `tools` registry and provides no service, so none
+# needs an `isolate` realm.
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+# read, write, edit, read_image, glob, grep — rooted at the agent's workspace.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# The shell service and its executors stay host-plane; these rows contribute the tool. One
+# stack mounts per host, so each platform's row gates off the other.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── background jobs ─────────────────────────────────────────────────────────
+
+# Only the model-facing controls (job_list, job_output, job_kill). The job registry stays
+# host-plane, where `tool-bash`'s `run_in_background` resolves it.
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── web ─────────────────────────────────────────────────────────────────────
+
+# The web service and its search/fetch providers stay host-plane; only the tool is per-agent.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'

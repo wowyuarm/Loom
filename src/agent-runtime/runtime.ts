@@ -17,7 +17,7 @@ import {
   LoomContextContinuityHost,
   type LoomSubjectId,
 } from '../context-continuity/host.ts'
-import { bootAgent, type BootDeps } from './boot.ts'
+import { bootAgent, presetSetup, type BootDeps } from './boot.ts'
 
 export interface RuntimeDeps {
   agents: Pick<AgentRegistry, 'create' | 'resume'>
@@ -26,6 +26,11 @@ export interface RuntimeDeps {
   workspace: string
   /** Loop options (provider/model); omit when a default-model plugin supplies them. */
   agentOptions?: AgentOptions
+  /**
+   * Compose each agent's capability set from its preset, inside its creation window. Every
+   * generation joins the same preset, so a rollover successor sees the tools its predecessor did.
+   */
+  mountPreset?: (agentCtx: Context) => Promise<void>
   /** Read one live agent's engine-folded continuity state; omitted in unit tests without a projection. */
   projectionOf?: (agent: Agent) => ContextProjectionState | undefined
   /** Coordinator diagnostics sink; omitted in production unless a logger is wired. */
@@ -117,6 +122,7 @@ export class LoomAgentRuntime implements AgentRuntime {
       runtimeState: this.deps.runtimeState,
       workspace: this.deps.workspace,
       ...(this.deps.agentOptions === undefined ? {} : { agentOptions: this.deps.agentOptions }),
+      ...(this.deps.mountPreset === undefined ? {} : { mountPreset: this.deps.mountPreset }),
       ...(this.deps.newSessionId === undefined ? {} : { newSessionId: this.deps.newSessionId }),
     }
     this.handle = await bootAgent(deps)
@@ -136,6 +142,7 @@ export class LoomAgentRuntime implements AgentRuntime {
     const handoff = this.coordinator.handoffMessageFor(plan)
     const previous = this.deps.runtimeState.getCurrentSession()
     const lineage = [...(previous?.parentLineage ?? []), plan.previousSessionId]
+    const setup = presetSetup(this.deps.mountPreset)
 
     if (this.handle !== undefined) {
       await this.handle.dispose()
@@ -145,6 +152,7 @@ export class LoomAgentRuntime implements AgentRuntime {
       sessionId: plan.newSessionId,
       meta: { cwd: this.deps.workspace },
       ...(this.deps.agentOptions === undefined ? {} : { agentOptions: this.deps.agentOptions }),
+      ...(setup === undefined ? {} : { setup }),
     })
     await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId, parentLineage: lineage })
     this.handle = successor

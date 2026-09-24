@@ -25,7 +25,88 @@
   config:
     cwd: !!js dshHomePath('loom/workspace')
 
+# Drop base's task-execution scaffolding. It equips a coding agent working a bounded task;
+# Loom is a continuous individual, and these tools plus their prompt sections are noise here.
+# Subagents stay: spawning helpers is a general capability, not task scaffolding.
+- id: plan-mode
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: tool-ralph
+  disabled: true
+
+# Move the agent's whole model-facing surface to the agent plane.
+#
+# Base mounts these rows globally as the default for a deployment that has no opinion. Loom has
+# one: `presets/loom/agent.cordis.yml` names exactly what this agent can do. Disabling them here
+# is the other half of that — a row left enabled would sit in the global layer, which every agent
+# inherits, so it would reach the model without appearing in the preset.
+#
+# What stays enabled is the host plane the preset resolves against: the `tools`, `skill`, `web`,
+# and `subagents` registries, the shell and sandbox stack, persistence, and the model route.
+# Same split as `dsh-web-app`, for the same reason.
+- id: tool-bash
+  disabled: true
+- id: tool-pwsh
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: tool-fs
+  disabled: true
+- id: tool-fs-search
+  disabled: true
+- id: skill-filesystem
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: workflow-worker-thread
+  disabled: true
+- id: agent-instructions
+  disabled: true
+- id: compaction-basic
+  disabled: true
+- id: command-compact
+  disabled: true
+- id: tool-result-pruner
+  disabled: true
+
 - insert:
+    # The agent-plane roster. Loom ships exactly one preset and its agent always joins it, so
+    # the shipped and user roots stay off: this deployment's composition is not something a
+    # user edits, and an empty session must never fall back to another product's preset.
+    #
+    # The root path is derived from the profile directory the loader resolves this patch
+    # against, which is where the `loom` package is installed.
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: loom
+        includeShippedRoot: false
+        includeUserRoot: false
+        roots:
+          - path: !!js new URL('node_modules/loom/presets', baseUrl).pathname
+            trust: system
+
     # The sqlite medium behind the routed domain above.
     - id: storage-sqlite
       name: '@deepseek-ai/dsh-storage-sqlite'
@@ -78,6 +159,6 @@
       name: '@wowyuarm/dsh-channel-gateway/telegram'
 
     # Loom's consumer: dedup inbound against the durable ledger, deliver each to the agent as a
-    # turn, and expose the reply tool so the agent answers to the conversation in focus.
+    # turn, and expose the message tool so the agent answers to the conversation in focus.
     - id: channels
       name: 'loom/channels'
