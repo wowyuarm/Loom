@@ -13,7 +13,8 @@
 | 文档 | 用途 | 什么时候读 |
 | --- | --- | --- |
 | [`dsh-platform.md`](dsh-platform.md) | DSH 的组合模型、Loom 用到的接缝、怎么跑一个部署、踩过的坑、绑 DSH 的风险 | 动手改任何能力之前；写或改 bundle 清单时；要把部署跑起来时 |
-| [`extending.md`](extending.md) | 给自己的 Loom 部署加 plugin：落在哪一层、两种装法、最小形状、加之前核对什么、排错 | 要加模型 provider、工具或自己的 plugin 时；部署起不来时 |
+| [`deployment.md`](deployment.md) | 管理一个部署：`cordis.patch.yml` 的角色、三层落点、授权、换模型/provider | 要换模型或 provider、加授权、搞清 cordis.patch.yml 干什么时 |
+| [`extending.md`](extending.md) | 为部署加 plugin：本地文件与 npm 包两种形态、插件最小形状、排错 | 要装一个 plugin 时 |
 | [`agent-context.md`](agent-context.md) | 怎么写 subsystem 文档、文档分层、给 agent 建设工作上下文的方针 | 要写或补文档时；工作项落地要闭合时；想让 agent 在这里更好工作时 |
 | `CONTEXT.md`（待建） | 稳定的 Loom 术语与所有权边界 | 改动领域语义、类型命名或材料契约时 |
 | `docs/architecture.md`（待建） | 模块/包关系、Host 边界、事实分层 | 改动跨越模块或包边界时 |
@@ -27,6 +28,6 @@ DSH 的 `packages/` 与 `docs/subsystems/` 是一份能力菜单。Loom 的每�
 ## 从哪里开始
 
 - **理解 DSH 底座、写 bundle 清单、把部署跑起来**：[`dsh-platform.md`](dsh-platform.md)。
-- **给自己的部署加 plugin**（provider、工具、自己的扩展）：[`extending.md`](extending.md)。
+- **管理一个部署**（cordis.patch.yml 的角色、授权、换模型/provider）：[`deployment.md`](deployment.md)；其中装 plugin 的具体做法见 [`extending.md`](extending.md)。
 - **理解连续性/记忆设计**：先看 `.scratch/active/continuity-and-memory/DESIGN.md`。
 - **改代码**：以对应包的源码和测试为权威，用本索引定位相关 subsystem 文档。
