@@ -200,7 +200,11 @@
     - id: channel-telegram
       name: '@wowyuarm/dsh-channel-gateway/telegram'
 
-    # Loom's consumer: dedup inbound against the durable ledger, deliver each to the agent as a
-    # turn, and expose the message tool so the agent answers to the conversation in focus.
+    # Loom's consumer: dedup inbound against the durable ledger, land attachments under the
+    # agent's `workspace/media/<channel>/`, deliver each message to the agent as a turn, and
+    # expose the message tool so the agent answers (files included) to the conversation in focus.
+    # Same workspace as agent-runtime, so incoming files sit where the agent's own tools reach.
     - id: channels
       name: 'loom/channels'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')

@@ -37,6 +37,10 @@ Loom 默认 `allow: []`（谁都不能说话）。把授权写进 `channel-gatew
       - telegram:<user-id>
 ```
 
+## 渠道文件
+
+收到的附件落在 agent 工作区的 `media/<channel>/` 下（如 `workspace/media/telegram/`），消息里以 `[image: media/telegram/…]` 这样的标记告诉 agent，agent 用自己的读文件工具打开、整理或删除。发文件时 agent 把 workspace 里的路径交给 `message` 工具；路径不能越出 workspace。没有自动清理，附件就是普通工作区文件，由 agent 自己管。
+
 ## 换模型 / provider
 
 分两步，因为“有哪些模型可选”和“实际用哪个”是两层。

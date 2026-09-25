@@ -90,7 +90,7 @@
     "@deepseek-ai/dsh-tools": "0.1.7-rc.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
-    "@wowyuarm/dsh-channel-gateway": "^0.1.1",
+    "@wowyuarm/dsh-channel-gateway": "^0.1.2",
     "@wowyuarm/dsh-context-continuity": "0.1.5",
     "js-yaml": "^4.3.2",
     "typescript": "^5.8.3",

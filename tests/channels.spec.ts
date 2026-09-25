@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -19,10 +19,12 @@ import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as ChannelGatewayPlugin from '@wowyuarm/dsh-channel-gateway'
 import type {
   Channel,
+  ChannelAttachment,
   ChannelInbox,
   ChannelSendResult,
   InboundMessage,
   OutboundMessage,
+  ResolvedAttachment,
 } from '@wowyuarm/dsh-channel-gateway'
 import * as ClockPlugin from '../src/clock/index.ts'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
@@ -35,7 +37,14 @@ import { MockAdapter, textResponse, toolCallResponse } from './support/mock-adap
 /** A scripted in-memory transport: hand it inbound messages, read back what was sent. */
 class MockChannel implements Channel {
   readonly name = 'mock-chat'
-  readonly capabilities = { attachments: false, buttons: false, edit: false, replyTo: true, maxTextLength: 4096 }
+  readonly capabilities = {
+    attachments: true,
+    attachmentDownload: true,
+    buttons: false,
+    edit: false,
+    replyTo: true,
+    maxTextLength: 4096,
+  }
   private inbox: ChannelInbox | undefined
   readonly sent: OutboundMessage[] = []
   private nextId = 1
@@ -49,6 +58,9 @@ class MockChannel implements Channel {
   async send(message: OutboundMessage): Promise<ChannelSendResult> {
     this.sent.push(message)
     return { providerMessageId: `out-${this.nextId++}` }
+  }
+  async resolveAttachment(attachment: ChannelAttachment): Promise<ResolvedAttachment> {
+    return { bytes: new TextEncoder().encode(`bytes-of-${attachment.ref ?? 'unknown'}`) }
   }
   receive(message: InboundMessage): void {
     if (this.inbox === undefined) throw new Error('channel not started')
@@ -68,10 +80,24 @@ function inbound(providerMessageId: string, text: string): InboundMessage {
   }
 }
 
+function inboundWithImage(providerMessageId: string, text: string, ref: string): InboundMessage {
+  return { ...inbound(providerMessageId, text), attachments: [{ kind: 'image', ref, mimeType: 'image/png' }] }
+}
+
+/** The concatenated text of the first user message the model was asked to generate against. */
+function firstUserText(mock: MockAdapter): string {
+  const message = mock.requests[0]?.messages.find(m => m.source?.kind === 'user')
+  return (message?.content ?? [])
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+}
+
 interface Harness {
   ctx: Context
   channel: MockChannel
   mock: MockAdapter
+  workspace: string
   dispose: () => Promise<void>
 }
 
@@ -102,7 +128,7 @@ async function bootWithChannels(mock: MockAdapter): Promise<Harness> {
   provideFakePresets(ctx)
   await load(AgentRuntimePlugin, { workspace, agentOptions: { provider: 'mock', model: 'mock' } })
   await load(ChannelGatewayPlugin, { allow: ['*'] })
-  await load(ChannelsPlugin)
+  await load(ChannelsPlugin, { workspace })
 
   await vi.waitFor(() => { expect(ctx.agentRuntime?.current()).toBeDefined() })
 
@@ -114,6 +140,7 @@ async function bootWithChannels(mock: MockAdapter): Promise<Harness> {
     ctx,
     channel,
     mock,
+    workspace,
     dispose: async () => {
       unregister()
       for (const fiber of fibers.reverse()) await fiber.dispose()
@@ -157,6 +184,46 @@ describe('channels consumer', () => {
       await agent?.whenIdle()
 
       expect(h.channel.sent[0]).toMatchObject({ channel: 'mock-chat', route: 'conv-42', text: 'hi Alice' })
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('lands an inbound attachment under the workspace and points the agent at it', async () => {
+    const h = await bootWithChannels(new MockAdapter([textResponse('ok')]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.receive(inboundWithImage('m1', 'look at this', 'img1'))
+      await vi.waitFor(() => { expect(h.mock.requests).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      const files = await readdir(join(h.workspace, 'media', 'mock-chat'))
+      expect(files).toHaveLength(1)
+      expect(files[0]).toMatch(/\.png$/)
+      const saved = await readFile(join(h.workspace, 'media', 'mock-chat', files[0] as string))
+      expect(saved.toString()).toBe('bytes-of-img1')
+      expect(firstUserText(h.mock)).toContain(`[image: media/mock-chat/${files[0] as string}]`)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('sends a workspace file as an outbound attachment', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'here it is', attachments: ['note.txt'] }),
+      textResponse('done'),
+    ]))
+    try {
+      await writeFile(join(h.workspace, 'note.txt'), 'file body')
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.receive(inbound('m1', 'send me the note'))
+      await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      const [message] = h.channel.sent
+      expect(message?.attachments).toHaveLength(1)
+      expect(message?.attachments?.[0]).toMatchObject({ kind: 'file', name: 'note.txt' })
+      expect(new TextDecoder().decode(message?.attachments?.[0]?.data)).toBe('file body')
     } finally {
       await h.dispose()
     }
