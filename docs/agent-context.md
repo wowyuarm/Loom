@@ -2,7 +2,7 @@
 
 本文是方针，不是清单：**怎么写 subsystem 文档，以及怎么建设让 agent（人或 AI）在 Loom 高效工作所需的上下文**。随理解更新，不定义代码没实现的行为。
 
-改 `docs/` 前先读 [`README.md`](README.md)（索引与维护纪律）和根 [`AGENTS.md`](../AGENTS.md)（权威顺序）。
+改 `docs/` 前先读 [`AGENTS.md`](AGENTS.md)（索引与维护纪律）和根 [`AGENTS.md`](../AGENTS.md)（权威顺序）。
 
 ## 一、出发点：接缝就是契约
 
@@ -18,16 +18,7 @@ agent 在这里高效工作，等于三件事同时成立：
 
 ## 二、文档分层：谁定义什么
 
-权威顺序见根 `AGENTS.md`（代码与测试 > `docs/` > DSH 契约 > `.scratch/`）。`docs/` 内部各司其职，不重复：
-
-| 文档 | 回答什么问题 | 什么时候写 |
-| --- | --- | --- |
-| [`dsh-platform.md`](dsh-platform.md) | DSH 底座怎么组合、Loom 用哪些接缝、怎么跑部署、绑 DSH 的风险 | 已建，随底座认知更新 |
-| `subsystems/<cap>.md` | 单个能力的**对外契约**（一个能力一页） | 该能力的接缝稳了、或要交接时（见三、四节） |
-| `CONTEXT.md` | 稳定术语与所有权边界（谁拥有哪个域、哪个服务名） | 命名或所有权开始产生歧义时 |
-| `adr/NNNN-*.md` | 不可逆的持久化 / 恢复 / session 取舍及其理由 | 做出此类决策时 |
-
-`src/contracts/` 是**类型契约的单一事实源**（纯类型 + ctx 类型增强）。文档不重复类型签名，只引用它：agent 读 `contracts` 拿精确签名，读 subsystem 页拿"为什么、有哪些不变量、和谁协作"。
+各文档的分工与"什么时候读/写"见 [`AGENTS.md`](AGENTS.md) 的索引表，这里不重复。本文只补它不含的一条：`src/contracts/` 是**类型契约的单一事实源**（纯类型 + ctx 类型增强）。文档不重复类型签名，只引用它：agent 读 `contracts` 拿精确签名，读 subsystem 页拿"为什么、有哪些不变量、和谁协作"。
 
 ## 三、怎么写一份 subsystem 文档
 
