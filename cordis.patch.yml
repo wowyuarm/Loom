@@ -148,6 +148,13 @@
       config:
         path: !!js dshHomePath('loom/runtime-state.db')
 
+    # A logger sink, mounted first so it captures everything after it. base collects ctx.logger
+    # into an in-memory ring buffer with no output; this writes each message to stderr, which the
+    # systemd service captures in the journal. Without it a broken channel poll or failed turn
+    # leaves no trace.
+    - id: log
+      name: 'loom/log'
+
     # The single time source. Everything that needs "now" reads it here, so behavior eval
     # can drive time deterministically.
     - id: clock

@@ -18,6 +18,10 @@
       "types": "./lib/clock/index.d.ts",
       "default": "./lib/clock/index.js"
     },
+    "./log": {
+      "types": "./lib/log/index.d.ts",
+      "default": "./lib/log/index.js"
+    },
     "./runtime-state": {
       "types": "./lib/runtime-state/index.d.ts",
       "default": "./lib/runtime-state/index.js"

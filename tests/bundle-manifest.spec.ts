@@ -58,6 +58,7 @@ describe('loom bundle manifest', () => {
 
     // Loom's own rows are present with the package's subpath exports as plugin names.
     expect(byId.get('clock')?.name).toBe('loom/clock')
+    expect(byId.get('log')?.name).toBe('loom/log')
     expect(byId.get('runtime-state')?.name).toBe('loom/runtime-state')
     expect(byId.get('orientation')?.name).toBe('loom/orientation')
     expect(byId.get('resident-context')?.name).toBe('loom/resident-context')
