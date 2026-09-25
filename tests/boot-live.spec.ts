@@ -11,10 +11,14 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
-import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek'
+import * as LlmDeepSeek from '@deepseek-ai/dsh-llm-deepseek-api-key'
+import { provideFakePresets } from './support/fake-presets.ts'
 import * as ClockPlugin from '../src/clock/index.ts'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import * as ResidentContextPlugin from '../src/resident-context/index.ts'
@@ -36,6 +40,9 @@ describe.skipIf(!hasKey)('loom boot live (real DeepSeek)', () => {
       await load(LlmRuntime)
       await load(SessionStore)
       await load(SessionProjectionRegistry)
+      await load(SessionPersistence, { root: join(workspace, '.sessions') })
+      await load(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
+      await load(TokenMeter)
       await load(SystemPrompt)
       await load(ToolRuntime)
       await load(AgentRegistry)
@@ -44,6 +51,7 @@ describe.skipIf(!hasKey)('loom boot live (real DeepSeek)', () => {
       await load(StorageSqlite, { path: ':memory:' })
       await load(StorageDomain, { backend: 'sqlite' })
       await load(LlmDeepSeek, {})
+      provideFakePresets(ctx)
       await load(ClockPlugin)
       await load(RuntimeStatePlugin)
       await load(ResidentContextPlugin, { workspace })

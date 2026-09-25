@@ -5,7 +5,7 @@ import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import '@deepseek-ai/dsh-agent-default-model'
 // Side-effect import: the `agentPresets` Context augmentation, the roster this plugin composes
 // each agent from.
-import '@deepseek-ai/dsh-agent-presets'
+import '@deepseek-ai/dsh-agent-preset-registry'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY, StoredSessionReader } from '@wowyuarm/dsh-context-continuity'
 import { contextBudgetFrom, type ContextBudget } from '../context-continuity/retrieval.ts'
 import { LoomAgentRuntime, type RetrievalDeps } from './runtime.ts'

@@ -25,6 +25,8 @@ DSH 是一棵 Cordis 插件树，一切都是插件。组合靠三层，没有�
 
 app bundle 是可替换的：将来 channels（Telegram 等）就是 Loom 自己的入口，那时不必要人机 app。
 
+**Loom 只换上层、复用底层，是顺着 DSH 的纹理走，不是硬改。** DSH 的底层机制——turn/step 循环、service/event/waterfall 接缝、session/storage/sandbox——是中立的，不预设 agent 是干什么的；"编码 agent" 的味道集中在上层那批任务脚手架插件（`goal`、`plan-mode`、`tool-todo`、`tool-ralph` 及其工具面）。Loom 在 `cordis.patch.yml` 里禁掉的正是这层脚手架，复用的是中立底层，所以转向发生在配置层，不需要 fork 或改 DSH 内部。这也是复用 92 个插件里保留约 67 个、只自写 7 个插件就能把 "编码 CLI" 改造成 "持续存在的个体" 的原因。
+
 ## 二、组合机制（写 bundle patch 必须知道）
 
 包的 `package.json` 声明 `dsh.bundle.patch: "./cordis.patch.yml"`，loader 据此挂载。
@@ -74,7 +76,8 @@ launcher 的两条关键命令：
 ### 版本对齐陷阱
 
 - **npm 的 `latest` dist-tag 被故意压在一个很低的版本**（`dsh-base` 的 latest 是 `0.0.1-rc.1`），直接 `npm view <pkg> version` 会误导。要看 `versions` 列表并显式装对齐的版本；alpha 线在 `alpha` tag 上。
-- 整套 DSH 包必须同版本线（如 `0.1.6-alpha.2`），`dsh-base` 会把子插件 pin 在同线。
+- 整套 DSH 包必须同版本线（Loom 当前钉在 `0.1.7-rc.2`），`dsh-base` 会把子插件 pin 在同线。
+- **升一个小版本要预期包改名和配置字段增减**。`0.1.6 → 0.1.7` 就换掉了 preset 机制：`@deepseek-ai/dsh-agent-presets`（复数，根目录发现式）变成 `dsh-agent-preset-registry` + `dsh-agent-preset`（单数，声明式），旧配置字段（`roots`、`includeShippedRoot`、`includeUserRoot`）在 0.1.7 里一个都不存在。升级前先 `npm view <包>@<目标版本> version` 逐个确认存在，再看 `--dump-config` 有没有报错。
 - `cordis` 版本要同时满足 DSH 的 peer（`^4.0.2`）和 loader/include 的 peer（`~4.0.4`）——取交集。
 
 ## 四、Loom 用到的接缝
@@ -140,3 +143,21 @@ mock 模型的配方来自 DSH 自己的 `agent-loop/tests/agent.spec.ts`：`Age
 | 模型可见的工具 | 裸 `verb_noun` | `memory_write`（模型不该看到厂商名） |
 
 服务接口集中在 `src/contracts/`（纯类型 + ctx 类型增强，零实现）。插件之间**只经 ctx 服务与事件交互**，不互相 import 实现——这是"能被替换"的支点：换一个提供同名服务的插件即可，不需要改消费者。
+
+## 八、把 DSH 当底座：性质与风险
+
+前七节是已跑通的事实。本节把这个底座的性质和代价讲清，供跟版和长期运行时决策。已验证的事实与尚未验证的关注点分开标注。
+
+把底座押在 DSH 上是对的选择——一个 agent harness 真正难写、且人人都要重造的通用底座（模型适配、可回放 session、agent 循环、工具、sandbox、持久化、compaction、凭据），DSH 已做成可替换插件且文档扎实，自研这些不会更好。代价是绑上了一个还在快速迭代的 preview，下面四条是已知性质和要守的纪律。
+
+1. **仍在 developer preview，承诺破坏性变更（事实）。** DSH README 大写声明 `THERE WILL BE COMPATIBILITY-BREAKING CHANGES`，版本还在 alpha/rc 线。Loom 钉在 `0.1.7-rc.2` 并稳定一段时间，升级是单独的工作项（预检清单见上一节）。
+   - 纪律：钉死一条版本线，不无理由追新；对 DSH 的接缝依赖收敛在 `src/contracts/`，上游改了只需动这一处。
+
+2. **版本偏斜是已发生的真实故障（事实）。** 见 §三「版本对齐陷阱」——整套 DSH 包不同线会导致启动失败、session 序号撞号、日志损坏，且是同源反复出现的一簇问题。
+   - 纪律：整套 DSH 包保持同版本线；升级第一道门是 `dsh --profile loom --dump-config`（离线、不花钱）核对组合树，再真跑一轮，别图快跳过。
+
+3. **DeepSeek 生态是 base 的默认深绑（事实）。** base 默认挂 `dsh-llm-deepseek`、`dsh-deepseek-account-platform`、`session-log-deepseek`、`deepseek-llm-api-extensions`。因为一切是插件，这是"可换"（换一个提供同 service 的插件）而非"锁死"，但真要换到中立生态要付适配成本。
+   - 纪律：清楚这是默认不是约束；需要中立时按插件替换，不要 fork DSH。
+
+4. **长期运行下的持久化成熟度未验证（关注点，Loom 自身尚未观测到该故障）。** DSH 的 session 持久化在"一次性编码任务"场景下验证充分；Loom 是长期存在、持续接消息、长期高频写的 individual，负载 profile 与 DSH 的设计场景不同。同生态的 agent-team 项目已在此撞到性能坑（session read 记录偏胖 + 每批全量 replay 顶 CPU）——这是 Loom 独有形态最可能复现的坑。
+   - 纪律：进入长期运行前，对 session/storage 做一次真实负载压测，别等撞墙才补。

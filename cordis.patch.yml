@@ -60,10 +60,35 @@
 - id: session-telemetry-otel
   disabled: true
 
+# Two more outbound payloads ride the official DeepSeek request itself: the active plugin-package
+# inventory and an incremental copy of the canonical session log. Both are provider metadata
+# outside the model's input — no tokens, no KV-cache effect — and both exist for the endpoint's
+# own request diagnostics, which is a benefit Loom's deployment does not owe anyone. The session
+# log is the fuller disclosure of the two: it is the whole event log, not the messages the model
+# is already sent. Loom is one private individual, so neither goes out. DSH_TELEMETRY_DISABLED
+# does not cover these; it only hard-disables the telemetry row above.
+- id: session-log-deepseek
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+
+# Who the agent is, is the agent's own business. `dsh-system-prompt` ships a harness-identity
+# section ("You are an AI agent powered by DeepSeek Harness.") that is on by default, and base
+# keeps the deployment persona empty. Both would put the harness's words in the agent's mouth:
+# Loom's identity is maintained by the agent itself in `workspace/identity/identity.md`, and
+# resident-context reads it into every turn. Turning the harness section off leaves that file as
+# the only source of self-description. The persona fields stay restated because a row patch
+# replaces the whole config rather than merging it.
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    personaPrefix: ''
+    personaSuffix: ''
+
 # Move the agent's whole model-facing surface to the agent plane.
 #
 # Base mounts these rows globally as the default for a deployment that has no opinion. Loom has
-# one: `presets/loom/agent.cordis.yml` names exactly what this agent can do. Disabling them here
+# one: `presets/loom.patch.yml` names exactly what this agent can do. Disabling them here
 # is the other half of that — a row left enabled would sit in the global layer, which every agent
 # inherits, so it would reach the model without appearing in the preset.
 #
@@ -96,8 +121,6 @@
   disabled: true
 - id: tool-workflow
   disabled: true
-- id: workflow-worker-thread
-  disabled: true
 - id: agent-instructions
   disabled: true
 - id: compaction-basic
@@ -114,15 +137,10 @@
     #
     # The root path is derived from the profile directory the loader resolves this patch
     # against, which is where the `loom` package is installed.
-    - id: agent-presets
-      name: '@deepseek-ai/dsh-agent-presets'
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
       config:
         default: loom
-        includeShippedRoot: false
-        includeUserRoot: false
-        roots:
-          - path: !!js new URL('node_modules/loom/presets', baseUrl).pathname
-            trust: system
 
     # The sqlite medium behind the routed domain above.
     - id: storage-sqlite
