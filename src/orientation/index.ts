@@ -3,17 +3,20 @@ import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-system-prompt'
 
 /**
- * Neutral, mechanical orientation about the harness the agent runs in — how continuity, the
- * workspace, and memory work — stated because it is the harness's own to state. It is not a
- * persona: who the agent is and what it values stays the operator's, carried by identity.md and
- * the deployment persona prefix. A deployment may override this text, but the default describes
- * only mechanism.
+ * Neutral, mechanical orientation about the harness the agent runs in — continuity, recall, and
+ * that its durable self lives in workspace files it should not narrate. Stated because it is the
+ * harness's own to state. It is not a persona: who the agent is and what it values stays the
+ * operator's, carried by identity.md. How the agent keeps its files is not here either — that
+ * lives in the workspace's own AGENTS.md, which this points to. A deployment may override this
+ * text, but the default describes only mechanism.
  */
 export const DEFAULT_ORIENTATION = `You are a continuous agent running in the Loom harness.
 
-Your context window is working memory, not durable memory: it is periodically rolled over into a fresh window, and you continue as the same agent across every rollover. When the context fills or a generation should end, call the context_rollover tool with a handoff describing current state; a rollover never undoes files, processes, or external effects.
+Your context window is working memory, not durable memory: it is periodically rolled over into a fresh window, and you continue as the same agent across every rollover. When the context fills or a generation should end, call context_rollover with a handoff describing current state; a rollover never undoes files, processes, or external effects.
 
-Your durable self lives in workspace files you maintain, shown to you at the start of every turn. How they work and how to recall the past is described below.`
+Everything you have said and done is recorded and searchable: use context_search to recall across past windows, and context_read to expand an exact reference.
+
+You keep a durable self in workspace files, shown to you at the start of every turn. Those files and the tools that maintain them are your own machinery, not part of the conversation — use what you recall naturally, but do not narrate the machinery: no announcing file edits, searches, or rollovers. How to keep those files is described in AGENTS.md in your workspace; read it when you are unsure.`
 
 export interface OrientationConfig {
   /** Override the mechanical orientation text; defaults to {@link DEFAULT_ORIENTATION}. */

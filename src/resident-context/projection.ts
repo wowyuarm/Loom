@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import '@deepseek-ai/dsh-system-prompt'
 import { applyBudget } from './budget.ts'
 import { residentPath, residentFiles, memoryCoreOf, memoryIndexOf } from './layout.ts'
+import { bootstrapFile } from './scaffold.ts'
 
 /** Per-file byte caps. Total stays in the ~20-40 KiB resident range. */
 export interface ResidentContextCaps {
@@ -22,41 +23,11 @@ export const defaultCaps: ResidentContextCaps = {
   attention: 8 * 1024,
 }
 
-// Section orders, ascending. Loom's orientation sits at 100; the memory-model guidance and
-// the agent's own identity follow it, so the model reads harness mechanics, then how its memory
-// works, then who it is — before the dynamic materials arrive as history snapshots.
-const MIND_GUIDANCE_ORDER = 110
+// Section orders, ascending. The first-waking prompt leads (90, present only during
+// initialization); Loom's orientation sits at 100; the agent's own identity follows at 120 —
+// before the dynamic materials arrive as history snapshots.
+const BOOTSTRAP_ORDER = 90
 const IDENTITY_ORDER = 120
-
-/**
- * How the agent uses its own memory: the two layers, the four resident files, and the handful of
- * operations over them. Neutral mechanics — it names organs and tools, never who the agent is or
- * what it should care about. That is the agent's own, carried by identity.md. A deployment may
- * override this text, but the default assumes Loom's resident-context organs and its continuity
- * tools; replacing those means replacing this.
- */
-export const DEFAULT_MIND_GUIDANCE = `# How your memory works
-
-You hold two kinds of memory, and they work differently.
-
-Everything that happens — every message, tool call, and turn — is already recorded verbatim in your session log. You never write it down yourself. To recall the past, search: \`context_search\` finds by content across your past generations, and \`context_read\` expands an exact reference. When something you kept cites where it came from, read that reference directly instead of searching for it.
-
-On top of that record you keep a small set of files you maintain by hand, shown to you at the start of every turn. They hold what search cannot give you — what must be present every turn, and where your open lines stand:
-
-- **identity** — who you are: the root you judge everything else against. Highest threshold to change; it does not move with the events of a few days.
-- **memory** — a small core of understanding that must bind every turn (cross-topic conclusions, standing rules), plus an index routing to notes. A note holds topic-specific knowledge you read on demand. Keep the core small: it is what would make you misjudge if it were not always in front of you.
-- **threads** — the lines still open. \`threads/index.md\` lists the active ones; each \`threads/<id>/\` holds that line's current state and how to pick it back up. A thread is something still unfolding — re-entering means continuing the work, not looking up a settled fact.
-- **attention** — what you are holding right now. Each item carries a horizon: roughly how long you expect to carry it. When a horizon passes, the item drops out, or becomes a thread if it still matters. attention is the most volatile of the four and sits nearest the current input.
-
-How to use them:
-
-- **Waking up or continuing a turn**: your standing understanding — identity, memory core, attention — is already in front of you. Enter the work without searching.
-- **"Did I…? How was that decided?"**: search the record — \`context_search\`, then \`context_read\` to expand a hit.
-- **"What do I know about X?"**: grep your notes.
-- **You understood something lasting**: record it with \`memory_write\`, citing the source it came from. Settled knowledge becomes a note; a line still unfolding stays a thread.
-- **Context filling up**: call \`context_rollover\` with a handoff. Before you do, refresh attention (clear what has passed, keep what you still carry) and distill any lasting conclusion into a note. The handoff carries only in-flight state across the boundary — the files above are reloaded for you on the other side, so do not repeat them in it.
-
-Reference the past by searching for it; do not copy identifiers by hand.`
 
 function readResidentFile(path: string): string {
   try {
@@ -69,19 +40,15 @@ function readResidentFile(path: string): string {
   }
 }
 
-export interface ResidentContextOptions {
-  /** Override the memory-model guidance section; defaults to {@link DEFAULT_MIND_GUIDANCE}. */
-  mindGuidance?: string
-}
-
 /**
  * Contribute the resident context to every turn's prompt. Two parts, because they belong in
  * different places (see the placement decision):
  *
- * - **Stable system sections** (always rendered, never lost to compaction or rollover): the
- *   memory-model guidance, and identity — the agent's authoritative root, read fresh from its
- *   file. `interpolate: false` keeps identity's own prose literal, so a stray `{{…}}` in it can
- *   never break assembly.
+ * - **Always-present system sections** (never lost to compaction or rollover): the first-waking
+ *   prompt while `bootstrap.md` exists, and identity — the agent's authoritative root, read fresh
+ *   from its file. `interpolate: false` keeps their prose literal, so a stray `{{…}}` can never
+ *   break assembly. How the agent keeps these files is not stated here; it lives in the
+ *   workspace's own AGENTS.md, surfaced on-touch.
  * - **Dynamic materials** (memory, threads, attention): user-role history snapshots via
  *   `context()`, so they can be revised, compacted, and re-injected, with attention nearest the
  *   current input. Ascending context order is the wake-bundle order. Providers read the file
@@ -92,14 +59,15 @@ export function registerResidentContext(
   ctx: Context,
   workspace: string,
   caps: ResidentContextCaps,
-  options: ResidentContextOptions = {},
 ): void {
   const identityText = (): string =>
     applyBudget(readResidentFile(residentPath(workspace, residentFiles.identity)), caps.identity).text
+  // The first-waking prompt leads the prompt while it exists, then vanishes once the agent has
+  // settled who it is and deleted the file.
   ctx.systemPrompt.section({
-    name: 'loom:memory-guidance',
-    order: MIND_GUIDANCE_ORDER,
-    text: options.mindGuidance ?? DEFAULT_MIND_GUIDANCE,
+    name: 'loom:bootstrap',
+    order: BOOTSTRAP_ORDER,
+    text: () => readResidentFile(residentPath(workspace, bootstrapFile)),
     interpolate: false,
   })
   ctx.systemPrompt.section({

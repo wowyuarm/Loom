@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,6 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { ManualClock } from '../src/clock/index.ts'
 import { registerResidentContext, defaultCaps } from '../src/resident-context/projection.ts'
+import { ensureWorkspaceScaffold } from '../src/resident-context/scaffold.ts'
 import { createMemoryWriteTool } from '../src/resident-context/memory-write.ts'
 
 async function tmpWorkspace(): Promise<string> {
@@ -47,7 +49,7 @@ describe('resident-context projection', () => {
     }
   })
 
-  it('injects identity and the memory-model guidance as always-present system sections', async () => {
+  it('injects identity as an always-present system section, read fresh and kept literal', async () => {
     const ws = await tmpWorkspace()
     try {
       await writeResidentFile(ws, 'identity/identity.md', 'I am the agent.')
@@ -57,16 +59,37 @@ describe('resident-context projection', () => {
 
       const assembly = await ctx.systemPrompt.assemble()
       const identity = assembly.sections.find(s => s.name === 'loom:identity')
-      const guidance = assembly.sections.find(s => s.name === 'loom:memory-guidance')
-      // identity is read fresh from its file, and both sections keep their text literal so a
-      // stray brace in identity prose cannot break interpolation.
+      // identity is read fresh from its file, kept literal so a stray brace cannot break assembly.
       expect(identity?.text).toBe('I am the agent.')
       expect(identity?.interpolate).toBe(false)
-      expect(guidance?.text).toContain('context_search')
-      expect(guidance?.interpolate).toBe(false)
-      // The identity section is ordered after the guidance section.
+      // The memory-model guidance is no longer a system section — how to keep the files lives in
+      // the workspace's own AGENTS.md, surfaced on-touch, not in the prompt.
+      expect(assembly.sections.find(s => s.name === 'loom:memory-guidance')).toBeUndefined()
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('splices the first-waking prompt only while bootstrap.md is present, ahead of identity', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      await writeResidentFile(ws, 'identity/identity.md', 'I am the agent.')
+      const ctx = new Context()
+      await ctx.plugin(SystemPrompt)
+      registerResidentContext(ctx, ws, defaultCaps)
+
+      // Absent: the first-waking prompt contributes nothing.
+      let assembly = await ctx.systemPrompt.assemble()
+      expect(assembly.sections.find(s => s.name === 'loom:bootstrap')?.text ?? '').toBe('')
+
+      // Present: its content renders literally and leads, ahead of identity.
+      await writeResidentFile(ws, 'bootstrap.md', 'You are waking for the first time.')
+      assembly = await ctx.systemPrompt.assemble()
+      const boot = assembly.sections.find(s => s.name === 'loom:bootstrap')
+      expect(boot?.text).toBe('You are waking for the first time.')
+      expect(boot?.interpolate).toBe(false)
       const order = assembly.sections.map(s => s.name)
-      expect(order.indexOf('loom:memory-guidance')).toBeLessThan(order.indexOf('loom:identity'))
+      expect(order.indexOf('loom:bootstrap')).toBeLessThan(order.indexOf('loom:identity'))
     } finally {
       await rm(ws, { recursive: true, force: true })
     }
@@ -100,6 +123,45 @@ describe('resident-context projection', () => {
       const assembly = await ctx.systemPrompt.assemble()
       const identity = assembly.sections.find(s => s.name === 'loom:identity')
       expect(identity?.text).toContain('over budget')
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('workspace scaffold', () => {
+  it('materializes the skeleton once and never re-seeds a scaffolded workspace', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      ensureWorkspaceScaffold(ws)
+      // Material files exist (empty), plus the housekeeping guide and the first-waking prompt.
+      expect(await readFile(join(ws, 'identity/identity.md'), 'utf8')).toBe('')
+      expect(await readFile(join(ws, 'attention/attention.md'), 'utf8')).toBe('')
+      expect(existsSync(join(ws, 'memory/notes'))).toBe(true)
+      expect(await readFile(join(ws, 'AGENTS.md'), 'utf8')).toContain('Keeping your workspace')
+      expect(await readFile(join(ws, 'bootstrap.md'), 'utf8')).toContain('waking for the first time')
+
+      // Once born — identity written, bootstrap.md deleted — a second call must leave it untouched.
+      await writeFile(join(ws, 'identity/identity.md'), 'I am the agent.', 'utf8')
+      await rm(join(ws, 'bootstrap.md'))
+      ensureWorkspaceScaffold(ws)
+      expect(await readFile(join(ws, 'identity/identity.md'), 'utf8')).toBe('I am the agent.')
+      expect(existsSync(join(ws, 'bootstrap.md'))).toBe(false)
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('never overwrites a live individual and never drops it back into birth', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      // A workspace from before this feature: it holds an identity but no AGENTS.md yet.
+      await writeResidentFile(ws, 'identity/identity.md', 'I am already someone.')
+      ensureWorkspaceScaffold(ws)
+      // Identity is preserved, the housekeeping guide is added, and no first-waking prompt appears.
+      expect(await readFile(join(ws, 'identity/identity.md'), 'utf8')).toBe('I am already someone.')
+      expect(existsSync(join(ws, 'AGENTS.md'))).toBe(true)
+      expect(existsSync(join(ws, 'bootstrap.md'))).toBe(false)
     } finally {
       await rm(ws, { recursive: true, force: true })
     }
