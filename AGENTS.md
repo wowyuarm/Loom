@@ -13,6 +13,12 @@ Use this authority order:
 3. **DSH contract:** `@deepseek-ai/dsh` 及相关包的官方文档与源码。
 4. **Work history:** `.scratch/` —— 进行中的设计、研究、tickets、原型和验收证据。源码落地之前，`.scratch/active/` 是进行中设计的主要依据；落地之后代码优先。其工作规则见 [`.scratch/AGENTS.md`](.scratch/AGENTS.md)，索引见 [`.scratch/README.md`](.scratch/README.md)。
 
+## Runtime boundary
+
+Loom 是一个**自成一体的服务**：它把依赖的 DSH 运行时与插件一起 exact 锁在自己的 lockfile 里、随仓库携带，作为长期运行的 Individual 用**仓库自带的 dsh** 启动（`bin/loom` 转发参数到 `node_modules/@deepseek-ai/dsh`），**绝不依赖机器上全局/环境里的 dsh 安装**。全局 dsh 会独立升级、漂离仓库锁定的版本，而每个插件把 peerDependency 钉在精确版本，运行时版本一旦对不上，插件会在加载时被整栈禁用。所以 dsh 及其插件都用精确版本、和插件同棵依赖树一起锁。
+
+这条边界只在**运行时与部署**层。组合层面 Loom 仍是一个 DSH bundle、只经 DSH 的 service / event / loader 接缝集成（见 Composition and extension），不绕开 DSH 另建 core。具体怎么部署（DSH_HOME 放哪、用不用 systemd、profile 怎么摆）是随时会变的环境细节，不写进仓库文档。
+
 ## Reading guidance
 
 - **从任务出发**：先读任务和它明确引用的代码、测试、scratch 记录，再按缺口展开；不要因为文件存在就通读整个仓库。

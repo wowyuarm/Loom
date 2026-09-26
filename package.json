@@ -47,7 +47,11 @@
       "default": "./lib/channels/index.js"
     }
   },
+  "bin": {
+    "loom": "bin/loom.mjs"
+  },
   "files": [
+    "bin/loom.mjs",
     "lib/**/*",
     "cordis.patch.yml",
     "presets/**/*"
@@ -61,9 +65,9 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/cordis-plugin-include": "^1.0.9",
-    "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/cordis-plugin-include": "1.0.9",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.5",
     "@deepseek-ai/dsh": "0.1.7-rc.2",
     "@deepseek-ai/dsh-agent": "0.1.7-rc.2",
     "@deepseek-ai/dsh-agent-default-model": "0.1.7-rc.2",
@@ -90,7 +94,7 @@
     "@deepseek-ai/dsh-tools": "0.1.7-rc.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
-    "@wowyuarm/dsh-channel-gateway": "^0.1.2",
+    "@wowyuarm/dsh-channel-gateway": "0.1.2",
     "@wowyuarm/dsh-context-continuity": "0.1.5",
     "js-yaml": "^4.3.2",
     "typescript": "^5.8.3",
