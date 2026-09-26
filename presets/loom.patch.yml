@@ -58,10 +58,12 @@
 
           # ── compaction ──────────────────────────────────────────────────────────────
 
-          # The automatic pressure floor: when the context fills, compaction-basic summarizes in
-          # place so a turn does not break at the window. This is distinct from context_rollover,
-          # which the agent calls deliberately to shed a generation; the two coexist — compaction
-          # is the involuntary floor, rollover the deliberate act.
+          # The context-pressure floor. Loom's agent-runtime owns pressure through the
+          # context-continuity ContextPressurePolicy: it steers a one-shot handoff notice near
+          # the handoff budget, and forces a reduction at the hard limit (failing closed if it
+          # cannot prove the surface shrank). So this engine runs manual-only (`auto: false`) —
+          # the policy is the single pressure entry point, distinct from context_rollover, which
+          # the agent calls deliberately to shed a generation.
           #
           # These are services, so they need an isolate realm (a preset row publishing into the
           # root realm is rejected at mount). compaction-basic reads the tool-result pruner
@@ -77,6 +79,8 @@
             config:
               - id: compaction-basic
                 name: '@deepseek-ai/dsh-compaction-basic'
+                config:
+                  auto: false
 
               - id: tool-result-pruner
                 name: '@deepseek-ai/dsh-compaction-tool-result-pruner'

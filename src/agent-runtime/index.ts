@@ -56,9 +56,14 @@ function retrievalDeps(ctx: Context): RetrievalDeps {
     if (usageTokens === undefined) return undefined
     let contextWindow = agent.session.requestContext()?.contextWindow
     if (contextWindow === undefined) {
+      // Before this generation's first request there is no request context yet; resolve the
+      // route from the default-model selection, or the agent's own explicit options, so the
+      // pressure policy has a bounded budget from the first step rather than failing closed.
       const selection = ctx.get('agentDefaultModel')?.currentSelection()
-      if (selection !== undefined) {
-        contextWindow = (await ctx.llm.resolveModelInfo(selection.provider, selection.model)).context?.contextWindow
+      const provider = selection?.provider ?? agent.options.provider
+      const model = selection?.model ?? agent.options.model
+      if (provider !== undefined && model !== undefined) {
+        contextWindow = (await ctx.llm.resolveModelInfo(provider, model)).context?.contextWindow
       }
     }
     if (contextWindow === undefined) return undefined
@@ -81,6 +86,7 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     projectionOf: agent => ctx.sessionProjections.stateOf(agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY),
     mountPreset: async agentCtx => { await ctx.agentPresets.mount(agentCtx, config.agentPreset) },
     retrieval: retrievalDeps(ctx),
+    pressure: { compactionFor: agent => ctx.agentPresets.serviceFor(agent, 'compaction') },
     ...(agentOptions === undefined ? {} : { agentOptions }),
   })
   runtime.install(ctx)

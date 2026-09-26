@@ -23,6 +23,9 @@ import {
   type LoomSubjectId,
 } from '../context-continuity/host.ts'
 import { LoomContextRetrieval, type ContextBudget } from '../context-continuity/retrieval.ts'
+import { createLoomPressurePolicy } from '../context-continuity/pressure.ts'
+import type { ContextPressurePolicy } from '@wowyuarm/dsh-context-continuity'
+import type { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import { bootAgent, presetSetup, type BootDeps } from './boot.ts'
 
 /**
@@ -58,6 +61,15 @@ export interface RuntimeDeps {
   newSessionId?: () => SessionId
   /** Retrieval/return capabilities; omit to register only the rollover tool (unit tests). */
   retrieval?: RetrievalDeps
+  /**
+   * Context-pressure capabilities: the compaction engine in the agent's scope, used to force a
+   * reduction at the hard limit. Omit to run without a pressure policy (unit tests, or a
+   * composition whose floor is elsewhere). Requires `retrieval` too, since the policy prices
+   * against the same budget.
+   */
+  pressure?: {
+    compactionFor: (agent: Agent) => CompactionEngine | undefined
+  }
 }
 
 /**
@@ -72,6 +84,7 @@ export class LoomAgentRuntime implements AgentRuntime {
   private readonly coordinator: ContextContinuityCoordinator<LoomSubjectId>
   private readonly config: ContextProjectionConfig
   private readonly retrieval: LoomContextRetrieval | undefined
+  private readonly pressure: ContextPressurePolicy<LoomSubjectId> | undefined
 
   constructor(private readonly deps: RuntimeDeps) {
     this.host = new LoomContextContinuityHost({
@@ -98,6 +111,15 @@ export class LoomAgentRuntime implements AgentRuntime {
           budgetOf: this.deps.retrieval.budgetOf,
           ownedSessions: () => this.deps.runtimeState.ownedSessions(),
           query: this.deps.retrieval.query,
+        })
+    this.pressure = this.deps.retrieval === undefined || this.deps.pressure === undefined
+      ? undefined
+      : createLoomPressurePolicy({
+          agentForSubject: () => this.handle?.agent,
+          budgetOf: this.deps.retrieval.budgetOf,
+          measure: agent => this.deps.retrieval?.meter()?.measure(agent.session)?.totalTokens,
+          compactionFor: this.deps.pressure.compactionFor,
+          ...(this.deps.log === undefined ? {} : { log: this.deps.log }),
         })
   }
 
@@ -148,6 +170,8 @@ export class LoomAgentRuntime implements AgentRuntime {
       const agent = this.handle?.agent
       if (agent !== undefined && session.id === agent.session.id) {
         this.coordinator.onSessionEvent(LOOM_SUBJECT_ID, agent, event)
+        // A successful assistant response ends any open provider-overflow recovery sequence.
+        if (event.type === 'assistant/message') this.pressure?.onAssistantMessage(LOOM_SUBJECT_ID)
       }
     })
     // A durable rollover result must not let a queued old-generation turn open another request:
@@ -157,16 +181,30 @@ export class LoomAgentRuntime implements AgentRuntime {
         this.coordinator.captureQueuedInput(agent)
       }
     })
-    ctx.on('agent/pre-step', async ({ agent, messages }, next) => {
+    ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
       if (agent !== this.handle?.agent) return next()
       if (this.coordinator.needsAdmissionGate(agent)) {
         this.coordinator.captureClaimedInput(agent, messages)
         return { kind: 'reject' as const }
       }
+      // Pressure rides the same seam after the admission gate: the handoff-budget notice steers
+      // into this running turn, and the hard limit forces a reduction before the request is
+      // forwarded — failing closed rejects the step rather than submitting over the limit.
+      if (this.pressure !== undefined) {
+        const pressure = await this.pressure.onPreStep(LOOM_SUBJECT_ID, signal)
+        if (pressure.kind === 'reject') return { kind: 'reject' as const }
+      }
       const decision = await next()
       if (decision.kind === 'reject' || !this.coordinator.needsAdmissionGate(agent)) return decision
       this.coordinator.captureClaimedInput(agent, messages)
       return { kind: 'reject' as const }
+    })
+    // Provider context-overflow recovery: one bounded reduce-and-retry sequence per failure chain.
+    ctx.on('agent/request-error', async ({ agent, failure, signal }, next) => {
+      if (agent !== this.handle?.agent || this.pressure === undefined) return next()
+      return (await this.pressure.onRequestError(LOOM_SUBJECT_ID, failure, signal))
+        ? { kind: 'retry' as const }
+        : next()
     })
   }
 
@@ -236,6 +274,7 @@ export class LoomAgentRuntime implements AgentRuntime {
   }
 
   async dispose(): Promise<void> {
+    this.pressure?.dispose()
     this.coordinator.dispose()
     if (this.handle !== undefined) {
       await this.handle.dispose()

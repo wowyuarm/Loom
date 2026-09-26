@@ -39,7 +39,8 @@ export class MockAdapter extends LlmAdapter {
   }
 
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve({ provider, id: model, name: model })
+    // A context window so budget-derived features (context pressure) can price this route.
+    return Promise.resolve({ provider, id: model, name: model, context: { contextWindow: 128_000 } })
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {

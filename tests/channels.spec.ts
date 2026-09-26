@@ -13,6 +13,7 @@ import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionQuerySqlite from '@deepseek-ai/dsh-session-query-sqlite'
+import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
@@ -114,6 +115,7 @@ async function bootWithChannels(mock: MockAdapter): Promise<Harness> {
   await load(SessionProjectionRegistry)
   await load(SessionPersistence, { root: join(workspace, '.sessions') })
   await load(SessionQuerySqlite, { path: ':memory:', openAt: 'never' })
+  await load(TokenMeter)
   await load(SystemPrompt)
   await load(ToolRuntime)
   await load(AgentRegistry)
