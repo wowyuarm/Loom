@@ -199,6 +199,7 @@ function createSendMessageTool(ctx: Context, config: ChannelsConfig, focus: Acti
         channel: active.channel,
         route: active.route,
         text: args.text,
+        format: 'markdown',
         ...(attachments === undefined ? {} : { attachments }),
       })
       return { channel: active.channel, providerMessageId: result.providerMessageId }

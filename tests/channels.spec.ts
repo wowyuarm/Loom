@@ -183,7 +183,7 @@ describe('channels consumer', () => {
       await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
       await agent?.whenIdle()
 
-      expect(h.channel.sent[0]).toMatchObject({ channel: 'mock-chat', route: 'conv-42', text: 'hi Alice' })
+      expect(h.channel.sent[0]).toMatchObject({ channel: 'mock-chat', route: 'conv-42', text: 'hi Alice', format: 'markdown' })
     } finally {
       await h.dispose()
     }
