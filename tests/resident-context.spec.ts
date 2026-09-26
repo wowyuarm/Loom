@@ -19,7 +19,7 @@ async function writeResidentFile(workspace: string, rel: string, text: string): 
 }
 
 describe('resident-context projection', () => {
-  it('injects resident files in wake-bundle order; an absent file contributes empty text', async () => {
+  it('injects dynamic materials as contexts in wake-bundle order; an absent file contributes empty text', async () => {
     const ws = await tmpWorkspace()
     try {
       await writeResidentFile(ws, 'identity/identity.md', 'I am the agent.')
@@ -33,19 +33,63 @@ describe('resident-context projection', () => {
 
       const assembly = await ctx.systemPrompt.assemble()
       const ours = assembly.contexts.filter(c =>
-        ['identity', 'memory-core', 'memory-index', 'threads-index', 'attention'].includes(c.name))
-      expect(ours.map(c => c.name)).toEqual(['identity', 'memory-core', 'memory-index', 'threads-index', 'attention'])
-      expect(ours.find(c => c.name === 'identity')?.text).toBe('I am the agent.')
-      expect(ours.find(c => c.name === 'memory-core')?.text).toBe('Settled fact.')
+        ['memory-core', 'memory-index', 'threads-index', 'attention'].includes(c.name))
+      // identity is no longer a context; it is an always-present system section (see below).
+      expect(ours.map(c => c.name)).toEqual(['memory-core', 'memory-index', 'threads-index', 'attention'])
+      expect(ours.find(c => c.name === 'memory-core')?.text).toContain('Settled fact.')
+      // A file with ample room carries no usage line — the signal is silent until it fills.
+      expect(ours.find(c => c.name === 'memory-core')?.text).not.toMatch(/KiB\]/)
       expect(ours.find(c => c.name === 'memory-index')?.text).toContain('alpha → memory/notes/alpha.md')
-      // Absent file: empty text, which contributes nothing to the rendered prompt.
+      // Absent file: empty text, which contributes nothing to the rendered prompt (no usage line).
       expect(ours.find(c => c.name === 'threads-index')?.text).toBe('')
     } finally {
       await rm(ws, { recursive: true, force: true })
     }
   })
 
-  it('truncates a file that exceeds its cap', async () => {
+  it('injects identity and the memory-model guidance as always-present system sections', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      await writeResidentFile(ws, 'identity/identity.md', 'I am the agent.')
+      const ctx = new Context()
+      await ctx.plugin(SystemPrompt)
+      registerResidentContext(ctx, ws, defaultCaps)
+
+      const assembly = await ctx.systemPrompt.assemble()
+      const identity = assembly.sections.find(s => s.name === 'loom:identity')
+      const guidance = assembly.sections.find(s => s.name === 'loom:memory-guidance')
+      // identity is read fresh from its file, and both sections keep their text literal so a
+      // stray brace in identity prose cannot break interpolation.
+      expect(identity?.text).toBe('I am the agent.')
+      expect(identity?.interpolate).toBe(false)
+      expect(guidance?.text).toContain('context_search')
+      expect(guidance?.interpolate).toBe(false)
+      // The identity section is ordered after the guidance section.
+      const order = assembly.sections.map(s => s.name)
+      expect(order.indexOf('loom:memory-guidance')).toBeLessThan(order.indexOf('loom:identity'))
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('shows a usage line once a material fills toward its cap', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      // attention past half of a small cap: the prune signal appears, before the hard wall.
+      await writeResidentFile(ws, 'attention/attention.md', 'x'.repeat(70))
+      const ctx = new Context()
+      await ctx.plugin(SystemPrompt)
+      registerResidentContext(ctx, ws, { ...defaultCaps, attention: 100 })
+
+      const assembly = await ctx.systemPrompt.assemble()
+      const attention = assembly.contexts.find(c => c.name === 'attention')
+      expect(attention?.text).toMatch(/\[attention: [\d.]+\/[\d.]+ KiB\]/)
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('truncates a resident file that exceeds its cap', async () => {
     const ws = await tmpWorkspace()
     try {
       await writeResidentFile(ws, 'identity/identity.md', 'z'.repeat(5000))
@@ -54,7 +98,7 @@ describe('resident-context projection', () => {
       registerResidentContext(ctx, ws, { ...defaultCaps, identity: 100 })
 
       const assembly = await ctx.systemPrompt.assemble()
-      const identity = assembly.contexts.find(c => c.name === 'identity')
+      const identity = assembly.sections.find(s => s.name === 'loom:identity')
       expect(identity?.text).toContain('over budget')
     } finally {
       await rm(ws, { recursive: true, force: true })

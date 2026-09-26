@@ -100,9 +100,10 @@ describe('loom boot smoke', () => {
       expect(agent).toBeDefined()
       expect(agent?.id).toBe(pointer?.sessionId)
 
-      // The resident-context projection is wired into this composed context.
+      // The resident-context projection is wired into this composed context: identity is an
+      // always-present system section read fresh from its file.
       const assembly = await loom.ctx.systemPrompt.assemble()
-      const identity = assembly.contexts.find(c => c.name === 'identity')
+      const identity = assembly.sections.find(s => s.name === 'loom:identity')
       expect(identity?.text).toContain('I am the test agent.')
 
       // One real turn runs end to end against the mock model.
