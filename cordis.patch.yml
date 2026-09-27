@@ -160,6 +160,14 @@
     - id: clock
       name: 'loom/clock'
 
+    # The agent's sense of now: one line per turn carrying the current instant and the elapsed time
+    # since the preceding model-visible event, refreshed inside a turn only if the turn outlives
+    # the interval. The instant comes from `clock` above. The shipped dsh-time-context stays
+    # unmounted: with no browser zone in play — the normal case for a background wake — its policy
+    # text has the agent ask an absent user to clarify otherwise-unqualified dates.
+    - id: time-context
+      name: 'loom/time-context'
+
     # Durable current-session pointer and accepted-input ledger.
     - id: runtime-state
       name: 'loom/runtime-state'

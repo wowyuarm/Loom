@@ -61,6 +61,7 @@ describe('loom bundle manifest', () => {
     expect(byId.get('log')?.name).toBe('loom/log')
     expect(byId.get('runtime-state')?.name).toBe('loom/runtime-state')
     expect(byId.get('orientation')?.name).toBe('loom/orientation')
+    expect(byId.get('time-context')?.name).toBe('loom/time-context')
     expect(byId.get('resident-context')?.name).toBe('loom/resident-context')
     expect(byId.get('agent-runtime')?.name).toBe('loom/agent-runtime')
     expect(byId.get('storage-sqlite')?.name).toBe('@deepseek-ai/dsh-storage-sqlite')

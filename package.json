@@ -42,6 +42,10 @@
       "types": "./lib/orientation/index.d.ts",
       "default": "./lib/orientation/index.js"
     },
+    "./time-context": {
+      "types": "./lib/time-context/index.d.ts",
+      "default": "./lib/time-context/index.js"
+    },
     "./channels": {
       "types": "./lib/channels/index.d.ts",
       "default": "./lib/channels/index.js"
