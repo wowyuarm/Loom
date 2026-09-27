@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defaultCaps, registerResidentContext, type ResidentContextCaps } from './projection.ts'
 import { ensureWorkspaceScaffold } from './scaffold.ts'
 import { registerMemoryWrite } from './memory-write.ts'
+import { registerResidentWriteBudget } from './write-budget.ts'
 
 export interface ResidentContextConfig {
   /** Agent workspace root; resident files are read and written relative to it. */
@@ -20,6 +21,9 @@ export function apply(ctx: Context, config: ResidentContextConfig): void {
   const caps: ResidentContextCaps = { ...defaultCaps, ...config.caps }
   registerResidentContext(ctx, config.workspace, caps)
   registerMemoryWrite(ctx, config.workspace)
+  // Flag a resident file the moment a generic write/edit pushes it toward its cap, so the prune
+  // signal reaches the agent while it still holds the context — not a turn later on read-back.
+  registerResidentWriteBudget(ctx, config.workspace, caps)
 }
 
 export { defaultCaps } from './projection.ts'

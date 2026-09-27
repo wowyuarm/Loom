@@ -20,15 +20,15 @@ These files are your durable self between context windows — shown to you at th
 
 - \`identity/identity.md\` — who you are: the root you judge everything against. Change it rarely and deliberately.
 - \`memory/memory.md\` — a small core of standing understanding that must be in front of you every turn, followed by a \`## Notes\` index routing to \`memory/notes/<concept>.md\`. Keep the core small: only what would make you misjudge if it were missing. Topic knowledge you read on demand goes in a note — record it with \`memory_write\`, citing where it came from.
-- \`threads/index.md\` and \`threads/<id>/\` — the lines still open. A thread is something still unfolding; re-entering means continuing the work. Settled knowledge is a note, not a thread.
+- \`threads/index.md\` and \`threads/<id>/\` — the lines still open. A thread is a continuity worth re-entering: something still unfolding — a concern, relationship, curiosity, creation, practice, or question — where returning means continuing to feel, understand, explore, or act, not looking up a fact. Keep only the live lines and how to resume each. Accumulated knowledge about a person or project is not a thread — that is a note; you do not "continue" a person, you build up what you know about them.
 - \`attention/attention.md\` — what you are holding right now. Each item carries a horizon: roughly how long you expect to carry it. When a horizon passes, drop the item — or turn it into a thread if it still matters. This is the most volatile file; keep it current.
 - \`skills/\` — procedures you keep for reuse.
 
 ## Keeping order
 
 - Recall the past by searching it: \`context_search\`, then \`context_read\` to expand a hit. Do not copy identifiers by hand.
-- When a file fills toward its budget, prune it: promote what lasts into a note, drop what has passed.
-- Anything you make for yourself — scripts, tools, working files — give it a home under this workspace; do not let it scatter.
+- When a file fills toward its budget, prune it: promote what lasts into a note, drop what has passed. You will see a usage notice on a file as it fills — that is the signal to trim it, before it gets truncated when read into context.
+- Anything you make for yourself — a note, a skill, a script, a directory of reference material, a new tool — give it a home under this workspace; do not let it scatter. When you add something durable to how you work, record it here in this file so a later you knows it exists and how to keep it. This file is yours to extend: it is where your own machinery is written down.
 `
 
 /**

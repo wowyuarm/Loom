@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
 import '@deepseek-ai/dsh-system-prompt'
-import { applyBudget } from './budget.ts'
+import { applyBudget, budgetNotice } from './budget.ts'
 import { residentPath, residentFiles, memoryCoreOf, memoryIndexOf } from './layout.ts'
 import { bootstrapFile } from './scaffold.ts'
 
@@ -99,14 +99,6 @@ function materialText(name: string, raw: string, cap: number): string {
   const budgeted = applyBudget(raw, cap)
   if (budgeted.text === '') return ''
   if (budgeted.truncated) return budgeted.text
-  if (budgeted.usedBytes < cap * USAGE_NOTICE_FRACTION) return budgeted.text
-  return `${budgeted.text}\n\n[${name}: ${kib(budgeted.usedBytes)}/${kib(budgeted.capBytes)} KiB]`
-}
-
-// Show a material's usage only once it is this full; below it the file has ample room and a usage
-// line would be noise.
-const USAGE_NOTICE_FRACTION = 0.5
-
-function kib(bytes: number): string {
-  return (bytes / 1024).toFixed(1)
+  const notice = budgetNotice(name, budgeted.usedBytes, budgeted.capBytes)
+  return notice === undefined ? budgeted.text : `${budgeted.text}\n\n${notice}`
 }
