@@ -1,14 +1,17 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import '@deepseek-ai/dsh-tools'
+// Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
+import '@deepseek-ai/dsh-system-prompt'
 import type { ChannelAttachment, ChannelCapabilities, InboundMessage, ResolvedAttachment } from '@wowyuarm/dsh-channel-gateway'
 import '@wowyuarm/dsh-channel-gateway'
-import type { AgentRuntime, Clock, RuntimeState } from '../contracts/index.ts'
+import type { AgentRuntime, Clock, DeliveryEffect, RuntimeState } from '../contracts/index.ts'
 
 export const name = 'channels'
-export const inject = ['channels', 'runtimeState', 'agentRuntime', 'clock', 'tools']
+export const inject = ['channels', 'runtimeState', 'agentRuntime', 'clock', 'tools', 'systemPrompt']
 
 /** The workspace subdirectory that holds files exchanged over channels, namespaced per channel. */
 const MEDIA_DIR = 'media'
@@ -44,6 +47,32 @@ export function apply(ctx: Context, config: ChannelsConfig): void {
   const focus = new ActiveConversationTracker()
   registerInboundConsumer(ctx, config, focus)
   ctx.tools.register(createSendMessageTool(ctx, config, focus))
+  registerReconciliationContext(ctx)
+}
+
+/**
+ * Name outbound effects whose delivery is still uncertain (a crash mid-send, or a send that
+ * threw) in every turn's context, so the agent inherits the uncertainty across a restart and can
+ * verify before assuming it was seen. Loom never resends on its own. A later successful send on
+ * the same conversation clears the entry, so this is silent in normal operation.
+ */
+function registerReconciliationContext(ctx: Context): void {
+  const runtimeState: RuntimeState = ctx.runtimeState
+  ctx.systemPrompt.context({
+    name: 'loom:undelivered',
+    order: 45,
+    text: () => reconciliationText(runtimeState.uncertainDeliveries()),
+  })
+}
+
+function reconciliationText(uncertain: readonly DeliveryEffect[]): string {
+  if (uncertain.length === 0) return ''
+  const lines = uncertain.map(effect => `- to ${effect.channel} (${effect.route}): ${JSON.stringify(effect.text)}`)
+  return [
+    'Unconfirmed delivery: you tried to send the following, but whether it reached the recipient is unknown '
+    + '(the send was interrupted or errored). Verify before assuming it was seen; do not blindly resend.',
+    ...lines,
+  ].join('\n')
 }
 
 class ActiveConversationTracker {
@@ -195,13 +224,37 @@ function createSendMessageTool(ctx: Context, config: ChannelsConfig, focus: Acti
         throw new Error('message: no active conversation — there is no incoming message to reply to yet')
       }
       const attachments = await outboundAttachments(ctx, config, active.channel, args.attachments ?? [])
-      const result = await ctx.channels.send({
+      // Record the outbound action as pending before attempting the send: this durable write is
+      // the barrier a crash mid-send falls back to. A send that throws is recorded `unknown`, not
+      // not-sent — the transport cannot tell "never left" from "sent but ack lost", so the agent
+      // must not assume it can safely resend.
+      const runtimeState: RuntimeState = ctx.runtimeState
+      const clock: Clock = ctx.clock
+      const effectId = randomUUID()
+      await runtimeState.recordEffect({
+        effectId,
+        kind: 'message',
         channel: active.channel,
         route: active.route,
         text: args.text,
-        format: 'markdown',
-        ...(attachments === undefined ? {} : { attachments }),
+        createdAt: clock.now(),
       })
+      let result
+      try {
+        result = await ctx.channels.send({
+          channel: active.channel,
+          route: active.route,
+          text: args.text,
+          format: 'markdown',
+          ...(attachments === undefined ? {} : { attachments }),
+        })
+      } catch (error: unknown) {
+        const resolved = await runtimeState.resolveEffect(effectId, { status: 'unknown', error: String(error), resolvedAt: clock.now() })
+        ctx.emit('loom/delivery', resolved)
+        throw error
+      }
+      const resolved = await runtimeState.resolveEffect(effectId, { status: 'delivered', remoteId: result.providerMessageId, resolvedAt: clock.now() })
+      ctx.emit('loom/delivery', resolved)
       return { channel: active.channel, providerMessageId: result.providerMessageId }
     },
   })

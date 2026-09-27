@@ -49,6 +49,8 @@ class MockChannel implements Channel {
   private inbox: ChannelInbox | undefined
   readonly sent: OutboundMessage[] = []
   private nextId = 1
+  /** When set, `send` throws instead of delivering — an ambiguous transport failure. */
+  failSend = false
 
   async start(inbox: ChannelInbox): Promise<void> {
     this.inbox = inbox
@@ -57,6 +59,7 @@ class MockChannel implements Channel {
     this.inbox = undefined
   }
   async send(message: OutboundMessage): Promise<ChannelSendResult> {
+    if (this.failSend) throw new Error('transport unavailable')
     this.sent.push(message)
     return { providerMessageId: `out-${this.nextId++}` }
   }
@@ -92,6 +95,15 @@ function firstUserText(mock: MockAdapter): string {
     .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
     .map(block => block.text)
     .join('\n')
+}
+
+/** Whether any message across every recorded request carries a text block containing `needle`. */
+function promptContains(mock: MockAdapter, needle: string): boolean {
+  return mock.requests.some(request =>
+    request.messages.some(message =>
+      (message.content ?? []).some(block => block.type === 'text' && block.text.includes(needle)),
+    ),
+  )
 }
 
 interface Harness {
@@ -226,6 +238,57 @@ describe('channels consumer', () => {
       expect(message?.attachments).toHaveLength(1)
       expect(message?.attachments?.[0]).toMatchObject({ kind: 'file', name: 'note.txt' })
       expect(new TextDecoder().decode(message?.attachments?.[0]?.data)).toBe('file body')
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('records a delivered effect and announces it, leaving nothing to reconcile', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'hi Alice' }),
+      textResponse('done'),
+    ]))
+    try {
+      const delivered: string[] = []
+      h.ctx.on('loom/delivery', effect => { if (effect.status === 'delivered') delivered.push(effect.remoteId ?? '') })
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.receive(inbound('m1', 'are you there?'))
+      await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      expect(h.ctx.runtimeState.uncertainDeliveries()).toEqual([])
+      expect(delivered).toEqual(['out-1'])
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('leaves an unconfirmed effect when the send fails and names it in a later prompt', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'hi Alice' }),
+      textResponse('understood'),
+      textResponse('replying again'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.failSend = true
+      h.channel.receive(inbound('m1', 'are you there?'))
+      // The send throws, so nothing lands on the wire; the tool error drives the model's next step.
+      await vi.waitFor(() => { expect(h.mock.requests.length).toBeGreaterThanOrEqual(2) })
+      await agent?.whenIdle()
+
+      // The failed send is recorded as unknown — uncertain, not not-sent — and never resent.
+      const uncertain = h.ctx.runtimeState.uncertainDeliveries()
+      expect(uncertain).toHaveLength(1)
+      expect(uncertain[0]).toMatchObject({ status: 'unknown', channel: 'mock-chat', route: 'conv-42', text: 'hi Alice' })
+      expect(h.channel.sent).toHaveLength(0)
+
+      // A later turn's prompt names the unconfirmed delivery so the agent can verify it.
+      const before = h.mock.requests.length
+      h.channel.receive(inbound('m2', 'still there?'))
+      await vi.waitFor(() => { expect(h.mock.requests.length).toBeGreaterThan(before) })
+      await agent?.whenIdle()
+      expect(promptContains(h.mock, 'Unconfirmed delivery')).toBe(true)
     } finally {
       await h.dispose()
     }

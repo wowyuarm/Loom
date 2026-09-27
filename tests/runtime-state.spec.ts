@@ -8,7 +8,6 @@ import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import type { AcceptedInput, RuntimeState } from '../src/contracts/index.ts'
-
 interface Booted {
   loom: RuntimeState
   dispose: () => Promise<void>
@@ -115,8 +114,83 @@ describe('continuity store — owned-session ledger', () => {
   })
 })
 
-describe('continuity store — durability across restart', () => {
-  it('recovers the pointer and dedup ledger after a fresh boot on the same medium', async () => {
+describe('continuity store — outbound effect ledger', () => {
+  it('records a pending effect, resolves it delivered, and drops it from the uncertain set', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
+    try {
+      await loom.recordEffect({ effectId: 'e1', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'hi', createdAt: 1_000 })
+      // A pending effect is uncertain until it resolves.
+      expect(loom.uncertainDeliveries().map(e => e.effectId)).toEqual(['e1'])
+      const resolved = await loom.resolveEffect('e1', { status: 'delivered', remoteId: 'out-9', resolvedAt: 1_100 })
+      expect(resolved).toMatchObject({ effectId: 'e1', status: 'delivered', remoteId: 'out-9' })
+      expect(loom.uncertainDeliveries()).toEqual([])
+    } finally {
+      await dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps an effect uncertain when the send is unknown or never resolved', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
+    try {
+      // A send that threw: recorded unknown, still uncertain.
+      await loom.recordEffect({ effectId: 'e1', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'a', createdAt: 1_000 })
+      await loom.resolveEffect('e1', { status: 'unknown', error: 'timeout', resolvedAt: 1_050 })
+      // A crash mid-send: recorded pending, never resolved.
+      await loom.recordEffect({ effectId: 'e2', kind: 'message', channel: 'telegram', route: 'chat:7', text: 'b', createdAt: 2_000 })
+      expect(loom.uncertainDeliveries().map(e => e.effectId)).toEqual(['e1', 'e2'])
+    } finally {
+      await dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('clears an uncertain effect once a later send on the same conversation is delivered', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
+    try {
+      await loom.recordEffect({ effectId: 'e1', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'a', createdAt: 1_000 })
+      await loom.resolveEffect('e1', { status: 'unknown', error: 'timeout', resolvedAt: 1_050 })
+      // A later delivered effect on the SAME (channel, route) supersedes the earlier uncertain one.
+      await loom.recordEffect({ effectId: 'e2', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'b', createdAt: 2_000 })
+      await loom.resolveEffect('e2', { status: 'delivered', remoteId: 'out-2', resolvedAt: 2_100 })
+      expect(loom.uncertainDeliveries()).toEqual([])
+      // A delivered effect on a DIFFERENT route does not clear it.
+      await loom.recordEffect({ effectId: 'e3', kind: 'message', channel: 'telegram', route: 'chat:9', text: 'c', createdAt: 3_000 })
+      await loom.resolveEffect('e3', { status: 'unknown', error: 'timeout', resolvedAt: 3_050 })
+      await loom.recordEffect({ effectId: 'e4', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'd', createdAt: 4_000 })
+      await loom.resolveEffect('e4', { status: 'delivered', remoteId: 'out-4', resolvedAt: 4_100 })
+      expect(loom.uncertainDeliveries().map(e => e.effectId)).toEqual(['e3'])
+    } finally {
+      await dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('recovers an uncertain effect after a restart on the same medium', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const path = join(dir, 'continuity.sqlite')
+    try {
+      const first = await boot(path)
+      await first.loom.recordEffect({ effectId: 'e1', kind: 'message', channel: 'telegram', route: 'chat:42', text: 'a', createdAt: 1_000 })
+      await first.loom.resolveEffect('e1', { status: 'unknown', error: 'timeout', resolvedAt: 1_050 })
+      await first.dispose()
+
+      const second = await boot(path)
+      try {
+        expect(second.loom.uncertainDeliveries().map(e => e.effectId)).toEqual(['e1'])
+      } finally {
+        await second.dispose()
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('continuity store — durability across restart', () => {  it('recovers the pointer and dedup ledger after a fresh boot on the same medium', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
     const path = join(dir, 'continuity.sqlite')
     try {

@@ -22,6 +22,44 @@ export interface CurrentSession {
   sessionId: string
 }
 
+/**
+ * One outbound action the agent took toward the external world, recorded across its attempt so a
+ * crash mid-send leaves recoverable evidence. `message` is the only kind in v1; `kind` is the
+ * forward-compatible hook for later kinds (e.g. an external subscription), added mechanically then.
+ *
+ * Status is deliberately three-valued with no `not_sent`: a channel send either returns a result
+ * or throws, and a throw cannot distinguish "never left" from "sent but the ack was lost", so a
+ * throw is recorded as `unknown` (conservative — never claim not-sent and let the agent double-send).
+ * `pending` is a send that was never resolved, i.e. a crash between the durable record and the send
+ * completing.
+ */
+export interface DeliveryEffect {
+  /** Stable id minted when the effect is recorded; the key and the event/idempotency handle. */
+  effectId: string
+  /** The action kind. Only `'message'` in v1. */
+  kind: string
+  channel: string
+  route: string
+  text: string
+  status: 'pending' | 'delivered' | 'unknown'
+  /** The provider's message id, present once `delivered`. */
+  remoteId?: string | undefined
+  /** The send failure, present once `unknown`. */
+  error?: string | undefined
+  /** epoch ms the effect was recorded, from the Clock. */
+  createdAt: number
+  /** epoch ms the effect resolved to delivered/unknown, from the Clock; absent while pending. */
+  resolvedAt?: number | undefined
+}
+
+/** The pending effect a caller records before attempting delivery. */
+export type PendingEffect = Pick<DeliveryEffect, 'effectId' | 'kind' | 'channel' | 'route' | 'text' | 'createdAt'>
+
+/** The terminal outcome a caller writes back after a delivery attempt. */
+export type DeliveryOutcome =
+  | { status: 'delivered'; remoteId: string; resolvedAt: number }
+  | { status: 'unknown'; error: string; resolvedAt: number }
+
 /** One external Input durably accepted before it was handed to the agent. */
 export interface AcceptedInput {
   channel: string
@@ -53,6 +91,26 @@ export interface RuntimeState {
   recordSession(sessionId: string): Promise<void>
   /** Every session id this deployment created; the range `context_search` is authorized over. */
   ownedSessions(): string[]
+  /**
+   * Record one outbound effect as `pending` before its delivery is attempted; the resolve of this
+   * write is the durable barrier a crash mid-send falls back to. Keyed by `effectId`.
+   */
+  recordEffect(effect: PendingEffect): Promise<void>
+  /** Write back a recorded effect's terminal delivery outcome; returns the resolved record. */
+  resolveEffect(effectId: string, outcome: DeliveryOutcome): Promise<DeliveryEffect>
+  /**
+   * Outbound effects whose delivery is still uncertain: `pending` or `unknown`, and not superseded
+   * by a later `delivered` effect on the same (channel, route). This is the reconciliation set the
+   * wake context names; a later successful send on the same conversation clears it on its own.
+   */
+  uncertainDeliveries(): DeliveryEffect[]
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /** One outbound effect reached a terminal delivery status. A future followup/projection subscribes here. */
+    'loom/delivery'(effect: DeliveryEffect): void
+  }
 }
 
 declare module '@deepseek-ai/cordis' {
