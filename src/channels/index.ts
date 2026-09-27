@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import { createUserMessage, type AssistantMessage, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import '@deepseek-ai/dsh-tools'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
@@ -15,6 +16,21 @@ export const inject = ['channels', 'runtimeState', 'agentRuntime', 'clock', 'too
 
 /** The workspace subdirectory that holds files exchanged over channels, namespaced per channel. */
 const MEDIA_DIR = 'media'
+
+/** The agent's one outbound tool: assistant text reaches nobody, this call is what reaches them. */
+const SEND_MESSAGE_TOOL = 'message'
+
+/** Attribution id for messages this plugin produces; the owner prefix is Loom's naming convention. */
+const LOOM_CHANNELS_PLUGIN_ID = '@loom/channels'
+
+/** One-line account of the undelivered-reply notice, recorded in its durable source. */
+const UNANSWERED_REPLY_SUMMARY = 'turn ended with an undelivered reply'
+
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    '@loom/channels': { kind: typeof LOOM_CHANNELS_PLUGIN_ID } & ContextFormed
+  }
+}
 
 export interface ChannelsConfig {
   /**
@@ -45,9 +61,95 @@ interface ActiveConversation {
  */
 export function apply(ctx: Context, config: ChannelsConfig): void {
   const focus = new ActiveConversationTracker()
-  registerInboundConsumer(ctx, config, focus)
+  const unanswered = new UnansweredReplyWatch()
+  registerInboundConsumer(ctx, config, focus, unanswered)
   ctx.tools.register(createSendMessageTool(ctx, config, focus))
   registerReconciliationContext(ctx)
+  registerUnansweredReplyNotice(ctx, unanswered)
+}
+
+/**
+ * Whether the person's latest message still has no answer.
+ *
+ * A turn can end with the model having written a reply that nobody received: assistant text is
+ * never shown to anyone, and only the `message` tool reaches the person. This tracks the two facts
+ * that make that detectable — an inbound nobody has answered, and what the current turn wrote —
+ * so the stop boundary can ask once.
+ */
+class UnansweredReplyWatch {
+  private awaiting = false
+  private asked = false
+  private answeredTurn: number | undefined
+  private textTurn: number | undefined
+
+  /** An accepted inbound opens one question; a later inbound replaces the earlier one. */
+  inboundArrived(): void {
+    this.awaiting = true
+    this.asked = false
+  }
+
+  /**
+   * A `message` call answers the inbound whether or not the send succeeded. An attempt that
+   * failed is already named by the unconfirmed-delivery context, and asking again would invite
+   * the blind resend that context exists to prevent.
+   */
+  answerAttempted(turn: number): void {
+    this.answeredTurn = turn
+    this.awaiting = false
+  }
+
+  textWritten(turn: number): void {
+    this.textTurn = turn
+  }
+
+  /** This stop boundary owes one question: an unanswered inbound, text written, no attempt, none asked. */
+  owesQuestion(turn: number): boolean {
+    return this.awaiting && !this.asked && this.answeredTurn !== turn && this.textTurn === turn
+  }
+
+  askedNow(): void {
+    this.asked = true
+  }
+}
+
+/**
+ * Ask once, at a turn's stop boundary, whether a reply the model wrote was meant to be sent.
+ *
+ * `agent/turn-stopping` is DSH's own boundary — it fires when the model owes no response and is
+ * awaited before the turn commits; steering there re-reads the inbox and runs one more step, which
+ * is what turns a written-but-unsent reply into a chance to send it. Both facts the question needs
+ * come from the session log rather than from a guess: a `tool/call` named `message`, and an
+ * `assistant/message` carrying text. The question is a notice, not an instruction: it states what
+ * happened and leaves staying silent a legitimate answer.
+ */
+function registerUnansweredReplyNotice(ctx: Context, watch: UnansweredReplyWatch): void {
+  ctx.on('session/event', (session, event) => {
+    if (session.id !== ctx.agentRuntime.current()?.session.id) return
+    if (event.type === 'tool/call' && event.data.name === SEND_MESSAGE_TOOL) watch.answerAttempted(event.data.turn)
+    else if (event.type === 'assistant/message' && carriesText(event.data.message)) watch.textWritten(event.data.turn)
+  })
+  ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+    if (agent !== ctx.agentRuntime.current() || !watch.owesQuestion(turn)) return
+    watch.askedNow()
+    agent.steer(unansweredReplyNotice())
+  })
+}
+
+function carriesText(message: AssistantMessage): boolean {
+  return message.content.some(block => block.type === 'text' && block.text.trim() !== '')
+}
+
+function unansweredReplyNotice(): UserMessage {
+  return createUserMessage({
+    content: [{
+      type: 'text',
+      text: 'The turn ended with assistant text that nobody received: assistant text is not shown to '
+        + 'the person you are talking with, and the `message` tool is the only way to reach them. If '
+        + 'that text was meant for them, send it now with `message`; if you meant to stay silent, end '
+        + 'the turn.',
+    }],
+    source: { kind: LOOM_CHANNELS_PLUGIN_ID, form: 'notice', summary: UNANSWERED_REPLY_SUMMARY },
+  })
 }
 
 /**
@@ -85,7 +187,12 @@ class ActiveConversationTracker {
   }
 }
 
-function registerInboundConsumer(ctx: Context, config: ChannelsConfig, focus: ActiveConversationTracker): void {
+function registerInboundConsumer(
+  ctx: Context,
+  config: ChannelsConfig,
+  focus: ActiveConversationTracker,
+  unanswered: UnansweredReplyWatch,
+): void {
   const runtimeState: RuntimeState = ctx.runtimeState
   const agentRuntime: AgentRuntime = ctx.agentRuntime
   const clock: Clock = ctx.clock
@@ -112,7 +219,11 @@ function registerInboundConsumer(ctx: Context, config: ChannelsConfig, focus: Ac
     const text = await framedText(ctx, config, message, logger)
     if (!agentRuntime.deliver(text)) {
       logger.warn(`no live agent to receive ${message.channel}:${message.providerMessageId}; message recorded, not delivered`)
+      return
     }
+    // Only a delivered inbound is one the agent owes an answer to; a recorded-but-undelivered
+    // message was never seen, so nothing about it can be a reply the model forgot to send.
+    unanswered.inboundArrived()
   }
 }
 
@@ -188,7 +299,7 @@ async function saveIncoming(
 
 function createSendMessageTool(ctx: Context, config: ChannelsConfig, focus: ActiveConversationTracker): ToolDefinition {
   return defineTool({
-    name: 'message',
+    name: SEND_MESSAGE_TOOL,
     description:
       'Send a message to the person you are currently talking with over their channel (e.g. '
       + 'Telegram). Your assistant text is not shown to anyone; this tool is the only way to '

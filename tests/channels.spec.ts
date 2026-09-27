@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import LlmRuntime from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -165,22 +165,26 @@ async function bootWithChannels(mock: MockAdapter): Promise<Harness> {
 
 describe('channels consumer', () => {
   it('accepts an inbound message, delivers it to the agent, and dedups a repeat', async () => {
-    const h = await bootWithChannels(new MockAdapter([textResponse('ok'), textResponse('ok')]))
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'ok' }),
+      textResponse('done'),
+    ]))
     try {
       const agent = h.ctx.agentRuntime.current()
 
       h.channel.receive(inbound('m1', 'hello'))
       // Acceptance runs async off the synchronous inbound broadcast, so wait for the turn it
       // drives rather than assuming it already started.
-      await vi.waitFor(() => { expect(h.mock.requests).toHaveLength(1) })
+      await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
       await agent?.whenIdle()
       expect(h.ctx.runtimeState.isAccepted('mock-chat', 'm1')).toBe(true)
 
       // A repeat of the same provider message id is dropped: no second turn.
+      const requests = h.mock.requests.length
       h.channel.receive(inbound('m1', 'hello'))
       await vi.waitFor(() => { expect(h.ctx.runtimeState.isAccepted('mock-chat', 'm1')).toBe(true) })
       await agent?.whenIdle()
-      expect(h.mock.requests).toHaveLength(1)
+      expect(h.mock.requests).toHaveLength(requests)
     } finally {
       await h.dispose()
     }
@@ -204,11 +208,14 @@ describe('channels consumer', () => {
   })
 
   it('lands an inbound attachment under the workspace and points the agent at it', async () => {
-    const h = await bootWithChannels(new MockAdapter([textResponse('ok')]))
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'got it' }),
+      textResponse('done'),
+    ]))
     try {
       const agent = h.ctx.agentRuntime.current()
       h.channel.receive(inboundWithImage('m1', 'look at this', 'img1'))
-      await vi.waitFor(() => { expect(h.mock.requests).toHaveLength(1) })
+      await vi.waitFor(() => { expect(h.mock.requests.length).toBeGreaterThan(0) })
       await agent?.whenIdle()
 
       const files = await readdir(join(h.workspace, 'media', 'mock-chat'))
@@ -267,7 +274,8 @@ describe('channels consumer', () => {
     const h = await bootWithChannels(new MockAdapter([
       toolCallResponse('s1', 'message', { text: 'hi Alice' }),
       textResponse('understood'),
-      textResponse('replying again'),
+      toolCallResponse('s2', 'message', { text: 'still here' }),
+      textResponse('done'),
     ]))
     try {
       const agent = h.ctx.agentRuntime.current()
@@ -289,6 +297,90 @@ describe('channels consumer', () => {
       await vi.waitFor(() => { expect(h.mock.requests.length).toBeGreaterThan(before) })
       await agent?.whenIdle()
       expect(promptContains(h.mock, 'Unconfirmed delivery')).toBe(true)
+    } finally {
+      await h.dispose()
+    }
+  })
+})
+
+describe('undelivered reply notice', () => {
+  it('asks once when a turn ends with text nobody received, and the reply then goes out', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      textResponse('draft reply that nobody sees'),
+      toolCallResponse('s1', 'message', { text: 'hi Alice, I am here' }),
+      textResponse('done'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.receive(inbound('m1', 'are you there?'))
+      // Both the notice step and the send it prompted are part of the same turn.
+      await vi.waitFor(() => { expect(h.mock.requests.length).toBeGreaterThan(1) })
+      await agent?.whenIdle()
+
+      // The turn's own text reached nobody; the boundary asked about it, and the reply went out.
+      expect(h.channel.sent).toHaveLength(1)
+      expect(h.channel.sent[0]).toMatchObject({ text: 'hi Alice, I am here' })
+
+      // The question is attributed to this plugin's own producer kind, not to a person.
+      const notice = h.mock.requests.at(-1)?.messages.find(m => m.source?.kind === '@loom/channels')
+      expect(notice?.content).toMatchObject([{ type: 'text', text: expect.stringContaining('nobody received') }])
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('asks only once for the same undelivered reply', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      textResponse('first attempt at a reply'),
+      textResponse('second attempt at a reply'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.receive(inbound('m1', 'are you there?'))
+      await vi.waitFor(() => { expect(h.mock.requests).toHaveLength(2) })
+      await agent?.whenIdle()
+
+      // The second turn wrote text again and still sent nothing, but the inbound was already
+      // asked about: the turn closes instead of asking forever.
+      expect(h.mock.requests).toHaveLength(2)
+      expect(h.channel.sent).toHaveLength(0)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('stays quiet when no inbound is waiting to be answered', async () => {
+    const h = await bootWithChannels(new MockAdapter([textResponse('thinking out loud')]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      // A turn Loom itself started — nothing here is owed to a person.
+      agent?.followup(createUserMessage({ content: [{ type: 'text', text: 'internal input' }], source: { kind: 'user' } }))
+      await vi.waitFor(() => { expect(h.mock.requests).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      expect(h.mock.requests).toHaveLength(1)
+      expect(h.channel.sent).toHaveLength(0)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('treats a failed send as an answer rather than asking again', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'hi Alice' }),
+      textResponse('understood'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      h.channel.failSend = true
+      h.channel.receive(inbound('m1', 'are you there?'))
+      await vi.waitFor(() => { expect(h.ctx.runtimeState.uncertainDeliveries()).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      // The attempt is recorded as an unconfirmed delivery, which the agent reconciles on its own
+      // terms; being asked again here would only invite the blind resend that context prevents.
+      expect(h.ctx.runtimeState.uncertainDeliveries()).toHaveLength(1)
+      expect(h.mock.requests).toHaveLength(2)
     } finally {
       await h.dispose()
     }
