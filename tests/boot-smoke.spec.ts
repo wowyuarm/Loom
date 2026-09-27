@@ -116,24 +116,6 @@ describe('loom boot smoke', () => {
     }
   })
 
-  it('lets the model write a memory note through the memory_write tool', async () => {
-    const loom = await bootLoom(new MockAdapter([
-      toolCallResponse('c1', 'memory_write', { concept: 'alpha', body: 'a durable note' }),
-      textResponse('noted'),
-    ]))
-    try {
-      const agent = loom.ctx.agentRuntime.current()
-      agent?.followup(createUserMessage({ content: [{ type: 'text', text: 'remember alpha' }], source: { kind: 'user' } }))
-      await agent?.whenIdle()
-
-      const note = await readFile(join(loom.workspace, 'memory/notes/alpha.md'), 'utf8')
-      expect(note).toContain('a durable note')
-      expect(loom.mock.requests.length).toBeGreaterThanOrEqual(2)
-    } finally {
-      await loom.dispose()
-    }
-  })
-
   it('rolls the context over to a fresh session when the model calls context_rollover, carrying lineage', async () => {
     const loom = await bootLoom(new MockAdapter([
       toolCallResponse('c1', 'context_rollover', { handoff: 'Continue as the same agent in a fresh context; nothing was rolled back.' }),

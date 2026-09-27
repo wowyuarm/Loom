@@ -3,8 +3,6 @@ import { applyBudget } from '../src/resident-context/budget.ts'
 import {
   memoryCoreOf,
   memoryIndexOf,
-  memoryRoutingLine,
-  upsertMemoryRouting,
 } from '../src/resident-context/layout.ts'
 
 describe('memory.md core/index split', () => {
@@ -18,28 +16,6 @@ describe('memory.md core/index split', () => {
   it('treats a file with no index heading as all core', () => {
     expect(memoryCoreOf('just core')).toBe('just core')
     expect(memoryIndexOf('just core')).toBe('')
-  })
-})
-
-describe('upsertMemoryRouting', () => {
-  it('creates the index section when absent', () => {
-    const out = upsertMemoryRouting('Some core.', 'alpha')
-    expect(out).toContain('## Notes')
-    expect(out).toContain(memoryRoutingLine('alpha'))
-    expect(memoryCoreOf(out)).toBe('Some core.')
-  })
-
-  it('appends a new routing line under an existing section', () => {
-    const start = upsertMemoryRouting('core', 'alpha')
-    const out = upsertMemoryRouting(start, 'beta')
-    expect(out).toContain(memoryRoutingLine('alpha'))
-    expect(out).toContain(memoryRoutingLine('beta'))
-  })
-
-  it('is idempotent for a concept already routed', () => {
-    const once = upsertMemoryRouting('core', 'alpha')
-    const twice = upsertMemoryRouting(once, 'alpha')
-    expect(twice).toBe(once)
   })
 })
 

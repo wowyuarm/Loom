@@ -11,12 +11,13 @@ import { residentFiles, residentPath, memoryCoreOf, memoryIndexOf } from './layo
  * oversized file when it is READ into context; this flags it the moment it is WRITTEN, so the agent
  * hears "prune this" while it still holds why — not a turn later when the file comes back clipped.
  *
- * The agent maintains attention and threads with the generic `write`/`edit` tools (only memory has
- * `memory_write`), so the feedback has to ride those tools. It is a `tools/post-execute` observer
- * that, after a successful write/edit to a resident file, measures the result and appends a usage
- * notice to the tool result when the file is filling toward or past its cap. It never blocks the
- * write: feedback over rejection (DESIGN §7) — the file is already on disk and the notice tells the
- * agent to trim it, matching what the projection will otherwise do on its own.
+ * The agent maintains every resident file — attention, threads, and memory with its index — using
+ * the generic `write`/`edit` tools; there is no dedicated memory tool, so the feedback has to ride
+ * those tools. It is a `tools/post-execute` observer that, after a successful write/edit to a
+ * resident file, measures the result and appends a usage notice to the tool result when the file
+ * is filling toward or past its cap. It never blocks the write: feedback over rejection
+ * (DESIGN §7) — the file is already on disk and the notice tells the agent to trim it, matching
+ * what the projection will otherwise do on its own.
  */
 export function registerResidentWriteBudget(
   ctx: Context,

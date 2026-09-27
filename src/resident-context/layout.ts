@@ -14,18 +14,14 @@ export const residentFiles = {
 /** Directory holding one file per memory concept, routed from the memory index. */
 export const notesDir = 'memory/notes'
 
-export function notePath(workspace: string, concept: string): string {
-  return join(workspace, notesDir, `${concept}.md`)
-}
-
 export function residentPath(workspace: string, rel: string): string {
   return join(workspace, rel)
 }
 
 /**
- * memory.md holds curated knowledge (the "core") followed by a machine-maintained routing
- * table (the "index") under this heading. memory_write upserts routing lines here; the two
- * projection providers split the file on this marker.
+ * memory.md holds curated knowledge (the "core") followed by a routing table (the "index") under
+ * this heading, both maintained by the agent with the generic file tools. The two projection
+ * providers, and the write-budget observer, split the file on this marker.
  */
 export const memoryIndexHeading = '## Notes'
 
@@ -37,23 +33,4 @@ export function memoryCoreOf(memoryText: string): string {
 export function memoryIndexOf(memoryText: string): string {
   const at = memoryText.indexOf(memoryIndexHeading)
   return at === -1 ? '' : memoryText.slice(at).trimEnd()
-}
-
-/** A routing line: concept → its note path, relative to the workspace. */
-export function memoryRoutingLine(concept: string): string {
-  return `- ${concept} → ${notesDir}/${concept}.md`
-}
-
-/**
- * Upsert one concept's routing line into memory.md, creating the index section when absent.
- * Idempotent: an existing line for the concept is left as-is.
- */
-export function upsertMemoryRouting(memoryText: string, concept: string): string {
-  const line = memoryRoutingLine(concept)
-  if (memoryText.includes(line)) return memoryText
-  if (!memoryText.includes(memoryIndexHeading)) {
-    const core = memoryText.trimEnd()
-    return `${core}${core ? '\n\n' : ''}${memoryIndexHeading}\n${line}\n`
-  }
-  return `${memoryText.trimEnd()}\n${line}\n`
 }

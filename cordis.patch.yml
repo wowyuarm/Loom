@@ -170,8 +170,10 @@
     - id: orientation
       name: 'loom/orientation'
 
-    # The agent's resident context: identity, memory, threads, and attention are read fresh
-    # into every turn, and `memory_write` maintains the memory file and its routing index.
+    # The agent's resident context: identity, memory, threads, and attention are read fresh into
+    # every turn, and a write-budget observer flags a resident file the moment a write fills it
+    # toward its cap. The agent maintains every one of these files with the generic file tools;
+    # there is no dedicated memory tool.
     - id: resident-context
       name: 'loom/resident-context'
       config:

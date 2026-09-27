@@ -5,10 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import { ManualClock } from '../src/clock/index.ts'
 import { registerResidentContext, defaultCaps } from '../src/resident-context/projection.ts'
 import { ensureWorkspaceScaffold } from '../src/resident-context/scaffold.ts'
-import { createMemoryWriteTool } from '../src/resident-context/memory-write.ts'
 
 async function tmpWorkspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'loom-resident-context-'))
@@ -168,62 +166,3 @@ describe('workspace scaffold', () => {
   })
 })
 
-describe('memory_write tool', () => {
-  const agentExec = { agent: { id: 'session-x' } } as never
-
-  it('writes a stamped note and upserts the memory index', async () => {
-    const ws = await tmpWorkspace()
-    try {
-      const tool = createMemoryWriteTool(new ManualClock(1_000), ws)
-      const result = await tool.execute({ concept: 'alpha', body: 'Alpha is a thing.', ref: 'ctx:42' }, agentExec)
-      expect(result).toEqual({ concept: 'alpha', note: 'memory/notes/alpha.md', session: 'session-x' })
-
-      const note = await readFile(join(ws, 'memory/notes/alpha.md'), 'utf8')
-      expect(note).toContain('concept: alpha')
-      expect(note).toContain('session: session-x')
-      expect(note).toContain('written_at: 1000')
-      expect(note).toContain('ref: ctx:42')
-      expect(note).toContain('Alpha is a thing.')
-
-      const memory = await readFile(join(ws, 'memory/memory.md'), 'utf8')
-      expect(memory).toContain('- alpha → memory/notes/alpha.md')
-    } finally {
-      await rm(ws, { recursive: true, force: true })
-    }
-  })
-
-  it('is idempotent on the index when the same concept is written twice', async () => {
-    const ws = await tmpWorkspace()
-    try {
-      const tool = createMemoryWriteTool(new ManualClock(1_000), ws)
-      await tool.execute({ concept: 'alpha', body: 'first' }, agentExec)
-      await tool.execute({ concept: 'alpha', body: 'second' }, agentExec)
-      const memory = await readFile(join(ws, 'memory/memory.md'), 'utf8')
-      expect(memory.match(/- alpha → /g)?.length).toBe(1)
-      // The note reflects the latest body.
-      expect(await readFile(join(ws, 'memory/notes/alpha.md'), 'utf8')).toContain('second')
-    } finally {
-      await rm(ws, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects an unsafe concept slug', async () => {
-    const ws = await tmpWorkspace()
-    try {
-      const tool = createMemoryWriteTool(new ManualClock(1_000), ws)
-      await expect(tool.execute({ concept: '../escape', body: 'x' }, agentExec)).rejects.toThrow(/concept must match/)
-    } finally {
-      await rm(ws, { recursive: true, force: true })
-    }
-  })
-
-  it('rejects a call without an owning agent session', async () => {
-    const ws = await tmpWorkspace()
-    try {
-      const tool = createMemoryWriteTool(new ManualClock(1_000), ws)
-      await expect(tool.execute({ concept: 'alpha', body: 'x' }, {} as never)).rejects.toThrow(/owning agent session/)
-    } finally {
-      await rm(ws, { recursive: true, force: true })
-    }
-  })
-})

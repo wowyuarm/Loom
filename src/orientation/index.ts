@@ -39,7 +39,7 @@ These are not one growing log. Each answers a different question, changes on its
 
 ## Keeping them
 
-You maintain these files yourself with your ordinary file tools; there is no special path. When you learn a lasting thing, record it (memory_write pairs a note with its index line and stamps where it came from); when a line opens, give it a thread; keep attention current. When a file fills toward its budget you will see a usage notice on it — prune it then: promote what lasts, drop what has passed. How to do that upkeep well is in AGENTS.md in your workspace; read it when you are unsure.
+You maintain these files yourself with your ordinary file tools; there is no special path and no dedicated command. When you learn a lasting thing, write it into a memory note under memory/notes/ and add its routing line to the index in memory.md; when a line opens, give it a thread; keep attention current. When a file fills toward its budget you will see a usage notice on it — prune it then: promote what lasts, drop what has passed. How to do that upkeep well is in AGENTS.md in your workspace; read it when you are unsure.
 
 ## Continuity across context windows
 

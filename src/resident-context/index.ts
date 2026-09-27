@@ -1,7 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defaultCaps, registerResidentContext, type ResidentContextCaps } from './projection.ts'
 import { ensureWorkspaceScaffold } from './scaffold.ts'
-import { registerMemoryWrite } from './memory-write.ts'
 import { registerResidentWriteBudget } from './write-budget.ts'
 
 export interface ResidentContextConfig {
@@ -12,7 +11,7 @@ export interface ResidentContextConfig {
 }
 
 export const name = 'resident-context'
-export const inject = ['systemPrompt', 'tools', 'clock']
+export const inject = ['systemPrompt', 'tools']
 
 export function apply(ctx: Context, config: ResidentContextConfig): void {
   // Materialize the workspace skeleton on mount (idempotent), so the agent never has to conjure
@@ -20,9 +19,9 @@ export function apply(ctx: Context, config: ResidentContextConfig): void {
   ensureWorkspaceScaffold(config.workspace)
   const caps: ResidentContextCaps = { ...defaultCaps, ...config.caps }
   registerResidentContext(ctx, config.workspace, caps)
-  registerMemoryWrite(ctx, config.workspace)
-  // Flag a resident file the moment a generic write/edit pushes it toward its cap, so the prune
-  // signal reaches the agent while it still holds the context — not a turn later on read-back.
+  // The agent maintains every resident file — including memory and its index — with the generic
+  // write/edit tools; no dedicated tool. This flags a resident file the moment such a write pushes
+  // it toward its cap, so the prune signal reaches the agent while it still holds the context.
   registerResidentWriteBudget(ctx, config.workspace, caps)
 }
 
@@ -40,5 +39,4 @@ export {
   notesDir,
   memoryCoreOf,
   memoryIndexOf,
-  upsertMemoryRouting,
 } from './layout.ts'
