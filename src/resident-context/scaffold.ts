@@ -28,6 +28,8 @@ These files are your durable self between context windows — shown to you at th
 
 - Recall the past by searching it: \`context_search\`, then \`context_read\` to expand a hit. Do not copy identifiers by hand.
 - When a file fills toward its budget, prune it: promote what lasts into a note, drop what has passed. You will see a usage notice on a file as it fills — that is the signal to trim it, before it gets truncated when read into context.
+- Reach for the structures already laid out here before inventing new ones. A lasting fact is a note; an open line is a thread; a reusable procedure is a skill. Most of what you need already has a home — make a new top-level place for yourself only when nothing here fits, not by default.
+- These homes are not rigid about file types. A thread is a live line, and its \`threads/<id>/\` directory can hold whatever that line needs while it is open — notes to yourself, a script, scratch data, reference material — not just prose. Put working files where the work they serve lives.
 - Anything you make for yourself — a note, a skill, a script, a directory of reference material, a new tool — give it a home under this workspace; do not let it scatter. When you add something durable to how you work, record it here in this file so a later you knows it exists and how to keep it. This file is yours to extend: it is where your own machinery is written down.
 `
 
