@@ -7,6 +7,7 @@ import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
+import { runtimeStateDomain } from '../src/runtime-state/domain.ts'
 import type { AcceptedInput, RuntimeState } from '../src/contracts/index.ts'
 interface Booted {
   loom: RuntimeState
@@ -211,5 +212,16 @@ describe('continuity store — durability across restart', () => {  it('recovers
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('runtime-state domain format', () => {
+  it('stays on the version existing deployments are stamped with', () => {
+    // The default `single` layout has no migration: the sqlite backend rejects any stamp but the
+    // descriptor's own, and `compatibleVersions` is a `per-record` affordance that a single-layout
+    // domain cannot use. Moving this number therefore makes every deployed medium unopenable
+    // rather than upgradeable — while adding a table is additive and needs no bump. Change it only
+    // as a deliberate decision to reset the medium, and change this test along with it.
+    expect(runtimeStateDomain.version).toBe(1)
   })
 })

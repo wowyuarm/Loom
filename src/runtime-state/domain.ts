@@ -58,10 +58,14 @@ type RuntimeGlobal = z.infer<typeof globalSchema>
 // across bundles, so the `loom_` prefix keeps Loom's domains distinct in that shared namespace.
 export const runtimeStateDomain = defineDomain({
   name: 'loom_runtime_state',
-  version: 2,
-  // v1 held only the pointer + the two ledgers below; the effect table was added at v2. A v1
-  // file's records still validate under the current schemas, so read it instead of rejecting.
-  compatibleVersions: [1],
+  version: 1,
+  // Adding the effect table is additive: each declared table gets its own record table on the
+  // medium, so a reader that does not declare one never sees it and an existing medium stays
+  // readable. The version therefore does not move for it. This matters because the default
+  // `single` layout has no migration path — the backend rejects any stamp but the current one —
+  // so a bump makes every existing deployment unopenable instead of upgradeable. Bump only when
+  // old readers would misread stored records, and treat that as a deliberate decision to reset
+  // the medium, never as bookkeeping.
   global: { schema: globalSchema, initial: {} as RuntimeGlobal },
   tables: {
     accepted_input: domainTable<string, AcceptedInput>(acceptedInputSchema),
