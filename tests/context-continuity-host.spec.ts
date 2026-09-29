@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
+import { AFTER_INTERACTION_SOURCE_KIND } from '../src/contracts/index.ts'
 import {
   LOOM_SUBJECT_ID,
   LoomContextContinuityHost,
@@ -46,8 +47,16 @@ describe('rolloverIdentity', () => {
 })
 
 describe('isEphemeralNotice', () => {
-  it('carries every queued message in v1 (returns false)', () => {
+  it('carries a person\'s queued message across the swap (returns false)', () => {
     expect(host().isEphemeralNotice({} as UserMessage)).toBe(false)
+    expect(host().isEphemeralNotice({ source: { kind: 'user' } } as UserMessage)).toBe(false)
+  })
+
+  it('drops content that describes a moment, so the successor rederives it', () => {
+    // A pause's note was true when it was written and says nothing about the successor's own log;
+    // inheriting it would hand the new generation a moment that has already passed.
+    const notice = { source: { kind: AFTER_INTERACTION_SOURCE_KIND, form: 'notice', summary: 'a pause' } }
+    expect(host().isEphemeralNotice(notice as UserMessage)).toBe(true)
   })
 })
 

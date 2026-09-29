@@ -218,3 +218,25 @@
       name: 'loom/channels'
       config:
         workspace: !!js dshHomePath('loom/workspace')
+
+    # Jev (TypeSafe System One) as a service: one headless decision call, no tools and no policy of
+    # its own — thresholds and postures belong to whoever asks. It is a service rather than a tool
+    # because its consumer asks for a judgement while the main model is not running.
+    #
+    # The key never enters a configuration file: `apiKeyEnv` names the variable it is read from, and
+    # the variable lives in the deployment's own env file. Without it this row fails to load at
+    # mount, and `after-interaction` below stays inactive with it — the feature is off, not broken.
+    - id: jev
+      name: '@wowyuarm/dsh-jev'
+      config:
+        apiKeyEnv: TYPESAFE_API_KEY
+
+    # The pause after a reply. When a conversation the person opened goes quiet, one headless
+    # judgement decides whether to stay quiet, speak, or do something, and only a lean away from
+    # quiet hands the agent a short situation to act on as it likes. This slice deliberately has no
+    # cooldown, no quiet hours, and no durable wake source: the alarm lives in the plugin's fiber and
+    # dies with it.
+    - id: after-interaction
+      name: 'loom/after-interaction'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')

@@ -46,6 +46,10 @@
       "types": "./lib/time-context/index.d.ts",
       "default": "./lib/time-context/index.js"
     },
+    "./after-interaction": {
+      "types": "./lib/after-interaction/index.d.ts",
+      "default": "./lib/after-interaction/index.js"
+    },
     "./channels": {
       "types": "./lib/channels/index.d.ts",
       "default": "./lib/channels/index.js"
@@ -72,6 +76,7 @@
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/cordis-plugin-include": "1.0.9",
     "@deepseek-ai/cordis-plugin-loader": "1.0.5",
+    "@deepseek-ai/cordis-plugin-timer": "1.1.6",
     "@deepseek-ai/dsh": "0.1.7-rc.2",
     "@deepseek-ai/dsh-agent": "0.1.7-rc.2",
     "@deepseek-ai/dsh-agent-default-model": "0.1.7-rc.2",
@@ -100,6 +105,7 @@
     "@types/node": "^24.0.0",
     "@wowyuarm/dsh-channel-gateway": "^0.1.3",
     "@wowyuarm/dsh-context-continuity": "0.1.5",
+    "@wowyuarm/dsh-jev": "0.1.1",
     "js-yaml": "^4.3.2",
     "typescript": "^5.8.3",
     "vitest": "^4.1.8"

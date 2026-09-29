@@ -14,6 +14,7 @@ import {
   type RolloverIdentity,
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
+import { ephemeralNoticeSourceKinds } from '../contracts/index.ts'
 
 /**
  * Loom binds the context-continuity engine as a single-agent host: one subject, its live
@@ -108,13 +109,13 @@ export class LoomContextContinuityHost implements ContextContinuityHost<LoomSubj
   }
 
   /**
-   * v1 carries every queued message across a swap (returns false). The proactivity module will
-   * later mark its own pulses/notices as ephemeral so the successor rederives rather than
-   * re-reads them. The engine already excludes this host's handoff/continuation envelopes
-   * before consulting this.
+   * v1 carries every queued message across a swap. The one exception is content that describes a
+   * moment instead of a fact — after-interaction's situation notes — for which the successor rederives
+   * from its own log rather than inheriting a note about a pause that has passed. The engine
+   * already excludes this host's handoff/continuation envelopes before consulting this.
    */
-  isEphemeralNotice(_message: UserMessage): boolean {
-    return false
+  isEphemeralNotice(message: UserMessage): boolean {
+    return ephemeralNoticeSourceKinds.includes(message.source?.kind)
   }
 
   log(message: string): void {

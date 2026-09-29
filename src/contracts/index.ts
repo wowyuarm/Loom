@@ -106,6 +106,21 @@ export interface RuntimeState {
   uncertainDeliveries(): DeliveryEffect[]
 }
 
+/**
+ * Attribution id of the after-interaction plugin's own content: the situation it hands the agent when a
+ * pause looks worth picking up. It sits here rather than in that plugin because two modules must
+ * agree on it — the producer stamps it, and the continuity host classifies it.
+ */
+export const AFTER_INTERACTION_SOURCE_KIND = '@loom/after-interaction'
+
+/**
+ * Source kinds whose content is about a moment rather than a fact: an observation that was true
+ * when it was written and that a successor generation should rederive from its own log instead of
+ * inheriting as text. The continuity host answers `isEphemeralNotice` from this list, and each
+ * producer stamps its own content with the same entry.
+ */
+export const ephemeralNoticeSourceKinds: readonly string[] = [AFTER_INTERACTION_SOURCE_KIND]
+
 declare module '@deepseek-ai/cordis' {
   interface Events {
     /** One outbound effect reached a terminal delivery status. A future followup/projection subscribes here. */

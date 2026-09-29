@@ -68,6 +68,8 @@ describe('loom bundle manifest', () => {
     expect(byId.get('channels')?.name).toBe('loom/channels')
     expect(byId.get('channel-gateway')?.name).toBe('@wowyuarm/dsh-channel-gateway')
     expect(byId.get('channel-telegram')?.name).toBe('@wowyuarm/dsh-channel-gateway/telegram')
+    expect(byId.get('after-interaction')?.name).toBe('loom/after-interaction')
+    expect(byId.get('jev')?.name).toBe('@wowyuarm/dsh-jev')
 
     // Base's stack is still there.
     expect(byId.get('agent-loop')?.name).toBe('@deepseek-ai/dsh-agent-loop')
@@ -111,8 +113,13 @@ describe('loom bundle manifest', () => {
     const workspace = (byId.get('resident-context')?.config as { workspace?: unknown } | undefined)?.workspace
     expect(workspace).toEqual({ __jsExpr: "dshHomePath('loom/workspace')" })
     expect(byId.get('agent-runtime')?.config).toMatchObject({ workspace })
+    expect(byId.get('after-interaction')?.config).toMatchObject({ workspace })
     expect(byId.get('fs-sandbox')?.config).toMatchObject({ cwd: workspace })
     expect(byId.get('storage-sqlite')?.config).toEqual({ path: { __jsExpr: "dshHomePath('loom/runtime-state.db')" } })
+
+    // The judgement provider reads its key from the environment by name; no secret can enter the
+    // configuration file, and a deployment without the variable fails the row rather than the run.
+    expect(byId.get('jev')?.config).toMatchObject({ apiKeyEnv: 'TYPESAFE_API_KEY' })
   })
 
   it('declares every agent-plane row in the preset and leaves none enabled in the bundle', async () => {
