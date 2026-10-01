@@ -16,6 +16,22 @@ describe('orientation section', () => {
     expect(section?.text).toBe(DEFAULT_ORIENTATION)
   })
 
+  it('states the shared-vocabulary rule for writing to the person', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(OrientationPlugin)
+    await vi.waitFor(() => { expect(ctx.systemPrompt).toBeDefined() })
+
+    const assembly = await ctx.systemPrompt.assemble()
+    const text = assembly.sections.find(s => s.name === 'loom:orientation')?.text ?? ''
+    // The rule is why a person can read what the agent sends: everyday words or terms they used,
+    // no private shorthand, and the agent's own machinery named only when reporting a file or
+    // when they raised it first. Anchored on the load-bearing clauses so a rewrite cannot drop it.
+    expect(text).toContain('use only words they already know')
+    expect(text).toContain('Do not coin compressed private shorthand')
+    expect(text).toContain('as unknown to them by default')
+  })
+
   it('lets a deployment override the orientation text', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
