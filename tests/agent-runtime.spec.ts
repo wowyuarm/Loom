@@ -35,13 +35,35 @@ async function realRuntimeState(): Promise<{ runtimeState: RuntimeState; dispose
   }
 }
 
-function fakeAgents() {
+/**
+ * Fake session log carrying just what the runtime's `sandbox/mode` pin reads and writes
+ * (`ownEvents`/`append`), plus the recorded modes for assertions. `seededModes` replays modes a
+ * real session would already carry (session creation pins the deployment default).
+ */
+function fakeSession(id: SessionId, seededModes: string[] = []) {
+  const events: { type: string; data: { mode?: string } }[] = []
+  for (const mode of seededModes) events.push({ type: 'sandbox/mode', data: { mode } })
+  return {
+    id,
+    ownEvents: () => events,
+    append: (type: string, data: { mode?: string }) => { events.push({ type, data }) },
+    modes: () => events.filter(event => event.type === 'sandbox/mode').map(event => event.data.mode),
+  }
+}
+
+function fakeAgents(seededModes: string[] = []) {
   const created: { sessionId: SessionId }[] = []
   const resumed: { resumeSessionId: SessionId }[] = []
-  const handle = (id: SessionId): AgentHandle => ({ agent: { id, session: { id } } as AgentHandle['agent'], dispose: () => Promise.resolve() })
+  const sessions = new Map<SessionId, ReturnType<typeof fakeSession>>()
+  const handle = (id: SessionId): AgentHandle => {
+    const session = fakeSession(id, seededModes)
+    sessions.set(id, session)
+    return { agent: { id, session } as unknown as AgentHandle['agent'], dispose: () => Promise.resolve() }
+  }
   return {
     created,
     resumed,
+    session: (id: SessionId) => sessions.get(id),
     agents: {
       create: (opts: { sessionId: SessionId }) => { created.push(opts); return Promise.resolve(handle(opts.sessionId)) },
       resume: (opts: { resumeSessionId: SessionId }) => { resumed.push(opts); return Promise.resolve(handle(opts.resumeSessionId)) },
@@ -95,16 +117,19 @@ interface TrackedAgent {
 function trackAgents() {
   const byId = new Map<string, TrackedAgent>()
   const metaById = new Map<string, unknown>()
+  const sessions = new Map<SessionId, ReturnType<typeof fakeSession>>()
   const track = (id: SessionId): AgentHandle => {
     const rec: TrackedAgent = { disposed: false, steered: [], followed: [], order: [] }
     byId.set(id, rec)
+    const session = fakeSession(id)
+    sessions.set(id, session)
     const agent = {
       id,
-      session: { id },
+      session,
       steer: (m: UserMessage) => { rec.order.push('steer'); rec.steered.push(m) },
       followup: (m: UserMessage) => { rec.order.push('followup'); rec.followed.push(m) },
     }
-    return { agent: agent as AgentHandle['agent'], dispose: () => { rec.disposed = true; return Promise.resolve() } }
+    return { agent: agent as unknown as AgentHandle['agent'], dispose: () => { rec.disposed = true; return Promise.resolve() } }
   }
   return {
     agent: (id: string): TrackedAgent => {
@@ -112,6 +137,7 @@ function trackAgents() {
       if (rec === undefined) throw new Error(`no agent ${id}`)
       return rec
     },
+    session: (id: SessionId) => sessions.get(id),
     createdMeta: (id: string): unknown => metaById.get(id),
     agents: {
       create: (opts: { sessionId: SessionId; meta?: unknown }) => { metaById.set(opts.sessionId, opts.meta); return Promise.resolve(track(opts.sessionId)) },
@@ -167,6 +193,81 @@ describe('LoomAgentRuntime.executeTransition', () => {
       expect(s1.steered).toHaveLength(1)
       expect(textOf(s1.steered[0]!)).toContain('HANDOFF-BODY')
       expect(s1.followed).toEqual([carried])
+    } finally {
+      await dispose()
+    }
+  })
+})
+
+/**
+ * The individual runs unrestricted; the stance is stated in agent-runtime code, so it reaches the
+ * session on activation (a deployment default only reaches sessions created after it changes).
+ */
+describe('LoomAgentRuntime sandbox pin', () => {
+  function runtimeWith(
+    reg: { agents: ConstructorParameters<typeof LoomAgentRuntime>[0]['agents'] },
+    runtimeState: RuntimeState,
+  ) {
+    return new LoomAgentRuntime({
+      agents: reg.agents,
+      runtimeState,
+      workspace: '/ws',
+      newSessionId: () => SessionId('s0'),
+    })
+  }
+
+  it('pins danger-full-access on a session that carries no mode yet', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = fakeAgents()
+      await runtimeWith(reg, runtimeState).boot()
+      expect(reg.session(SessionId('s0'))?.modes()).toEqual(['danger-full-access'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('re-pins a session still on the deployment default', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      await runtimeState.setCurrentSession({ sessionId: 's-live' })
+      const reg = fakeAgents(['workspace-write'])
+      await runtimeWith(reg, runtimeState).boot()
+      expect(reg.session(SessionId('s-live'))?.modes()).toEqual(['workspace-write', 'danger-full-access'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('leaves an already-pinned session alone, so a boot adds no redundant event', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      await runtimeState.setCurrentSession({ sessionId: 's-live' })
+      const reg = fakeAgents(['danger-full-access'])
+      await runtimeWith(reg, runtimeState).boot()
+      expect(reg.session(SessionId('s-live'))?.modes()).toEqual(['danger-full-access'])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('pins the rollover successor as well', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = trackAgents()
+      const runtime = runtimeWith(reg, runtimeState)
+      await runtime.boot()
+      await runtime.executeTransition({
+        previousSessionId: SessionId('s0'),
+        newSessionId: SessionId('s1'),
+        handoff: 'HANDOFF-BODY',
+        handoffEventSeq: 3,
+        trigger: 'model',
+        relatedFiles: [],
+        requestId: 'req-1',
+        carriedInput: [],
+      })
+      expect(reg.session(SessionId('s1'))?.modes()).toEqual(['danger-full-access'])
     } finally {
       await dispose()
     }

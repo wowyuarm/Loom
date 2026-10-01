@@ -1,7 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, AgentHandle, AgentOptions, AgentRegistry } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
+import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
+import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
@@ -27,6 +29,29 @@ import { createLoomPressurePolicy } from '../context-continuity/pressure.ts'
 import type { ContextPressurePolicy } from '@wowyuarm/dsh-context-continuity'
 import type { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import { bootAgent, presetSetup, type BootDeps } from './boot.ts'
+
+/**
+ * The file-effect stance this individual runs under: no write restriction. It is stated in code
+ * rather than a deployment's environment because a session's mode lives in its own session log —
+ * the last `sandbox/mode` event wins — so a mode pinned here reaches the session the moment it
+ * activates, while a deployment default only reaches sessions created after that default changes.
+ */
+const SANDBOX_MODE: SandboxMode = 'danger-full-access'
+
+/**
+ * Pin {@link SANDBOX_MODE} on a session that just activated (boot's resume-or-create, or a
+ * rollover successor). The switch IS its event, so only append when the last logged one differs:
+ * pinning unconditionally would grow one redundant event per generation.
+ *
+ * @param session - the freshly activated session.
+ * @returns whether an event was appended.
+ */
+function pinSandboxMode(session: Session): boolean {
+  const logged = session.ownEvents().filter(event => event.type === 'sandbox/mode').at(-1)
+  if (logged?.data.mode === SANDBOX_MODE) return false
+  setSandboxMode(session, SANDBOX_MODE)
+  return true
+}
 
 /**
  * The ctx-derived capabilities the retrieval and return surface needs: reading archived ancestor
@@ -218,6 +243,7 @@ export class LoomAgentRuntime implements AgentRuntime {
       ...(this.deps.newSessionId === undefined ? {} : { newSessionId: this.deps.newSessionId }),
     }
     this.handle = await bootAgent(deps)
+    pinSandboxMode(this.handle.agent.session)
     // Finish a swap a restart interrupted after the rollover result was durable but before the
     // successor took over: the engine re-derives the pending intent from the folded projection.
     this.coordinator.recoverPendingTransition(LOOM_SUBJECT_ID, this.handle.agent, this.handle.agent.id)
@@ -268,6 +294,7 @@ export class LoomAgentRuntime implements AgentRuntime {
     await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId })
     await this.deps.runtimeState.recordSession(String(plan.newSessionId))
     this.handle = successor
+    pinSandboxMode(successor.agent.session)
 
     successor.agent.steer(handoff)
     for (const message of plan.carriedInput) successor.agent.followup(message)
