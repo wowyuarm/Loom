@@ -15,6 +15,10 @@ export function provideFakePresets(ctx: Context): string[] {
       mounted.push(id ?? 'default')
       return { id: id ?? 'default' }
     },
+    // The registry's read-addressing face, which the continuity adapter calls to resolve the
+    // compaction scope. The fake composes no compaction row, so nothing is resolvable — the same
+    // answer the real registry gives for an agent whose preset mounts none.
+    serviceFor: () => undefined,
   })
   return mounted
 }

@@ -25,8 +25,8 @@ import {
   type LoomSubjectId,
 } from '../context-continuity/host.ts'
 import { LoomContextRetrieval, type ContextBudget } from '../context-continuity/retrieval.ts'
-import { createLoomPressurePolicy } from '../context-continuity/pressure.ts'
-import type { ContextPressurePolicy } from '@wowyuarm/dsh-context-continuity'
+import { createLoomPressurePolicy, LoomPressurePolicy } from '../context-continuity/pressure.ts'
+import type { ContextComposition, PressureJudgement } from '@wowyuarm/dsh-context-continuity'
 import type { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import { bootAgent, presetSetup, type BootDeps } from './boot.ts'
 
@@ -64,6 +64,8 @@ export interface RetrievalDeps {
   meter: () => TokenMeter | undefined
   budgetOf: (agent: Agent) => Promise<ContextBudget | undefined>
   query: ContextSearchPort
+  /** The live session's context breakdown, or undefined when the token meter reports none. */
+  compositionOf?: (agent: Agent) => ContextComposition | undefined
 }
 
 export interface RuntimeDeps {
@@ -94,6 +96,11 @@ export interface RuntimeDeps {
    */
   pressure?: {
     compactionFor: (agent: Agent) => CompactionEngine | undefined
+    /**
+     * The relatedness judge behind the long-gap gate, or undefined to leave the gate off. Optional
+     * by contract: a composition without one never holds a step, rather than failing one.
+     */
+    judge?: () => PressureJudgement | undefined
   }
 }
 
@@ -109,7 +116,7 @@ export class LoomAgentRuntime implements AgentRuntime {
   private readonly coordinator: ContextContinuityCoordinator<LoomSubjectId>
   private readonly config: ContextProjectionConfig
   private readonly retrieval: LoomContextRetrieval | undefined
-  private readonly pressure: ContextPressurePolicy<LoomSubjectId> | undefined
+  private readonly pressure: LoomPressurePolicy | undefined
 
   constructor(private readonly deps: RuntimeDeps) {
     this.host = new LoomContextContinuityHost({
@@ -136,6 +143,8 @@ export class LoomAgentRuntime implements AgentRuntime {
           budgetOf: this.deps.retrieval.budgetOf,
           ownedSessions: () => this.deps.runtimeState.ownedSessions(),
           query: this.deps.retrieval.query,
+          ...(this.deps.retrieval.compositionOf === undefined ? {} : { compositionOf: this.deps.retrieval.compositionOf }),
+          ...(this.deps.pressure === undefined ? {} : { compactionFor: this.deps.pressure.compactionFor }),
         })
     this.pressure = this.deps.retrieval === undefined || this.deps.pressure === undefined
       ? undefined
@@ -144,6 +153,7 @@ export class LoomAgentRuntime implements AgentRuntime {
           budgetOf: this.deps.retrieval.budgetOf,
           measure: agent => this.deps.retrieval?.meter()?.measure(agent.session)?.totalTokens,
           compactionFor: this.deps.pressure.compactionFor,
+          ...(this.deps.pressure.judge === undefined ? {} : { judge: this.deps.pressure.judge }),
           ...(this.deps.log === undefined ? {} : { log: this.deps.log }),
         })
   }
@@ -181,6 +191,9 @@ export class LoomAgentRuntime implements AgentRuntime {
         isRestorableRef: () => Promise.resolve(false),
         recordCheckpoint: () => Promise.reject(new Error('loom: checkpoints require the retrieval stack')),
         timeline: () => Promise.reject(new Error('loom: the context timeline requires the retrieval stack')),
+        // No retrieval stack means no priced compaction scope either; the tool answers
+        // "unavailable in this scope" rather than failing.
+        compactionFor: () => undefined,
       })
       ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
     } else {
@@ -188,7 +201,8 @@ export class LoomAgentRuntime implements AgentRuntime {
       const search = this.retrieval.searchTools()
       ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
       ctx.effect(() => ctx.tools.register(tools.checkpoint), 'context-continuity.checkpoint-tool')
-      ctx.effect(() => ctx.tools.register(tools.timeline), 'context-continuity.timeline-tool')
+      ctx.effect(() => ctx.tools.register(tools.status), 'context-continuity.status-tool')
+      ctx.effect(() => ctx.tools.register(tools.compact), 'context-continuity.compact-tool')
       ctx.effect(() => ctx.tools.register(search.search), 'context-continuity.search-tool')
       ctx.effect(() => ctx.tools.register(search.read), 'context-continuity.read-tool')
     }
@@ -218,7 +232,16 @@ export class LoomAgentRuntime implements AgentRuntime {
       // into this running turn, and the hard limit forces a reduction before the request is
       // forwarded — failing closed rejects the step rather than submitting over the limit.
       if (this.pressure !== undefined) {
-        const pressure = await this.pressure.onPreStep(LOOM_SUBJECT_ID, signal)
+        const pressure = await this.pressure.onPreStep(LOOM_SUBJECT_ID, messages, signal)
+        // The long-gap gate kept the messages this step claimed and steered one rollover
+        // instruction into their place. Arming the hold and keeping those messages is one
+        // coordinator call — the capture is refused while no hold is armed — and the
+        // coordinator owns both exits: the rollover carries the input forward, a turn that
+        // ends with none hands it back.
+        if (pressure.kind === 'hold') {
+          this.coordinator.holdClaimedInput(agent, messages)
+          return { kind: 'reject' as const }
+        }
         if (pressure.kind === 'reject') return { kind: 'reject' as const }
       }
       const decision = await next()

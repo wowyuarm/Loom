@@ -50,6 +50,22 @@ describe('orientation section', () => {
     expect(text).toContain('silence stays a legitimate answer')
   })
 
+  it('names compaction as the first answer to a long context', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(OrientationPlugin)
+    await vi.waitFor(() => { expect(ctx.systemPrompt).toBeDefined() })
+
+    const assembly = await ctx.systemPrompt.assemble()
+    const text = assembly.sections.find(s => s.name === 'loom:orientation')?.text ?? ''
+    // Compaction shortens a window in place and rollover ends a generation: getting the order
+    // backwards spends a whole generation to do what an in-place pass would do, so both halves are
+    // anchored — the first move, and the condition that separates it from a page turn.
+    expect(text).toContain('call context_compact first')
+    expect(text).toContain('a page turn, not a fill-up')
+    expect(text).toContain('never undoes files, processes, or external effects')
+  })
+
   it('lets a deployment override the orientation text', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)

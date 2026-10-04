@@ -6,7 +6,11 @@ import '@deepseek-ai/dsh-agent-default-model'
 // Side-effect import: the `agentPresets` Context augmentation, the roster this plugin composes
 // each agent from.
 import '@deepseek-ai/dsh-agent-preset-registry'
-import { CONTEXT_CONTINUITY_PROJECTION_KEY, StoredSessionReader } from '@wowyuarm/dsh-context-continuity'
+// Side-effect import: the `jev` Context augmentation, read lazily below. `inject` deliberately does
+// not name it — the judgement service is optional, so a deployment without its key runs without a
+// long-gap gate instead of losing the runtime that carries the gate's branch.
+import '@wowyuarm/dsh-jev'
+import { CONTEXT_CONTINUITY_PROJECTION_KEY, StoredSessionReader, type ContextComposition } from '@wowyuarm/dsh-context-continuity'
 import { contextBudgetFrom, type ContextBudget } from '../context-continuity/retrieval.ts'
 import { LoomAgentRuntime, type RetrievalDeps } from './runtime.ts'
 
@@ -74,6 +78,18 @@ function retrievalDeps(ctx: Context): RetrievalDeps {
     meter,
     budgetOf,
     query: ctx.sessionQuery,
+    // The token meter's own fold over this session, reshaped to the status line's field names.
+    // Omitted entirely when the meter has not priced the session — an unpriced work set is never
+    // reported as an empty one.
+    compositionOf: (agent: Agent): ContextComposition | undefined => {
+      const state = ctx.sessionProjections.stateOf(agent.session, 'contextBreakdown')
+      if (state === undefined) return undefined
+      return {
+        systemTokens: state.breakdown.systemTokens,
+        toolsTokens: state.breakdown.toolsTokens,
+        messagesTokens: state.breakdown.messageTokens,
+      }
+    },
   }
 }
 
@@ -86,7 +102,10 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     projectionOf: agent => ctx.sessionProjections.stateOf(agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY),
     mountPreset: async agentCtx => { await ctx.agentPresets.mount(agentCtx, config.agentPreset) },
     retrieval: retrievalDeps(ctx),
-    pressure: { compactionFor: agent => ctx.agentPresets.serviceFor(agent, 'compaction') },
+    pressure: {
+      compactionFor: agent => ctx.agentPresets.serviceFor(agent, 'compaction'),
+      judge: () => ctx.get('jev'),
+    },
     ...(agentOptions === undefined ? {} : { agentOptions }),
   })
   runtime.install(ctx)

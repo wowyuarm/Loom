@@ -7,18 +7,22 @@ import {
   createSearchTools,
   foldContextProjection,
   readContextTimeline,
+  compactibleNow,
   StoredSessionReadError,
   type ContextProjectionConfig,
   type ContextSearchAdapter,
   type ContextSearchPort,
+  type ContextComposition,
   type ContextTimeline,
   type ContextTimelineSource,
   type ContinuityToolAdapter,
   type CheckpointToolRequest,
   type RolloverToolRequest,
   type ContextSearchTools,
+  type ContextCompactionScope,
   type StoredSessionReadResult,
 } from '@wowyuarm/dsh-context-continuity'
+import type { CompactionEngine } from '@deepseek-ai/dsh-compaction'
 import { LOOM_SUBJECT_ID, type LoomSubjectId, type LoomContextContinuityHost } from './host.ts'
 
 // Loom's context-budget bounds, matching DSH's compaction/handoff shape: the handoff budget is
@@ -69,6 +73,10 @@ export interface LoomRetrievalDeps {
   readonly ownedSessions: () => readonly string[]
   /** The session-query capability the search ladder runs on. */
   readonly query: ContextSearchPort
+  /** The compaction engine in one agent's own scope, for `context_compact`. */
+  readonly compactionFor?: (agent: Agent) => CompactionEngine | undefined
+  /** The live session's context breakdown, for `context_status`'s composition line. */
+  readonly compositionOf?: (agent: Agent) => ContextComposition | undefined
 }
 
 /**
@@ -119,7 +127,7 @@ export class LoomContextRetrieval {
     const agent = this.requireAgent()
     const budget = await this.deps.budgetOf(agent)
     const usageTokens = budget?.usageTokens ?? this.deps.meter()?.measure(agent.session)?.totalTokens ?? 0
-    return readContextTimeline({
+    const timeline = await readContextTimeline({
       current: this.currentSource(agent),
       config: this.deps.config,
       readAncestor: id => this.deps.readAncestor(id),
@@ -130,6 +138,43 @@ export class LoomContextRetrieval {
       maxAncestors: MAX_LINEAGE_ANCESTORS,
       ...(limit === undefined ? {} : { limit }),
     })
+    // What a compaction started now could replace is priced by the status read only, so the
+    // anti-forgery verdict below never depends on the compaction scope resolving.
+    return timeline
+  }
+
+  /**
+   * What `context_status` reports: the anchors plus what a compaction started now could replace,
+   * priced by the same selection `context_compact` runs so the status and the action it announces
+   * cannot disagree. Absent when this scope mounts no engine — the status then promises no
+   * capability the subject does not have.
+   */
+  async status(limit?: number): Promise<ContextTimeline> {
+    const agent = this.requireAgent()
+    const timeline = await this.timeline(limit)
+    const scope = this.compactionScope(agent)
+    const priced = scope === undefined ? undefined : compactibleNow(agent.session, scope)
+    // Composition and compactible are independent optional lines: each is dropped when it cannot
+    // be answered, so the status never states a capability the subject does not have.
+    const composition = this.deps.compositionOf?.(agent)
+    return {
+      ...timeline,
+      ...(composition === undefined ? {} : { composition }),
+      ...(priced === undefined ? {} : { compactible: priced }),
+    }
+  }
+
+  /**
+   * The compaction capability `context_compact` acts through: the engine mounted in this agent's
+   * own preset scope plus the meter that prices the range it would keep. Resolving it is host
+   * addressing (a preset service is invisible to `ctx.get('compaction')`); `undefined` means this
+   * composition mounts no engine, which the tool reports rather than rejects.
+   */
+  private compactionScope(agent: Agent): ContextCompactionScope | undefined {
+    const engine = this.deps.compactionFor?.(agent)
+    if (engine === undefined) return undefined
+    const meter = this.deps.meter()
+    return meter === undefined ? { engine } : { engine, meter }
   }
 
   /**
@@ -150,7 +195,8 @@ export class LoomContextRetrieval {
       requestRollover: (_request: RolloverToolRequest, _exec: ToolRunContext) => Promise.resolve({ mode: 'scheduled' }),
       isRestorableRef: (ref: string) => this.isRestorableRef(ref),
       recordCheckpoint: (request: CheckpointToolRequest, exec: ToolRunContext) => this.recordCheckpoint(request, exec),
-      timeline: (request: { readonly limit?: number }) => this.timeline(request.limit),
+      timeline: (request: { readonly limit?: number }) => this.status(request.limit),
+      compactionFor: (agent: Agent) => this.compactionScope(agent),
     }
   }
 
