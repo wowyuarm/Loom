@@ -4,11 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -104,6 +104,21 @@ function promptContains(mock: MockAdapter, needle: string): boolean {
       (message.content ?? []).some(block => block.type === 'text' && block.text.includes(needle)),
     ),
   )
+}
+
+/** The text of one message, concatenated — used to match what steer/followup was handed. */
+function textOf(message: UserMessage): string {
+  return message.content
+    .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+    .map(block => block.text)
+    .join('\n')
+}
+
+/** A one-shot latch: a test resolves it to release work it parked. */
+function latch(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
 }
 
 interface Harness {
@@ -381,6 +396,111 @@ describe('undelivered reply notice', () => {
       // terms; being asked again here would only invite the blind resend that context prevents.
       expect(h.ctx.runtimeState.uncertainDeliveries()).toHaveLength(1)
       expect(h.mock.requests).toHaveLength(2)
+    } finally {
+      await h.dispose()
+    }
+  })
+})
+
+describe('inbound placement', () => {
+  it('steers an inbound into the agent instead of queueing a followup turn', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'hi Alice' }),
+      textResponse('done'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      expect(agent).toBeDefined()
+      const steered = vi.spyOn(agent!, 'steer')
+      const followed = vi.spyOn(agent!, 'followup')
+
+      h.channel.receive(inbound('m1', 'hello'))
+      await vi.waitFor(() => {
+        expect(steered.mock.calls.some(([message]) => textOf(message).includes('hello'))).toBe(true)
+      })
+      await agent?.whenIdle()
+
+      expect(followed).not.toHaveBeenCalled()
+      expect(h.channel.sent).toHaveLength(1)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('defers a later inbound to its own turn once the running turn has already answered', async () => {
+    const release = latch()
+    let holding = false
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'first reply' }),
+      toolCallResponse('s2', 'park', {}),
+      textResponse('turn one done'),
+      toolCallResponse('s3', 'message', { text: 'second reply' }),
+      textResponse('turn two done'),
+    ]))
+    try {
+      // Holds the turn open after its answer went out, so an inbound can arrive mid-turn.
+      h.ctx.tools.register(defineTool({
+        name: 'park',
+        description: 'Test tool that keeps the current turn open until the test releases it.',
+        parameters: {},
+        output: {
+          schema: { type: 'string' },
+          render: (_args, value) => [{ type: 'text', text: value }],
+        },
+        async execute() {
+          holding = true
+          await release.promise
+          return 'parked'
+        },
+      }))
+      const agent = h.ctx.agentRuntime.current()
+      expect(agent).toBeDefined()
+      const steered = vi.spyOn(agent!, 'steer')
+      const followed = vi.spyOn(agent!, 'followup')
+
+      h.channel.receive(inbound('m1', 'first question'))
+      await vi.waitFor(() => { expect(holding).toBe(true) })
+      expect(h.channel.sent).toHaveLength(1)
+
+      h.channel.receive(inbound('m2', 'second question'))
+      await vi.waitFor(() => {
+        expect(followed.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(true)
+      })
+      // The answered turn stays closed: the new message never joins it.
+      expect(steered.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(false)
+
+      release.resolve()
+      await agent?.whenIdle()
+      // It runs as the sole message of its own turn and reaches the person from there.
+      expect(h.channel.sent).toHaveLength(2)
+      expect(h.channel.sent[1]).toMatchObject({ text: 'second reply' })
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('steers again once the answered turn has closed', async () => {
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'message', { text: 'first reply' }),
+      textResponse('turn one done'),
+      toolCallResponse('s2', 'message', { text: 'second reply' }),
+      textResponse('turn two done'),
+    ]))
+    try {
+      const agent = h.ctx.agentRuntime.current()
+      expect(agent).toBeDefined()
+      const steered = vi.spyOn(agent!, 'steer')
+
+      h.channel.receive(inbound('m1', 'first question'))
+      await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
+      await agent?.whenIdle()
+
+      h.channel.receive(inbound('m2', 'second question'))
+      await vi.waitFor(() => {
+        expect(steered.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(true)
+      })
+      await agent?.whenIdle()
+      expect(h.channel.sent).toHaveLength(2)
     } finally {
       await h.dispose()
     }

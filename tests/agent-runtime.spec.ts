@@ -199,6 +199,48 @@ describe('LoomAgentRuntime.executeTransition', () => {
   })
 })
 
+describe('LoomAgentRuntime.deliver', () => {
+  it('submits external text at the requested inbox boundary', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = trackAgents()
+      const runtime = new LoomAgentRuntime({
+        agents: reg.agents,
+        runtimeState,
+        workspace: '/ws',
+        newSessionId: () => SessionId('s0'),
+      })
+      await runtime.boot()
+
+      expect(runtime.deliver('into this turn', 'steer')).toBe(true)
+      expect(runtime.deliver('its own turn', 'followup')).toBe(true)
+
+      const s0 = reg.agent('s0')
+      expect(s0.order).toEqual(['steer', 'followup'])
+      expect(textOf(s0.steered[0]!)).toBe('into this turn')
+      expect(textOf(s0.followed[0]!)).toBe('its own turn')
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('refuses when there is no live agent to receive the text', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = trackAgents()
+      const runtime = new LoomAgentRuntime({
+        agents: reg.agents,
+        runtimeState,
+        workspace: '/ws',
+        newSessionId: () => SessionId('s0'),
+      })
+      expect(runtime.deliver('nobody home', 'steer')).toBe(false)
+    } finally {
+      await dispose()
+    }
+  })
+})
+
 /**
  * The individual runs unrestricted; the stance is stated in agent-runtime code, so it reaches the
  * session on activation (a deployment default only reaches sessions created after it changes).

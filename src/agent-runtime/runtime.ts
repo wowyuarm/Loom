@@ -16,7 +16,7 @@ import {
   type StoredSessionReadResult,
   type TransitionPlan,
 } from '@wowyuarm/dsh-context-continuity'
-import type { AgentRuntime, RuntimeState } from '../contracts/index.ts'
+import type { AgentRuntime, DeliverTarget, RuntimeState } from '../contracts/index.ts'
 import {
   createLoomContextProjectionConfig,
   LOOM_CONTEXT_CODEC,
@@ -152,10 +152,12 @@ export class LoomAgentRuntime implements AgentRuntime {
     return this.handle?.agent
   }
 
-  deliver(text: string): boolean {
+  deliver(text: string, target: DeliverTarget): boolean {
     const agent = this.handle?.agent
     if (agent === undefined) return false
-    agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+    const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+    if (target === 'steer') agent.steer(message)
+    else agent.followup(message)
     return true
   }
 
