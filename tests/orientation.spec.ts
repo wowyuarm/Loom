@@ -32,6 +32,24 @@ describe('orientation section', () => {
     expect(text).toContain('as unknown to them by default')
   })
 
+  it('states when to speak up before work the person cannot see', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(OrientationPlugin)
+    await vi.waitFor(() => { expect(ctx.systemPrompt).toBeDefined() })
+
+    const assembly = await ctx.systemPrompt.assemble()
+    const text = assembly.sections.find(s => s.name === 'loom:orientation')?.text ?? ''
+    // A long trace is invisible to the person on the channel: assistant text reaches nobody, so
+    // the rule names the trigger (work that outlasts a few breaths), the shape of the message (one
+    // plain line about what it is for them), and both anti-reporting boundaries — speak about the
+    // person's concern rather than the harness, and stay silent when there is nothing to decide.
+    expect(text).toContain('only a `message` call does')
+    expect(text).toContain('send one plain line first')
+    expect(text).toContain('never what the harness is doing')
+    expect(text).toContain('silence stays a legitimate answer')
+  })
+
   it('lets a deployment override the orientation text', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
