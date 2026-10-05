@@ -65,11 +65,19 @@
           # the policy is the single pressure entry point, distinct from context_rollover, which
           # the agent calls deliberately to shed a generation.
           #
+          # The row id stays `compaction-basic` because that is the base row this replaces; only
+          # the implementation changes. context-continuity's engine subclasses the stock one and
+          # registers the same `compaction` service, so this is a drop-in — and it is the only way
+          # `context_compact`'s `summary` argument is honoured at all. The stock backend never
+          # reads a subject-authored summary, so under it the model's text is discarded and the
+          # engine silently writes its own from the stock template. Mounting this class is what
+          # makes both the supplied summary and the package's checkpoint template take effect.
+          #
           # These are services, so they need an isolate realm (a preset row publishing into the
-          # root realm is rejected at mount). compaction-basic reads the tool-result pruner
-          # through ctx.get, so the pruner shares this realm. The token meter is NOT here: it
-          # stays host-plane (it owns process-wide projection units), and compaction-basic
-          # resolves that one host instance.
+          # root realm is rejected at mount). The engine reads the tool-result pruner through
+          # ctx.get, so the pruner shares this realm. The token meter is NOT here: it stays
+          # host-plane (it owns process-wide projection units), and the engine resolves that one
+          # host instance.
           - id: compaction
             name: cordis:group
             group: true
@@ -78,7 +86,7 @@
               toolResultPruner: true
             config:
               - id: compaction-basic
-                name: '@deepseek-ai/dsh-compaction-basic'
+                name: '@wowyuarm/dsh-context-continuity/compaction-engine'
                 config:
                   auto: false
 

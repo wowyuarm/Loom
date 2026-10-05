@@ -50,7 +50,7 @@ describe('orientation section', () => {
     expect(text).toContain('silence stays a legitimate answer')
   })
 
-  it('names compaction as the first answer to a long context', async () => {
+  it('frames a long context as a choice about which end to keep', async () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(OrientationPlugin)
@@ -58,12 +58,20 @@ describe('orientation section', () => {
 
     const assembly = await ctx.systemPrompt.assemble()
     const text = assembly.sections.find(s => s.name === 'loom:orientation')?.text ?? ''
-    // Compaction shortens a window in place and rollover ends a generation: getting the order
-    // backwards spends a whole generation to do what an in-place pass would do, so both halves are
-    // anchored — the first move, and the condition that separates it from a page turn.
-    expect(text).toContain('call context_compact first')
+    // The axis is a judgement, not an order: compact keeps the recent end and a checkpoint return
+    // keeps an earlier one, so "call context_compact first" would state a rule where the engine
+    // states a default. Both ends and the retrieval escape hatch are anchored, plus the two
+    // properties that make the decision cheap — nothing is destroyed, and the person is not
+    // rewound.
+    expect(text).toContain('which end of it is still worth keeping')
+    expect(text).toContain('What you just did is the valuable part')
+    expect(text).toContain('What came before is the valuable part')
     expect(text).toContain('a page turn, not a fill-up')
+    expect(text).toContain('retrieve rather than hold')
+    expect(text).toContain('does not unsend the answer')
     expect(text).toContain('never undoes files, processes, or external effects')
+    // The order rule is gone: an in-place pass is the ordinary answer, not a mandatory first move.
+    expect(text).not.toContain('call context_compact first')
   })
 
   it('lets a deployment override the orientation text', async () => {

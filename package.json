@@ -106,7 +106,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
     "@wowyuarm/dsh-channel-gateway": "^0.1.4",
-    "@wowyuarm/dsh-context-continuity": "0.2.1",
+    "@wowyuarm/dsh-context-continuity": "^0.3.0",
     "@wowyuarm/dsh-jev": "0.1.1",
     "js-yaml": "^4.3.2",
     "typescript": "^5.8.3",

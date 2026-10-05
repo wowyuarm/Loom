@@ -44,6 +44,36 @@ export const LOOM_CONTEXT_CODEC = new ContextMessageCodec({
     + 'processes, or external effects — verify external state before relying on it.',
 })
 
+/**
+ * Loom's vocabulary for the engine's continuity tools. The engine owns every mechanic and every
+ * safety rule; this fills only the four dimensions that are Loom's own — what a fresh generation
+ * already receives, what a handoff must not omit, why the anchor list can be empty, and the fact
+ * that nothing here judges a return.
+ *
+ * `jobsNote` is empty on purpose, and it is a correction rather than a preference: Loom mounts the
+ * background-job registry, and disposing the agent runs the registry's owner cleanup, which cancels
+ * the jobs that agent owned. The engine's default sentence promises a *refusal* no Loom code
+ * performs, so keeping it would state a guarantee this host does not honour. The cost of a rollover
+ * with work in flight is real and belongs in the tool's own discipline, not in a promise of refusal.
+ */
+export const LOOM_CONTINUITY_TOOL_TEXT = {
+  subjectNoun: 'Individual',
+  carriedContext:
+    'You remain the same Individual across a rollover: your identity, memory and its notes, '
+    + 'threads, and attention are read into every turn from your own workspace files, and the '
+    + 'record layer keeps everything you have said and done searchable — do not restate any of it.',
+  rolloverChecklist:
+    'the objective and the atomic action in flight; facts and evidence not already recorded '
+    + 'elsewhere; which items you verified and which you only trusted; inferences and unresolved '
+    + 'conflicts; current external side effects and their verification state (files, git, jobs, '
+    + 'remote calls); what you have already told the person, since a return does not unsend it; '
+    + 'one explicit next step',
+  timelineGuidance:
+    'Loom contributes no automatic anchors, so every restorable row here is a checkpoint you '
+    + 'recorded yourself: an empty list is the absence of your own checkpoints, not a failure.',
+  jobsNote: '',
+} as const
+
 /** The single-agent lifecycle the host delegates to; supplied by the assembly layer. */
 export interface LoomContinuityOptions {
   /** The live Agent, or undefined when it is not currently activated. */

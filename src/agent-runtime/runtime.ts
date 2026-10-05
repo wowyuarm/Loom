@@ -20,6 +20,7 @@ import type { AgentRuntime, DeliverTarget, RuntimeState } from '../contracts/ind
 import {
   createLoomContextProjectionConfig,
   LOOM_CONTEXT_CODEC,
+  LOOM_CONTINUITY_TOOL_TEXT,
   LOOM_SUBJECT_ID,
   LoomContextContinuityHost,
   type LoomSubjectId,
@@ -197,7 +198,7 @@ export class LoomAgentRuntime implements AgentRuntime {
       })
       ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
     } else {
-      const tools = createContinuityTools(this.retrieval.toolAdapter())
+      const tools = createContinuityTools(this.retrieval.toolAdapter(), LOOM_CONTINUITY_TOOL_TEXT)
       const search = this.retrieval.searchTools()
       ctx.effect(() => ctx.tools.register(tools.rollover), 'context-continuity.rollover-tool')
       ctx.effect(() => ctx.tools.register(tools.checkpoint), 'context-continuity.checkpoint-tool')

@@ -151,11 +151,22 @@ describe('loom bundle manifest', () => {
 
     for (const row of leaves) {
       expect(row.id).toBeDefined()
-      expect(row.name).toMatch(/^@deepseek-ai\//)
+      // Every agent-plane row either mounts a DSH package, or replaces a DSH row with our own
+      // implementation of the same service. The second case is the load-bearing one: it is only
+      // legitimate because the row id is the base row's, which the assertion below proves.
+      expect(row.name).toMatch(/^(@deepseek-ai|@wowyuarm)\//)
       // A preset row whose base counterpart stayed enabled would sit in the global layer too,
       // which every agent inherits — the tool would reach the model without this file naming it.
       expect(byId.get(row.id as string)?.disabled, `base row "${row.id}" is still enabled`).toBe(true)
     }
+
+    // The compaction row must mount context-continuity's engine, not the stock backend. Under the
+    // stock backend `context_compact`'s `summary` argument is silently discarded — the base engine
+    // never reads a subject-authored summary — so reverting this one line would turn a documented
+    // tool argument into a no-op with no error anywhere. Pinned here because it is invisible in
+    // every other test.
+    expect(leaves.find(row => row.id === 'compaction-basic')?.name)
+      .toBe('@wowyuarm/dsh-context-continuity/compaction-engine')
 
     // Base's task-execution scaffolding is gone rather than merely undeclared: these rows
     // inject services and prompt sections of their own, which no preset row can suppress.
