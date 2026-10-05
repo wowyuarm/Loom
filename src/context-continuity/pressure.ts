@@ -33,6 +33,12 @@ export interface LoomPressureDeps {
    * per call because the judge is optional: a deployment without it simply never holds a step.
    */
   readonly judge?: () => PressureJudgement | undefined
+  /**
+   * This agent's own live background jobs, as one line each. Read from the job registry, which is
+   * host-plane; undefined when the composition mounts no registry, so the notice omits the count
+   * rather than claiming there is none.
+   */
+  readonly jobsFor?: (agent: Agent) => readonly string[]
   /** Diagnostics sink. */
   readonly log?: (message: string) => void
 }
@@ -89,8 +95,12 @@ export class LoomPressureHost implements PressurePolicyHost<LoomSubjectId> {
   }
 
   inHandFor(): { inHand: readonly string[]; jobs: readonly string[] } {
-    // v1 carries no owned jobs or claims; the notice states usage and the handoff default only.
-    return { inHand: [], jobs: [] }
+    // No claims: Loom runs one Individual, so there is no peer-owned work to name. Jobs are real
+    // and the registry is mounted, so they are read rather than assumed away — a rollover disposes
+    // the agent and cancels the jobs it owned, which is exactly what this line warns about.
+    const agent = this.requireAgent()
+    const jobs = agent === undefined ? undefined : this.deps.jobsFor?.(agent)
+    return { inHand: [], jobs: jobs ?? [] }
   }
 
   /**

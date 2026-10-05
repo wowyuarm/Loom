@@ -11,7 +11,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { TransitionPlan } from '@wowyuarm/dsh-context-continuity'
+import type { JobView } from '@deepseek-ai/dsh-jobs'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
+import { liveJobLabels } from '../src/agent-runtime/index.ts'
 import { bootAgent } from '../src/agent-runtime/boot.ts'
 import { LoomAgentRuntime } from '../src/agent-runtime/runtime.ts'
 import type { RuntimeState } from '../src/contracts/index.ts'
@@ -70,6 +72,36 @@ function fakeAgents(seededModes: string[] = []) {
     } as never,
   }
 }
+
+describe('liveJobLabels', () => {
+  const job = (overrides: Partial<JobView>): JobView => ({
+    id: 'bash-1' as JobView['id'],
+    kind: 'bash',
+    label: 'bun test',
+    status: 'running',
+    startedAt: 0,
+    output: { total: 0, earliest: 0 },
+    ...overrides,
+  } as JobView)
+
+  it('names only the jobs a rollover would take down', () => {
+    const owner = SessionId('loom-s0')
+    // Live and owned: the states that are actually at stake when the agent is disposed.
+    expect(liveJobLabels([
+      job({ label: 'running', owner, status: 'running' }),
+      job({ label: 'stopping', owner, status: 'stopping' }),
+    ])).toEqual(['running', 'stopping'])
+
+    // Settled work is already collected, and an unowned job outlives the swap — the registry
+    // cancels only what the disposed owner owned, so naming either would overstate the cost.
+    expect(liveJobLabels([
+      job({ label: 'completed', owner, status: 'completed' }),
+      job({ label: 'killed', owner, status: 'killed' }),
+      job({ label: 'failed', owner, status: 'failed' }),
+      job({ label: 'unowned', status: 'running' }),
+    ])).toEqual([])
+  })
+})
 
 describe('bootAgent', () => {
   it('creates a first session and records the pointer when none exists', async () => {

@@ -10,6 +10,10 @@ import '@deepseek-ai/dsh-agent-preset-registry'
 // not name it — the judgement service is optional, so a deployment without its key runs without a
 // long-gap gate instead of losing the runtime that carries the gate's branch.
 import '@wowyuarm/dsh-jev'
+// Side-effect import: the `jobs` Context augmentation, read lazily below. Also optional by the same
+// rule — a composition with no job registry omits the notice's jobs count instead of failing.
+import '@deepseek-ai/dsh-jobs'
+import type { JobView } from '@deepseek-ai/dsh-jobs'
 import { CONTEXT_CONTINUITY_PROJECTION_KEY, StoredSessionReader, type ContextComposition } from '@wowyuarm/dsh-context-continuity'
 import { contextBudgetFrom, type ContextBudget } from '../context-continuity/retrieval.ts'
 import { LoomAgentRuntime, type RetrievalDeps } from './runtime.ts'
@@ -93,6 +97,18 @@ function retrievalDeps(ctx: Context): RetrievalDeps {
   }
 }
 
+/**
+ * The labels of the jobs a rollover would actually take down: this agent's own, still live. The
+ * registry also lists unowned jobs, which a switch does not cancel, and settled ones, which are
+ * already collected — naming either would overstate what is at stake. The engine renders the count
+ * rather than the labels, so this is a list and not a summary sentence.
+ */
+export function liveJobLabels(jobs: readonly JobView[]): readonly string[] {
+  return jobs
+    .filter(job => job.owner !== undefined && (job.status === 'running' || job.status === 'stopping'))
+    .map(job => job.label)
+}
+
 export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<void> {
   const agentOptions = resolveAgentOptions(ctx, config)
   const runtime = new LoomAgentRuntime({
@@ -105,6 +121,10 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     pressure: {
       compactionFor: agent => ctx.agentPresets.serviceFor(agent, 'compaction'),
       judge: () => ctx.get('jev'),
+      jobsFor: agent => {
+        const jobs = ctx.get('jobs')
+        return jobs === undefined ? [] : liveJobLabels(jobs.list(agent.session.id))
+      },
     },
     ...(agentOptions === undefined ? {} : { agentOptions }),
   })

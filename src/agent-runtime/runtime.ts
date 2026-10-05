@@ -102,6 +102,11 @@ export interface RuntimeDeps {
      * by contract: a composition without one never holds a step, rather than failing one.
      */
     judge?: () => PressureJudgement | undefined
+    /**
+     * The agent's own live background jobs, for the notice's jobs line. Optional by contract: a
+     * composition without a job registry omits the count rather than claiming there is none.
+     */
+    jobsFor?: (agent: Agent) => readonly string[]
   }
 }
 
@@ -155,6 +160,7 @@ export class LoomAgentRuntime implements AgentRuntime {
           measure: agent => this.deps.retrieval?.meter()?.measure(agent.session)?.totalTokens,
           compactionFor: this.deps.pressure.compactionFor,
           ...(this.deps.pressure.judge === undefined ? {} : { judge: this.deps.pressure.judge }),
+          ...(this.deps.pressure.jobsFor === undefined ? {} : { jobsFor: this.deps.pressure.jobsFor }),
           ...(this.deps.log === undefined ? {} : { log: this.deps.log }),
         })
   }

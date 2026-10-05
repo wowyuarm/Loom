@@ -135,6 +135,22 @@ describe('LoomPressureHost', () => {
     expect(dormant.judgeFor(LOOM_SUBJECT_ID)).toBeUndefined()
   })
 
+  it('names the agent’s own live jobs, and claims none when no registry is mounted', () => {
+    const agent = fakeAgent()
+    const jobsFor = vi.fn(() => ['bun test (running)'])
+    const wired = new LoomPressureHost(depsWith({ agentForSubject: () => agent, jobsFor }))
+    expect(wired.inHandFor()).toEqual({ inHand: [], jobs: ['bun test (running)'] })
+    expect(jobsFor).toHaveBeenCalledWith(agent)
+
+    // A composition with no registry omits the count rather than claiming there is none — the
+    // notice renders `none` for an empty list, which would be a false statement about the agent.
+    expect(new LoomPressureHost(depsWith({ agentForSubject: () => agent })).inHandFor())
+      .toEqual({ inHand: [], jobs: [] })
+    // No live agent means nothing to read jobs for; the notice is not being built either.
+    expect(new LoomPressureHost(depsWith({ jobsFor })).inHandFor())
+      .toEqual({ inHand: [], jobs: [] })
+  })
+
   it('scopes the admitted input to exactly one pre-step', async () => {
     const arriving = userInput('the arriving input')
     const earlier = userInput('an earlier input')
