@@ -137,14 +137,6 @@ declare module '@deepseek-ai/cordis' {
 }
 
 /**
- * Which inbox boundary one delivery targets — the two boundaries DSH's `send` names
- * (`next-step` / `next-turn`), under the names of the agent methods that reach them. `steer`
- * enters the running turn at its nearest step (an idle agent starts one); `followup` waits as
- * the sole ordinary message of its own turn.
- */
-export type DeliverTarget = 'steer' | 'followup'
-
-/**
  * The one live agent of a deployment. Boot resumes it from the runtime-state pointer or creates
  * a first one; consumers (channels, continuity) reach the current agent through this.
  */
@@ -152,13 +144,18 @@ export interface AgentRuntime {
   /** The live agent, or undefined before boot completes or after disposal. */
   current(): Agent | undefined
   /**
-   * Submit external text to the live agent at the requested inbox boundary ({@link DeliverTarget}).
-   * Returns false when there is no live agent to receive it (before boot, or after disposal).
+   * Submit external text to the live agent as steering — the next step boundary. An idle agent
+   * opens a turn with it; a running agent consumes it at its next step, so a message arriving
+   * mid-tool-call waits for that call to finish rather than interrupting it. Returns false when
+   * there is no live agent to receive it (before boot, or after disposal).
+   *
+   * There is deliberately no target parameter. External input is always steering: a turn ends
+   * when the model owes no further response, never because it happened to send a message, so
+   * nothing here can decide a turn is closed and hold the person's next words for a later turn.
    * Owning input delivery here keeps the single agent handle's whole lifecycle — boot, rollover
-   * carry, external input — in one place. The caller decides the boundary: it is the caller that
-   * knows whether the running turn can still take the message.
+   * carry, external input — in one place.
    */
-  deliver(text: string, target: DeliverTarget): boolean
+  deliver(text: string): boolean
 }
 
 export type { SessionId }

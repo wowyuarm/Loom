@@ -427,18 +427,16 @@ describe('inbound placement', () => {
     }
   })
 
-  it('defers a later inbound to its own turn once the running turn has already answered', async () => {
+  it('joins the running turn even after it has answered, because a send is a tool call and not a turn end', async () => {
     const release = latch()
     let holding = false
     const h = await bootWithChannels(new MockAdapter([
       toolCallResponse('s1', 'message', { text: 'first reply' }),
       toolCallResponse('s2', 'park', {}),
       textResponse('turn one done'),
-      toolCallResponse('s3', 'message', { text: 'second reply' }),
-      textResponse('turn two done'),
+      textResponse('second turn done'),
     ]))
     try {
-      // Holds the turn open after its answer went out, so an inbound can arrive mid-turn.
       h.ctx.tools.register(defineTool({
         name: 'park',
         description: 'Test tool that keeps the current turn open until the test releases it.',
@@ -460,47 +458,84 @@ describe('inbound placement', () => {
 
       h.channel.receive(inbound('m1', 'first question'))
       await vi.waitFor(() => { expect(holding).toBe(true) })
+      // The reply already went out on the wire; the turn is still open.
       expect(h.channel.sent).toHaveLength(1)
-
-      h.channel.receive(inbound('m2', 'second question'))
-      await vi.waitFor(() => {
-        expect(followed.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(true)
-      })
-      // The answered turn stays closed: the new message never joins it.
-      expect(steered.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(false)
-
-      release.resolve()
-      await agent?.whenIdle()
-      // It runs as the sole message of its own turn and reaches the person from there.
-      expect(h.channel.sent).toHaveLength(2)
-      expect(h.channel.sent[1]).toMatchObject({ text: 'second reply' })
-    } finally {
-      await h.dispose()
-    }
-  })
-
-  it('steers again once the answered turn has closed', async () => {
-    const h = await bootWithChannels(new MockAdapter([
-      toolCallResponse('s1', 'message', { text: 'first reply' }),
-      textResponse('turn one done'),
-      toolCallResponse('s2', 'message', { text: 'second reply' }),
-      textResponse('turn two done'),
-    ]))
-    try {
-      const agent = h.ctx.agentRuntime.current()
-      expect(agent).toBeDefined()
-      const steered = vi.spyOn(agent!, 'steer')
-
-      h.channel.receive(inbound('m1', 'first question'))
-      await vi.waitFor(() => { expect(h.channel.sent).toHaveLength(1) })
-      await agent?.whenIdle()
 
       h.channel.receive(inbound('m2', 'second question'))
       await vi.waitFor(() => {
         expect(steered.mock.calls.some(([message]) => textOf(message).includes('second question'))).toBe(true)
       })
+      // Answering never closes the turn, so the next message steers rather than
+      // waiting for a turn of its own.
+      expect(followed).not.toHaveBeenCalled()
+
+      release.resolve()
       await agent?.whenIdle()
-      expect(h.channel.sent).toHaveLength(2)
+      expect(h.channel.sent).toHaveLength(1)
+    } finally {
+      await h.dispose()
+    }
+  })
+
+  it('keeps a burst of messages atomic and delivers them in one step together', async () => {
+    const release = latch()
+    let holding = false
+    const h = await bootWithChannels(new MockAdapter([
+      toolCallResponse('s1', 'park', {}),
+      textResponse('done'),
+    ]))
+    try {
+      h.ctx.tools.register(defineTool({
+        name: 'park',
+        description: 'Test tool that keeps the current turn open until the test releases it.',
+        parameters: {},
+        output: {
+          schema: { type: 'string' },
+          render: (_args, value) => [{ type: 'text', text: value }],
+        },
+        async execute() {
+          holding = true
+          await release.promise
+          return 'parked'
+        },
+      }))
+      const agent = h.ctx.agentRuntime.current()
+      expect(agent).toBeDefined()
+      const steered: string[] = []
+      const realSteer = agent!.steer.bind(agent!)
+      vi.spyOn(agent!, 'steer').mockImplementation((message: UserMessage) => {
+        steered.push(textOf(message))
+        realSteer(message)
+      })
+
+      h.channel.receive(inbound('m0', 'opener'))
+      await vi.waitFor(() => { expect(holding).toBe(true) }, { timeout: 10000 })
+
+      // Three messages land while the tool call is still running.
+      h.channel.receive(inbound('m1', 'alpha'))
+      h.channel.receive(inbound('m2', 'beta'))
+      h.channel.receive(inbound('m3', 'gamma'))
+      await vi.waitFor(() => { expect(steered).toHaveLength(4) }, { timeout: 10000 })
+
+      release.resolve()
+      await agent?.whenIdle()
+
+      // Each message stays its own user message — three steers, never one merged blob.
+      // A later notice steer is not inbound text; only the person's four are asserted here.
+      const inboundSteers = steered.filter(text => /opener|alpha|beta|gamma/.test(text))
+      expect(inboundSteers).toHaveLength(4)
+      expect(inboundSteers[1]).toContain('alpha')
+      expect(inboundSteers[1]).not.toContain('beta')
+      expect(inboundSteers[2]).toContain('beta')
+      expect(inboundSteers[3]).toContain('gamma')
+      // ...and the model sees them as the separate inputs they are, in arrival order.
+      const batch = h.mock.requests.at(-1)?.messages
+        .filter(m => m.source?.kind === 'user')
+        .map(m => (m.content ?? []).filter((b): b is { type: 'text'; text: string } => b.type === 'text').map(b => b.text).join(' '))
+      expect(batch).toHaveLength(4)
+      expect(batch?.[1]).toContain('alpha')
+      expect(batch?.[2]).toContain('beta')
+      expect(batch?.[3]).toContain('gamma')
     } finally {
       await h.dispose()
     }

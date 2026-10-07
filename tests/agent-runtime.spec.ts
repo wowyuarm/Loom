@@ -232,7 +232,7 @@ describe('LoomAgentRuntime.executeTransition', () => {
 })
 
 describe('LoomAgentRuntime.deliver', () => {
-  it('submits external text at the requested inbox boundary', async () => {
+  it('submits external text as steering, never as its own turn', async () => {
     const { runtimeState, dispose } = await realRuntimeState()
     try {
       const reg = trackAgents()
@@ -244,13 +244,14 @@ describe('LoomAgentRuntime.deliver', () => {
       })
       await runtime.boot()
 
-      expect(runtime.deliver('into this turn', 'steer')).toBe(true)
-      expect(runtime.deliver('its own turn', 'followup')).toBe(true)
+      expect(runtime.deliver('into this turn')).toBe(true)
 
+      // Steering is the only boundary external input may take: a `message` call is a tool
+      // call, not the end of a turn, so nothing here may hold a person's words for later.
       const s0 = reg.agent('s0')
-      expect(s0.order).toEqual(['steer', 'followup'])
+      expect(s0.order).toEqual(['steer'])
       expect(textOf(s0.steered[0]!)).toBe('into this turn')
-      expect(textOf(s0.followed[0]!)).toBe('its own turn')
+      expect(s0.followed).toEqual([])
     } finally {
       await dispose()
     }
@@ -266,7 +267,7 @@ describe('LoomAgentRuntime.deliver', () => {
         workspace: '/ws',
         newSessionId: () => SessionId('s0'),
       })
-      expect(runtime.deliver('nobody home', 'steer')).toBe(false)
+      expect(runtime.deliver('nobody home')).toBe(false)
     } finally {
       await dispose()
     }

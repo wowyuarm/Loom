@@ -9,7 +9,7 @@ import '@deepseek-ai/dsh-tools'
 import '@deepseek-ai/dsh-system-prompt'
 import type { ChannelAttachment, ChannelCapabilities, InboundMessage, ResolvedAttachment } from '@wowyuarm/dsh-channel-gateway'
 import '@wowyuarm/dsh-channel-gateway'
-import type { AgentRuntime, Clock, DeliveryEffect, DeliverTarget, RuntimeState } from '../contracts/index.ts'
+import type { AgentRuntime, Clock, DeliveryEffect, RuntimeState } from '../contracts/index.ts'
 
 export const name = 'channels'
 export const inject = ['channels', 'runtimeState', 'agentRuntime', 'clock', 'tools', 'systemPrompt']
@@ -113,40 +113,6 @@ class UnansweredReplyWatch {
 }
 
 /**
- * Decide where the next inbound enters the agent: steer it into the running turn, or hold it for
- * its own turn.
- *
- * A turn that has already put an answer on the wire must not receive more input — the reply is
- * out, so a message arriving afterwards waits instead of joining the turn that answered. That is
- * the reply gate the previous implementation kept at its steering seam. Before any answer, and
- * between turns, steering is the default: the person's message reaches the running turn at its
- * next step rather than waiting the turn out. The two facts — which turn is open, and which turn
- * attempted an answer — come from the session log, the same source the undelivered-reply watch
- * reads.
- */
-class InboundPlacement {
-  private openTurn: number | undefined
-  private answeredTurn: number | undefined
-
-  turnStarted(turn: number): void {
-    this.openTurn = turn
-  }
-
-  turnEnded(): void {
-    this.openTurn = undefined
-  }
-
-  answerAttempted(turn: number): void {
-    this.answeredTurn = turn
-  }
-
-  /** `'followup'` once the open turn has answered, `'steer'` otherwise. */
-  target(): DeliverTarget {
-    return this.openTurn !== undefined && this.answeredTurn === this.openTurn ? 'followup' : 'steer'
-  }
-}
-
-/**
  * Ask once, at a turn's stop boundary, whether a reply the model wrote was meant to be sent.
  *
  * `agent/turn-stopping` is DSH's own boundary — it fires when the model owes no response and is
@@ -232,22 +198,24 @@ function registerInboundConsumer(
   const clock: Clock = ctx.clock
   const logger = ctx.logger('channels')
 
-  // The placement gate reads the same session log the agent writes: which turn is open, and
-  // whether it has already put an answer on the wire.
-  const placement = new InboundPlacement()
-  ctx.on('session/event', (session, event) => {
-    if (session.id !== agentRuntime.current()?.session.id) return
-    if (event.type === 'turn/start') placement.turnStarted(event.data.turn)
-    else if (event.type === 'turn/end') placement.turnEnded()
-    else if (event.type === 'tool/call' && event.data.name === SEND_MESSAGE_TOOL) placement.answerAttempted(event.data.turn)
-  })
-
   ctx.on('channel/inbound', (message: InboundMessage) => {
     void acceptInbound(message).catch((error: unknown) => {
       logger.error(`inbound accept failed for ${message.channel}:${message.providerMessageId}: ${String(error)}`)
     })
   })
 
+  /**
+   * Deliver one accepted inbound to the agent.
+   *
+   * Every inbound steers. Steering is DSH's own "nearest step boundary" boundary: an idle agent
+   * opens a turn with it, and a running agent consumes it at its next step — so a message arriving
+   * mid-tool-call waits for that call to finish instead of interrupting it, and one arriving
+   * between turns starts the next turn. `message` is a tool call like any other and therefore
+   * never marks a turn as closed; a turn ends when the model stops owing a response, not when it
+   * happens to send one. Each message stays one atomic user message: when several land inside the
+   * same step, the loop claims them together and the model sees them as the separate inputs they
+   * are.
+   */
   async function acceptInbound(message: InboundMessage): Promise<void> {
     if (runtimeState.isAccepted(message.channel, message.providerMessageId)) return
     await runtimeState.recordAccepted({
@@ -261,7 +229,7 @@ function registerInboundConsumer(
     })
     focus.set(message.channel, message.place.route)
     const text = await framedText(ctx, config, message, logger)
-    if (!agentRuntime.deliver(text, placement.target())) {
+    if (!agentRuntime.deliver(text)) {
       logger.warn(`no live agent to receive ${message.channel}:${message.providerMessageId}; message recorded, not delivered`)
       return
     }
