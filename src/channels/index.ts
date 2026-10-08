@@ -7,8 +7,8 @@ import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import '@deepseek-ai/dsh-tools'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
 import '@deepseek-ai/dsh-system-prompt'
-import type { ChannelAttachment, ChannelCapabilities, InboundMessage, ResolvedAttachment } from '@wowyuarm/dsh-channel-gateway'
-import '@wowyuarm/dsh-channel-gateway'
+import type { ChannelAttachment, ChannelCapabilities, InboundMessage, ResolvedAttachment } from '@contexera/dsh-channel-gateway'
+import '@contexera/dsh-channel-gateway'
 import type { AgentRuntime, Clock, DeliveryEffect, RuntimeState } from '../contracts/index.ts'
 
 export const name = 'channels'

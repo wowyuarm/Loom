@@ -66,8 +66,8 @@ describe('loom bundle manifest', () => {
     expect(byId.get('agent-runtime')?.name).toBe('loom/agent-runtime')
     expect(byId.get('storage-sqlite')?.name).toBe('@deepseek-ai/dsh-storage-sqlite')
     expect(byId.get('channels')?.name).toBe('loom/channels')
-    expect(byId.get('channel-gateway')?.name).toBe('@wowyuarm/dsh-channel-gateway')
-    expect(byId.get('channel-telegram')?.name).toBe('@wowyuarm/dsh-channel-gateway/telegram')
+    expect(byId.get('channel-gateway')?.name).toBe('@contexera/dsh-channel-gateway')
+    expect(byId.get('channel-telegram')?.name).toBe('@contexera/dsh-channel-gateway/telegram')
     expect(byId.get('after-interaction')?.name).toBe('loom/after-interaction')
     expect(byId.get('jev')?.name).toBe('@wowyuarm/dsh-jev')
 

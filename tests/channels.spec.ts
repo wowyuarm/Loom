@@ -17,7 +17,7 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
-import * as ChannelGatewayPlugin from '@wowyuarm/dsh-channel-gateway'
+import * as ChannelGatewayPlugin from '@contexera/dsh-channel-gateway'
 import type {
   Channel,
   ChannelAttachment,
@@ -26,7 +26,7 @@ import type {
   InboundMessage,
   OutboundMessage,
   ResolvedAttachment,
-} from '@wowyuarm/dsh-channel-gateway'
+} from '@contexera/dsh-channel-gateway'
 import * as ClockPlugin from '../src/clock/index.ts'
 import * as RuntimeStatePlugin from '../src/runtime-state/index.ts'
 import * as ResidentContextPlugin from '../src/resident-context/index.ts'

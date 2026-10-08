@@ -73,6 +73,7 @@
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
+    "@contexera/dsh-channel-gateway": "0.1.6",
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/cordis-plugin-include": "1.0.9",
     "@deepseek-ai/cordis-plugin-loader": "1.0.5",
@@ -106,7 +107,6 @@
     "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^24.0.0",
-    "@wowyuarm/dsh-channel-gateway": "^0.1.4",
     "@wowyuarm/dsh-context-continuity": "^0.3.0",
     "@wowyuarm/dsh-jev": "0.1.1",
     "js-yaml": "^4.3.2",

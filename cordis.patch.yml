@@ -201,14 +201,14 @@
     # e.g. `telegram:123456789`. Left empty here on purpose: unauthenticated access is not a
     # default.
     - id: channel-gateway
-      name: '@wowyuarm/dsh-channel-gateway'
+      name: '@contexera/dsh-channel-gateway'
       config:
         allow: []
 
     # Telegram over long polling; the bot token comes from DSH_TELEGRAM_TOKEN. Without a token
     # the channel simply does not register (the adapter logs and returns).
     - id: channel-telegram
-      name: '@wowyuarm/dsh-channel-gateway/telegram'
+      name: '@contexera/dsh-channel-gateway/telegram'
 
     # Loom's consumer: dedup inbound against the durable ledger, land attachments under the
     # agent's `workspace/media/<channel>/`, deliver each message to the agent as a turn, and
