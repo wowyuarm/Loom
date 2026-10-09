@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import { ManualClock } from '../src/clock/index.ts'
+import { applyBudget } from '../src/resident-context/budget.ts'
 import { registerResidentContext, defaultCaps } from '../src/resident-context/projection.ts'
 import { ensureWorkspaceScaffold } from '../src/resident-context/scaffold.ts'
+import { lineModifiedTimes } from '../src/workspace-history/index.ts'
 
 async function tmpWorkspace(): Promise<string> {
   return mkdtemp(join(tmpdir(), 'loom-resident-context-'))
@@ -16,6 +20,38 @@ async function writeResidentFile(workspace: string, rel: string, text: string): 
   const path = join(workspace, rel)
   await mkdir(join(path, '..'), { recursive: true })
   await writeFile(path, text, 'utf8')
+}
+
+const DAY_ONE = '2026-09-25T10:00:00+08:00'
+const DAY_THIRTEEN = '2026-10-08T10:00:00+08:00'
+const DAY_TWENTY_TWO = '2026-10-22T10:00:00+08:00'
+
+/** A commit in the workspace repository with pinned dates, so entry ages are exact. */
+function commitAt(workspace: string, isoDate: string, message: string): void {
+  const env = { ...process.env, GIT_AUTHOR_DATE: isoDate, GIT_COMMITTER_DATE: isoDate }
+  const identity = ['-c', 'user.name=Test', '-c', 'user.email=test@localhost', '-C', workspace]
+  execFileSync('git', [...identity, 'add', '-A'], { encoding: 'utf8', env })
+  execFileSync('git', [...identity, 'commit', '-q', '-m', message], { encoding: 'utf8', env })
+}
+
+/** Compose the projection over a workspace whose history is the real one on disk. */
+async function assemble(
+  workspace: string,
+  now: number,
+  caps = defaultCaps,
+  history = true,
+): Promise<{ contexts: Map<string, string>, names: string[] }> {
+  const ctx = new Context()
+  await ctx.plugin(SystemPrompt)
+  ctx.provide('clock', new ManualClock(now))
+  // `history: false` is the deployment that never mounted workspace-history at all.
+  if (history) {
+    ctx.provide('workspaceHistory', { lineModifiedTimes: (relPath: string) => lineModifiedTimes(workspace, relPath) })
+  }
+  registerResidentContext(ctx, workspace, caps)
+  const assembly = await ctx.systemPrompt.assemble()
+  const ours = assembly.contexts.filter(c => ['memory-core', 'memory-index', 'threads-index', 'attention'].includes(c.name))
+  return { contexts: new Map(ours.map(c => [c.name, c.text])), names: ours.map(c => c.name) }
 }
 
 describe('resident-context projection', () => {
@@ -121,6 +157,87 @@ describe('resident-context projection', () => {
       const assembly = await ctx.systemPrompt.assemble()
       const identity = assembly.sections.find(s => s.name === 'loom:identity')
       expect(identity?.text).toContain('over budget')
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('tags each carried entry with its age, derived from the workspace history', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      await writeResidentFile(ws, 'attention/attention.md', '# 当前\n\n- 第一条\n\n- 第二条\n')
+      await writeResidentFile(ws, 'threads/index.md', '- `alpha/` — one line.\n')
+      await writeResidentFile(ws, 'memory/memory.md', 'Settled.\n\n## Notes\n- a → memory/notes/a.md\n')
+      execFileSync('git', ['init', '-q', ws], { encoding: 'utf8' })
+      commitAt(ws, DAY_ONE, 'day one')
+      // A whole-file rewrite that touches only the second entry: the first must keep its age.
+      await writeResidentFile(ws, 'attention/attention.md', '# 当前\n\n- 第一条\n\n- 第二条 改过\n')
+      commitAt(ws, DAY_THIRTEEN, 'day thirteen')
+
+      const { contexts, names } = await assemble(ws, Date.parse(DAY_TWENTY_TWO))
+      // Same projection as before: no new provider, no new order, nothing else changed.
+      expect(names).toEqual(['memory-core', 'memory-index', 'threads-index', 'attention'])
+      expect(contexts.get('attention')).toBe('# 当前\n\n- 第一条 (27 days untouched)\n\n- 第二条 改过 (14 days untouched)\n')
+      expect(contexts.get('threads-index')).toBe('- `alpha/` — one line. (27 days untouched)\n')
+      // The heading is the file's structure, and memory is not an aged material at all.
+      expect(contexts.get('memory-core')).not.toContain('untouched')
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('ages neighbours line by line when the agent leaves no blank line between them', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      // The agent's own attention held two entries like this on the day this was built: adjacent
+      // lines, no separator, each an entry of its own. Reading them as one block would silently
+      // drop the first entry's age.
+      await writeResidentFile(ws, 'attention/attention.md', '- first\n- second\n')
+      execFileSync('git', ['init', '-q', ws], { encoding: 'utf8' })
+      commitAt(ws, DAY_ONE, 'day one')
+      await writeResidentFile(ws, 'attention/attention.md', '- first\n- second 改过\n')
+      commitAt(ws, DAY_THIRTEEN, 'day thirteen')
+
+      const { contexts } = await assemble(ws, Date.parse(DAY_TWENTY_TWO))
+      expect(contexts.get('attention')).toBe('- first (27 days untouched)\n- second 改过 (14 days untouched)\n')
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('leaves the material exactly as it is when there is no history to read', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      const raw = '# 当前\n\n- 第一条\n'
+      await writeResidentFile(ws, 'attention/attention.md', raw)
+
+      // The workspace is not a repository: blame cannot answer, so nothing is added.
+      const withoutRepo = await assemble(ws, Date.parse(DAY_TWENTY_TWO))
+      expect(withoutRepo.contexts.get('attention')).toBe(raw)
+
+      // And a deployment that never mounted workspace-history behaves the same way.
+      const withoutService = await assemble(ws, Date.parse(DAY_TWENTY_TWO), defaultCaps, false)
+      expect(withoutService.contexts.get('attention')).toBe(raw)
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('spends the ages against the material budget rather than around it', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      const raw = '- aaa\n\n- bbb\n\n- ccc\n'
+      await writeResidentFile(ws, 'attention/attention.md', raw)
+      execFileSync('git', ['init', '-q', ws], { encoding: 'utf8' })
+      commitAt(ws, DAY_ONE, 'day one')
+
+      // The material alone fits; with three markers on it, it does not — and the file is cut the
+      // way any over-budget material is cut, markers included.
+      expect(applyBudget(raw, 40).truncated).toBe(false)
+      const { contexts } = await assemble(ws, Date.parse(DAY_TWENTY_TWO), { ...defaultCaps, attention: 40 })
+      const attention = contexts.get('attention') ?? ''
+      expect(attention).toContain('27 days untouched')
+      expect(attention).toContain('over budget')
     } finally {
       await rm(ws, { recursive: true, force: true })
     }

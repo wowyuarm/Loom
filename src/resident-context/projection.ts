@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
 import '@deepseek-ai/dsh-system-prompt'
 import { applyBudget, budgetNotice } from './budget.ts'
+import { attachEntryAges } from './entry-ages.ts'
 import { residentPath, residentFiles, memoryCoreOf, memoryIndexOf } from './layout.ts'
 import { bootstrapFile } from './scaffold.ts'
 
@@ -53,7 +54,8 @@ function readResidentFile(path: string): string {
  *   `context()`, so they can be revised, compacted, and re-injected, with attention nearest the
  *   current input. Ascending context order is the wake-bundle order. Providers read the file
  *   fresh at each assembly; the loop re-injects a changed or compaction-shadowed snapshot and
- *   loads them into a rollover successor's first turn on its own.
+ *   loads them into a rollover successor's first turn on its own. The two open-line materials
+ *   carry each entry's derived age (see `entry-ages.ts`), which costs the agent nothing to keep.
  */
 export function registerResidentContext(
   ctx: Context,
@@ -82,10 +84,23 @@ export function registerResidentContext(
   }
   const memoryFile = (): string => readResidentFile(residentPath(workspace, residentFiles.memory))
 
+  /**
+   * The open lines, each tagged with how long it has been carried. The age is derived, never
+   * written down: the agent keeps rewriting these files whole, so anything it recorded by hand
+   * would be gone by the next save. A workspace without a repository — or without a clock to
+   * measure against — contributes the material exactly as it is.
+   */
+  const aged = (rel: string, read: () => string): () => string => () => {
+    const raw = read()
+    const times = ctx.get('workspaceHistory')?.lineModifiedTimes(rel)
+    const now = ctx.get('clock')?.now()
+    return times === undefined || now === undefined ? raw : attachEntryAges(raw, times, now)
+  }
+
   context('memory-core', 20, () => memoryCoreOf(memoryFile()), caps.memoryCore)
   context('memory-index', 25, () => memoryIndexOf(memoryFile()), caps.memoryIndex)
-  context('threads-index', 30, () => readResidentFile(residentPath(workspace, residentFiles.threadsIndex)), caps.threadsIndex)
-  context('attention', 40, () => readResidentFile(residentPath(workspace, residentFiles.attention)), caps.attention)
+  context('threads-index', 30, aged(residentFiles.threadsIndex, () => readResidentFile(residentPath(workspace, residentFiles.threadsIndex))), caps.threadsIndex)
+  context('attention', 40, aged(residentFiles.attention, () => readResidentFile(residentPath(workspace, residentFiles.attention))), caps.attention)
 }
 
 /**
