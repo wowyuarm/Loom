@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import type { Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { ManualClock } from '../src/clock/index.ts'
 import { applyBudget } from '../src/resident-context/budget.ts'
@@ -200,6 +201,43 @@ describe('resident-context projection', () => {
 
       const { contexts } = await assemble(ws, Date.parse(DAY_TWENTY_TWO))
       expect(contexts.get('attention')).toBe('- first (27 days untouched)\n- second 改过 (14 days untouched)\n')
+    } finally {
+      await rm(ws, { recursive: true, force: true })
+    }
+  })
+
+  it('measures ages at the turn start, so a turn that outlives a day mark does not re-age it', async () => {
+    const ws = await tmpWorkspace()
+    try {
+      await writeResidentFile(ws, 'attention/attention.md', '- 第一条\n')
+      execFileSync('git', ['init', '-q', ws], { encoding: 'utf8' })
+      commitAt(ws, DAY_ONE, 'day one')
+
+      const ctx = new Context()
+      await ctx.plugin(SystemPrompt)
+      const clock = new ManualClock(Date.parse(DAY_THIRTEEN))
+      ctx.provide('clock', clock)
+      ctx.provide('workspaceHistory', { lineModifiedTimes: (relPath: string) => lineModifiedTimes(ws, relPath) })
+      registerResidentContext(ctx, ws, defaultCaps)
+
+      const session = {} as Session
+      const attention = async (): Promise<string> => {
+        const assembly = await ctx.systemPrompt.assemble({ agent: { session } } as never)
+        return assembly.contexts.find(c => c.name === 'attention')?.text ?? ''
+      }
+
+      ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } } as never)
+      const first = await attention()
+      expect(first).toBe('- 第一条 (13 days untouched)\n')
+
+      // Nine days pass while the same turn is still running: the material keeps saying thirteen,
+      // so the loop is never handed a changed snapshot for a difference the agent cannot act on.
+      clock.set(Date.parse(DAY_TWENTY_TWO))
+      expect(await attention()).toBe(first)
+
+      // The next turn measures again.
+      ctx.emit('session/event', session, { type: 'turn/start', data: { turn: 2 } } as never)
+      expect(await attention()).toBe('- 第一条 (27 days untouched)\n')
     } finally {
       await rm(ws, { recursive: true, force: true })
     }

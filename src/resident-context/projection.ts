@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
-// Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
+// Side-effect imports: pull the `systemPrompt` Context augmentation, and the `agent` field the
+// agent loop adds to each assembly context.
 import '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-agent'
+import type { AssembleContext } from '@deepseek-ai/dsh-system-prompt'
 import { applyBudget, budgetNotice } from './budget.ts'
 import { attachEntryAges } from './entry-ages.ts'
 import { residentPath, residentFiles, memoryCoreOf, memoryIndexOf } from './layout.ts'
@@ -42,6 +45,25 @@ function readResidentFile(path: string): string {
 }
 
 /**
+ * The instant ages are measured against, held at the turn's start for the whole turn.
+ *
+ * Ages are whole days, so a later step of the same turn would render the same text almost always —
+ * except when a step straddles one entry's 24-hour mark, which would re-age the material under the
+ * agent mid-turn and hand the loop a changed snapshot to re-inject. Loom's clock plugin samples its
+ * own line once per turn for the same reason; this keeps the same shape per session, and reads the
+ * clock directly when an assembly carries no agent (diagnostics assemble outside any turn).
+ */
+function turnStartInstant(ctx: Context): (session: object | undefined) => number | undefined {
+  const startedAt = new WeakMap<object, number>()
+  ctx.on('session/event', (session, event) => {
+    if (event.type !== 'turn/start') return
+    const at = ctx.get('clock')?.now()
+    if (at !== undefined) startedAt.set(session, at)
+  })
+  return session => (session === undefined ? undefined : startedAt.get(session)) ?? ctx.get('clock')?.now()
+}
+
+/**
  * Contribute the resident context to every turn's prompt. Two parts, because they belong in
  * different places (see the placement decision):
  *
@@ -79,21 +101,26 @@ export function registerResidentContext(
     interpolate: false,
   })
 
-  const context = (name: string, order: number, read: () => string, cap: number): void => {
-    ctx.systemPrompt.context({ name, order, text: () => materialText(name, read(), cap) })
+  const context = (name: string, order: number, read: (assembly: AssembleContext) => string, cap: number): void => {
+    ctx.systemPrompt.context({ name, order, text: assembly => materialText(name, read(assembly), cap) })
   }
   const memoryFile = (): string => readResidentFile(residentPath(workspace, residentFiles.memory))
+  const turnStart = turnStartInstant(ctx)
 
   /**
    * The open lines, each tagged with how long it has been carried. The age is derived, never
    * written down: the agent keeps rewriting these files whole, so anything it recorded by hand
    * would be gone by the next save. A workspace without a repository — or without a clock to
    * measure against — contributes the material exactly as it is.
+   *
+   * The instant is the turn's own start, not the step's: an age that moved between two steps of one
+   * turn would re-age the material under the agent while it is mid-thought, and hand the loop a
+   * changed snapshot to re-inject for a difference the agent cannot act on.
    */
-  const aged = (rel: string, read: () => string): () => string => () => {
+  const aged = (rel: string, read: () => string): ((assembly: AssembleContext) => string) => assembly => {
     const raw = read()
     const times = ctx.get('workspaceHistory')?.lineModifiedTimes(rel)
-    const now = ctx.get('clock')?.now()
+    const now = turnStart(assembly.agent?.session)
     return times === undefined || now === undefined ? raw : attachEntryAges(raw, times, now)
   }
 
