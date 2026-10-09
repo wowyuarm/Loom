@@ -50,6 +50,10 @@
       "types": "./lib/after-interaction/index.d.ts",
       "default": "./lib/after-interaction/index.js"
     },
+    "./workspace-history": {
+      "types": "./lib/workspace-history/index.d.ts",
+      "default": "./lib/workspace-history/index.js"
+    },
     "./channels": {
       "types": "./lib/channels/index.d.ts",
       "default": "./lib/channels/index.js"

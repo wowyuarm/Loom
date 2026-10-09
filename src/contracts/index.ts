@@ -133,7 +133,25 @@ declare module '@deepseek-ai/cordis' {
     clock: Clock
     runtimeState: RuntimeState
     agentRuntime: AgentRuntime
+    workspaceHistory: WorkspaceHistory
   }
+}
+
+/**
+ * Mechanical history of the agent's workspace. The workspace-history plugin provides it; the
+ * resident-context projection reads it to derive how long each material entry has been carried.
+ *
+ * It is deliberately small and optional: consumers reach it with `ctx.get('workspaceHistory')`, so a
+ * deployment whose workspace is not a repository simply has no ages, and a broken repository cannot
+ * take the materials down with it.
+ */
+export interface WorkspaceHistory {
+  /**
+   * When each line of a versioned file last changed, keyed by 1-based line number, or `undefined`
+   * when the file cannot be blamed — no repository, no commit yet, or a git that failed. The caller
+   * treats `undefined` as "this file has no ages", never as an error.
+   */
+  lineModifiedTimes(relPath: string): ReadonlyMap<number, number> | undefined
 }
 
 /**

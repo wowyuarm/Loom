@@ -69,6 +69,7 @@ describe('loom bundle manifest', () => {
     expect(byId.get('channel-gateway')?.name).toBe('@contexera/dsh-channel-gateway')
     expect(byId.get('channel-telegram')?.name).toBe('@contexera/dsh-channel-gateway/telegram')
     expect(byId.get('after-interaction')?.name).toBe('loom/after-interaction')
+    expect(byId.get('workspace-history')?.name).toBe('loom/workspace-history')
     expect(byId.get('jev')?.name).toBe('@wowyuarm/dsh-jev')
 
     // Base's stack is still there.
@@ -114,6 +115,7 @@ describe('loom bundle manifest', () => {
     expect(workspace).toEqual({ __jsExpr: "dshHomePath('loom/workspace')" })
     expect(byId.get('agent-runtime')?.config).toMatchObject({ workspace })
     expect(byId.get('after-interaction')?.config).toMatchObject({ workspace })
+    expect(byId.get('workspace-history')?.config).toMatchObject({ workspace })
     expect(byId.get('fs-sandbox')?.config).toMatchObject({ cwd: workspace })
     expect(byId.get('storage-sqlite')?.config).toEqual({ path: { __jsExpr: "dshHomePath('loom/runtime-state.db')" } })
 
