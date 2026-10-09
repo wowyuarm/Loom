@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { defaultCaps, registerResidentContext, type ResidentContextCaps } from './projection.ts'
 import { ensureWorkspaceScaffold } from './scaffold.ts'
+import { registerResidentShapeReminders } from './shape-reminders.ts'
 import { registerResidentWriteBudget } from './write-budget.ts'
 
 export interface ResidentContextConfig {
@@ -23,6 +24,10 @@ export function apply(ctx: Context, config: ResidentContextConfig): void {
   // write/edit tools; no dedicated tool. This flags a resident file the moment such a write pushes
   // it toward its cap, so the prune signal reaches the agent while it still holds the context.
   registerResidentWriteBudget(ctx, config.workspace, caps)
+  // The shape the materials are meant to keep, riding the read results of attention and threads:
+  // the workspace's own instructions say the same things, but a reminder at the moment of reading
+  // is the one the writing hand actually sees.
+  registerResidentShapeReminders(ctx)
 }
 
 export { defaultCaps } from './projection.ts'
