@@ -287,11 +287,12 @@ describe('workspace scaffold', () => {
     const ws = await tmpWorkspace()
     try {
       ensureWorkspaceScaffold(ws)
-      // Material files exist (empty), plus the housekeeping guide and the first-waking prompt.
+      // Material files exist (empty), the starting skills are seeded, and the birth prompt is there.
       expect(await readFile(join(ws, 'identity/identity.md'), 'utf8')).toBe('')
       expect(await readFile(join(ws, 'attention/attention.md'), 'utf8')).toBe('')
       expect(existsSync(join(ws, 'memory/notes'))).toBe(true)
-      expect(await readFile(join(ws, 'AGENTS.md'), 'utf8')).toContain('Keeping your workspace')
+      expect(existsSync(join(ws, 'skills/agent-skill-manager/SKILL.md'))).toBe(true)
+      expect(existsSync(join(ws, 'skills/workspace-upkeep/SKILL.md'))).toBe(true)
       expect(await readFile(join(ws, 'bootstrap.md'), 'utf8')).toContain('waking for the first time')
 
       // Once born — identity written, bootstrap.md deleted — a second call must leave it untouched.
@@ -308,12 +309,13 @@ describe('workspace scaffold', () => {
   it('never overwrites a live individual and never drops it back into birth', async () => {
     const ws = await tmpWorkspace()
     try {
-      // A workspace from before this feature: it holds an identity but no AGENTS.md yet.
+      // A workspace from before this feature: it holds an identity but no seeded skills yet.
       await writeResidentFile(ws, 'identity/identity.md', 'I am already someone.')
       ensureWorkspaceScaffold(ws)
-      // Identity is preserved, the housekeeping guide is added, and no first-waking prompt appears.
+      // Identity is preserved, the starting skills are added, and no first-waking prompt appears.
       expect(await readFile(join(ws, 'identity/identity.md'), 'utf8')).toBe('I am already someone.')
-      expect(existsSync(join(ws, 'AGENTS.md'))).toBe(true)
+      expect(existsSync(join(ws, 'skills/workspace-upkeep/SKILL.md'))).toBe(true)
+      expect(existsSync(join(ws, 'AGENTS.md'))).toBe(false)
       expect(existsSync(join(ws, 'bootstrap.md'))).toBe(false)
     } finally {
       await rm(ws, { recursive: true, force: true })

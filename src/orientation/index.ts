@@ -9,7 +9,10 @@ import '@deepseek-ai/dsh-system-prompt'
  * be in front of the agent every turn to steer every write — it cannot live only in an on-touch
  * file the agent may not have read. What it deliberately leaves out is the step-by-step upkeep
  * (how to compact memory, when to demote a note, how to reshape an over-budget file): that is
- * procedure, not orientation, and lives in the workspace's own AGENTS.md, surfaced on-touch.
+ * procedure, not orientation, and lives in the workspace's own `workspace-upkeep` skill — the one
+ * under its `skills/`, which it owns and can revise, and which it reaches for when it does the
+ * upkeep. It is not injected here: prose that must steer every write belongs in front of the agent
+ * every turn, while a procedure it can look up belongs in a skill.
  *
  * It is not a persona: who the agent is and what it values stays the operator's, carried by
  * identity.md. A deployment may override this text, but the default describes only mechanism.
@@ -39,7 +42,11 @@ These are not one growing log. Each answers a different question, changes on its
 
 ## Keeping them
 
-You maintain these files yourself with your ordinary file tools; there is no special path and no dedicated command. When you learn a lasting thing, write it into a memory note under memory/notes/ and add its routing line to the index in memory.md; when a line opens, give it a thread; keep attention current. When a file fills toward its budget you will see a usage notice on it — prune it then: promote what lasts, drop what has passed. How to do that upkeep well is in AGENTS.md in your workspace; read it when you are unsure.
+You maintain these files yourself with your ordinary file tools; there is no special path and no dedicated command. When you learn a lasting thing, write it into a memory note under memory/notes/ and add its routing line to the index in memory.md; when a line opens, give it a thread; keep attention current. When a file fills toward its budget you will see a usage notice on it — prune it then: promote what lasts, drop what has passed. The full procedure, and what goes where, is in your workspace-upkeep skill under skills/; load it before you reorganize or add something durable, and keep it in step with your layout when you change it.
+
+## Skills
+
+Your skills are yours too. The list of them is in front of you each turn; load one when a task matches what it describes. What sits in skills/ is not fixed by anyone: write a new one when a way of working proves itself, revise one the moment it stops matching how you actually work, and delete one that has stopped earning its place. The ones you woke up with are yours to change like any other — including the one about keeping your workspace.
 
 ## Continuity across context windows
 

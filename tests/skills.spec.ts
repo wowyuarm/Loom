@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import Skills from '@deepseek-ai/dsh-skill'
-import { AgentSkillProvider, bundledSkillsDirectory } from '../src/skills/index.ts'
+import { ensureWorkspaceScaffold } from '../src/resident-context/scaffold.ts'
+import { AgentSkillProvider } from '../src/skills/index.ts'
 
 /**
  * A skill body. The description is the catalog's only routing entry, and it is parsed as YAML
@@ -31,10 +33,7 @@ async function mount(
   await ctx.plugin(Skills)
   ctx.skills.registerProvider(
     control =>
-      new AgentSkillProvider(ctx, control, {
-        bundled: bundledSkillsDirectory(),
-        private: join(workspace, 'skills'),
-      }),
+      new AgentSkillProvider(ctx, control, join(workspace, 'skills')),
   )
   return {
     ctx,
@@ -53,11 +52,14 @@ async function plant(workspace: string, relative: string, name: string): Promise
 }
 
 describe('loom skills provider', () => {
-  it('discovers the bundled skills Loom ships', async () => {
+  it('discovers the skills the scaffold seeds into its own directory', async () => {
     const workspace = await tmpWorkspace()
     try {
+      ensureWorkspaceScaffold(workspace)
       const { list } = await mount(workspace)
-      expect(await list()).toContain('agent-skill-manager')
+      const names = await list()
+      expect(names).toContain('agent-skill-manager')
+      expect(names).toContain('workspace-upkeep')
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }
@@ -88,6 +90,26 @@ describe('loom skills provider', () => {
       const names = await list()
       expect(names).not.toContain('project-skill')
       expect(names).not.toContain('agents-skill')
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  it('discovers the upkeep skill the workspace scaffold seeds, and lets the agent revise it', async () => {
+    const workspace = await tmpWorkspace()
+    try {
+      ensureWorkspaceScaffold(workspace)
+      // Seeded as its own file, not a bundled one: only a file of its own can be revised, and
+      // this is the one skill that must track a layout that keeps changing.
+      const file = join(workspace, 'skills', 'workspace-upkeep', 'SKILL.md')
+      expect(existsSync(file)).toBe(true)
+
+      const { list, load } = await mount(workspace)
+      expect(await list()).toContain('workspace-upkeep')
+
+      // Its own revision is what gets loaded — the bundled root must not shadow it.
+      await writeFile(file, (await readFile(file, 'utf8')) + '\nAdded later: I keep a ledger.\n')
+      expect(await load('workspace-upkeep')).toContain('Added later')
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }

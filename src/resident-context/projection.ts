@@ -71,7 +71,7 @@ function turnStartInstant(ctx: Context): (session: object | undefined) => number
  *   prompt while `bootstrap.md` exists, and identity — the agent's authoritative root, read fresh
  *   from its file. `interpolate: false` keeps their prose literal, so a stray `{{…}}` can never
  *   break assembly. How the agent keeps these files is not stated here; it lives in the
- *   workspace's own AGENTS.md, surfaced on-touch.
+ *   workspace's own `workspace-upkeep` skill, which the agent reaches for when it does the upkeep.
  * - **Dynamic materials** (memory, threads, attention): user-role history snapshots via
  *   `context()`, so they can be revised, compacted, and re-injected, with attention nearest the
  *   current input. Ascending context order is the wake-bundle order. Providers read the file

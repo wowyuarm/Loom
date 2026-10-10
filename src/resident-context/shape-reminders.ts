@@ -1,8 +1,8 @@
 /**
  * The shape side of the resident materials, delivered at the moment it matters.
  *
- * The workspace's own AGENTS.md has asked for the same things since the first scaffold — each
- * attention entry carrying a horizon, threads listing only open lines — and the record shows the
+ * The workspace's own housekeeping instructions have asked for the same things since the first
+ * scaffold — each attention entry carrying a horizon, threads listing only open lines — and the record shows the
  * agent rewrote attention 17 times in three days without once writing a horizon. A standing page
  * it rarely re-reads does not shape the hand that writes; a line riding the read result it is
  * about to act on does. This is that line: after a successful `read` of attention or a threads

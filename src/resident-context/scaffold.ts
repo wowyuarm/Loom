@@ -1,37 +1,10 @@
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { residentFiles } from './layout.ts'
+import { seededSkillFiles } from './seeded-skills.ts'
 
-/** The housekeeping guide the harness ships into the workspace. */
-export const workspaceAgentsFile = 'AGENTS.md'
 /** The first-waking prompt. Present only until the agent finishes initializing and deletes it. */
 export const bootstrapFile = 'bootstrap.md'
-
-/**
- * How the agent keeps its own files in order. Shipped into the workspace and surfaced on-touch by
- * dsh-agent-instructions, not held in the system prompt — the prompt only points here. Names the
- * files and the discipline over them; it does not say who the agent is.
- */
-export const DEFAULT_WORKSPACE_AGENTS = `# Keeping your workspace
-
-These files are your durable self between context windows — shown to you at the start of every turn. Keep them true and in order. They are your own machinery, not part of the conversation: work with them silently, and do not narrate edits or recalls.
-
-## The files
-
-- \`identity/identity.md\` — who you are: the root you judge everything against. Change it rarely and deliberately.
-- \`memory/memory.md\` — a small core of standing understanding that must be in front of you every turn, followed by a \`## Notes\` index routing to \`memory/notes/<concept>.md\`. Keep the core small: only what would make you misjudge if it were missing. Topic knowledge you read on demand goes in a note: write the note under \`memory/notes/\` and add its routing line to the index here, and say in the note where you learned it. Keep the note and its index line in step — a note with no index line is unreachable, an index line with no note is a dead link.
-- \`threads/index.md\` and \`threads/<id>/\` — the lines still open. A thread is a continuity worth re-entering: something still unfolding — a concern, relationship, curiosity, creation, practice, or question — where returning means continuing to feel, understand, explore, or act, not looking up a fact. Keep only the live lines and how to resume each. Accumulated knowledge about a person or project is not a thread — that is a note; you do not "continue" a person, you build up what you know about them.
-- \`attention/attention.md\` — what you are holding right now. Each item carries a horizon: roughly how long you expect to carry it. When a horizon passes, drop the item — or turn it into a thread if it still matters. This is the most volatile file; keep it current.
-- \`skills/<name>/SKILL.md\` — procedures you keep for reuse. The catalog picks them up from here on its own: no registration, no restart. What you write here is yours alone, and nothing outside this directory and the few Loom ships ever enters your catalog.
-
-## Keeping order
-
-- Recall the past by searching it: \`context_search\`, then \`context_read\` to expand a hit. Do not copy identifiers by hand.
-- When a file fills toward its budget, prune it: promote what lasts into a note, drop what has passed. You will see a usage notice on a file as it fills — that is the signal to trim it, before it gets truncated when read into context.
-- Reach for the structures already laid out here before inventing new ones. A lasting fact is a note; an open line is a thread; a reusable procedure is a skill. Most of what you need already has a home — make a new top-level place for yourself only when nothing here fits, not by default.
-- These homes are not rigid about file types. A thread is a live line, and its \`threads/<id>/\` directory can hold whatever that line needs while it is open — notes to yourself, a script, scratch data, reference material — not just prose. Put working files where the work they serve lives.
-- Anything you make for yourself — a note, a skill, a script, a directory of reference material, a new tool — give it a home under this workspace; do not let it scatter. When you add something durable to how you work, record it here in this file so a later you knows it exists and how to keep it. This file is yours to extend: it is where your own machinery is written down.
-`
 
 /**
  * The first-waking prompt. Spliced into the system prompt verbatim while it exists, then removed
@@ -66,11 +39,13 @@ export function ensureWorkspaceScaffold(workspace: string): void {
     [residentFiles.memory, ''],
     [residentFiles.threadsIndex, ''],
     [residentFiles.attention, ''],
-    [workspaceAgentsFile, DEFAULT_WORKSPACE_AGENTS],
   ]
-  for (const [rel, content] of files) writeIfAbsent(join(workspace, rel), content)
   // Directories that will hold agent-created files, present from the start so the layout is real.
+  // Created before the files below, which include one inside `skills/`.
   for (const dir of ['memory/notes', 'skills']) mkdirSync(join(workspace, dir), { recursive: true })
+  for (const [rel, content] of files) writeIfAbsent(join(workspace, rel), content)
+  // The skills it wakes up with, seeded once and then its own to revise or delete.
+  for (const skill of seededSkillFiles) writeIfAbsent(join(workspace, skill.path), skill.content)
   if (fresh) writeIfAbsent(join(workspace, bootstrapFile), DEFAULT_BOOTSTRAP)
 }
 

@@ -34,11 +34,10 @@ export { defaultCaps } from './projection.ts'
 export type { ResidentContextCaps } from './projection.ts'
 export {
   ensureWorkspaceScaffold,
-  workspaceAgentsFile,
   bootstrapFile,
-  DEFAULT_WORKSPACE_AGENTS,
   DEFAULT_BOOTSTRAP,
 } from './scaffold.ts'
+export { seededSkillFiles } from './seeded-skills.ts'
 export {
   residentFiles,
   notesDir,
