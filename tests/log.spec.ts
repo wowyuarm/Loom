@@ -29,4 +29,30 @@ describe('log sink', () => {
     expect(out).toContain('info [gateway]')
     expect(out).toContain('{"channel":"telegram"}')
   })
+
+  it('exports warnings, and still drops per-step debug noise', async () => {
+    const written: string[] = []
+    const original = process.stderr.write.bind(process.stderr)
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString())
+      return true
+    }) as typeof process.stderr.write
+
+    try {
+      const ctx = new Context()
+      await ctx.plugin(log)
+      ctx.logger('channels').warn('no live agent to receive telegram:7')
+      ctx.logger('agent-loop').debug('step boundary')
+    } finally {
+      process.stderr.write = original
+    }
+
+    const out = written.join('')
+    // cordis numbers these error=0, info=1, warn=2, debug=3, and a sink drops whatever exceeds its
+    // threshold. At 1 every warning this deployment logged was discarded — three days of journal
+    // held 91 info lines, 869 errors and not one warning — so a warning must survive here.
+    expect(out).toContain('warn [channels]')
+    expect(out).toContain('no live agent to receive telegram:7')
+    expect(out).not.toContain('debug [agent-loop]')
+  })
 })
