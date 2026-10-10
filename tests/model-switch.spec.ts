@@ -5,8 +5,9 @@
  * integration layer boots the real stack over a scripted model and proves the wiring the way the
  * deployment runs it: the configured default holds until a file appears, the switch lands on the
  * next request without splitting the step already in flight, no input the agent can read or be told
- * moves its own selection, the budget is re-priced against the new window, and a boot still takes
- * its route from configuration.
+ * moves its own selection, the budget is re-priced against the new window, a boot still takes its
+ * route from configuration, deleting the file changes nothing while the process runs, and a
+ * rollover successor picks the file up again.
  *
  * Every route assertion reads `GenerateOptions` off the real adapter — the provider and model the
  * loop actually sent — rather than a value the test arranged.
@@ -24,7 +25,7 @@ import LlmRuntime, {
   type LlmResolvedModelInfo,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
-import SessionStore from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
@@ -36,6 +37,7 @@ import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import Storage from '@deepseek-ai/dsh-storage'
 import * as StorageSqlite from '@deepseek-ai/dsh-storage-sqlite'
 import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
+import type { TransitionPlan } from '@wowyuarm/dsh-context-continuity'
 
 import * as LogPlugin from '../src/log/index.ts'
 import * as ClockPlugin from '../src/clock/index.ts'
@@ -44,6 +46,7 @@ import * as ResidentContextPlugin from '../src/resident-context/index.ts'
 import * as ModelSwitchPlugin from '../src/model-switch/index.ts'
 import * as AgentRuntimePlugin from '../src/agent-runtime/index.ts'
 import { retrievalDeps } from '../src/agent-runtime/index.ts'
+import type { LoomAgentRuntime } from '../src/agent-runtime/index.ts'
 import { contextBudgetFrom } from '../src/context-continuity/retrieval.ts'
 import { provideFakePresets } from './support/fake-presets.ts'
 import { MockAdapter, textResponse, toolCallResponse } from './support/mock-adapter.ts'
@@ -297,6 +300,116 @@ describe('model-switch: over a real boot', () => {
       const announced = harness.report()
       expect(announced).toHaveLength(1)
       expect(announced[0]).toContain('info [model-switch] model switch: mock/mock -> mock/switched')
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('leaves the running route alone when the control file is deleted', async () => {
+    const harness = await boot({ script: [textResponse('one'), textResponse('two'), textResponse('three')] })
+    try {
+      await harness.writeSwitch({ provider: DEFAULT_PROVIDER, model: 'switched' })
+      await harness.run('hello')
+      expect(harness.routes()).toEqual([`${DEFAULT_PROVIDER}/switched`])
+      const announced = harness.report()
+
+      // Asking for nothing is not the same as asking for the configured route: a file deleted at
+      // 3am must not reach into a live process and move it. The absence of an intent changes
+      // nothing here — it is the next boot that reads the config.
+      await harness.writeSwitch(null)
+      await harness.run('again')
+
+      expect(harness.routes()).toEqual([`${DEFAULT_PROVIDER}/switched`, `${DEFAULT_PROVIDER}/switched`])
+      // No switch happened, so no line claims one did.
+      expect(harness.report()).toEqual(announced)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('goes back to the deployment default when that route is written into the file', async () => {
+    const harness = await boot({ script: [textResponse('one'), textResponse('two'), textResponse('three')] })
+    try {
+      await harness.writeSwitch({ provider: DEFAULT_PROVIDER, model: 'switched' })
+      await harness.run('hello')
+      expect(harness.routes()).toEqual([`${DEFAULT_PROVIDER}/switched`])
+
+      // The way back is the way out: state the route you want. The file carries an intent, and
+      // "nothing" is not an intent it can carry.
+      await harness.writeSwitch({ provider: DEFAULT_PROVIDER, model: DEFAULT_MODEL })
+      await harness.run('again')
+
+      expect(harness.routes()).toEqual([`${DEFAULT_PROVIDER}/switched`, `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`])
+      expect(harness.report().at(-1)).toContain('info [model-switch] model switch: mock/switched -> mock/mock')
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('does nothing when a deleted file comes back byte for byte', async () => {
+    // The per-generation cache as evidence rather than as an argument: contents already decided
+    // about are not decided about twice. Restoring the exact bytes after a delete moves nothing and
+    // logs nothing — the route was already the one they name.
+    const harness = await boot({ script: [textResponse('one'), textResponse('two'), textResponse('three')] })
+    try {
+      const route = { provider: DEFAULT_PROVIDER, model: 'switched' }
+      await harness.writeSwitch(route)
+      await harness.run('hello')
+      const announced = harness.report()
+
+      await harness.writeSwitch(null)
+      await harness.run('again')
+      await harness.writeSwitch(route)
+      await harness.run('again')
+
+      expect(harness.routes()).toEqual([
+        `${DEFAULT_PROVIDER}/switched`,
+        `${DEFAULT_PROVIDER}/switched`,
+        `${DEFAULT_PROVIDER}/switched`,
+      ])
+      expect(harness.report()).toEqual(announced)
+    } finally {
+      await harness.dispose()
+    }
+  })
+
+  it('picks the file up again in a rollover successor', async () => {
+    const harness = await boot({ script: [textResponse('one'), textResponse('two')] })
+    try {
+      await harness.writeSwitch({ provider: DEFAULT_PROVIDER, model: 'switched' })
+      await harness.run('hello')
+      expect(harness.routes()).toEqual([`${DEFAULT_PROVIDER}/switched`])
+      const before = harness.routes().length
+
+      // A real generation change through the runtime's own transition path: the old generation is
+      // disposed, the successor is created with its own session id and the configured route, and the
+      // file has to reach it again. `executeTransition` lives on the concrete runtime the plugin
+      // provides, not on the `AgentRuntime` contract, which is why the cast is here and not in src.
+      const runtime = harness.ctx.agentRuntime as unknown as LoomAgentRuntime
+      const plan: TransitionPlan = {
+        previousSessionId: harness.agent.session.id,
+        newSessionId: SessionId('successor'),
+        handoff: 'handoff',
+        handoffEventSeq: 1,
+        trigger: 'model',
+        relatedFiles: [],
+        requestId: 'req-1',
+        carriedInput: [createUserMessage({ content: [{ type: 'text', text: 'continue' }], source: { kind: 'user' } })],
+      }
+      await runtime.executeTransition(plan)
+
+      const successor = harness.ctx.agentRuntime?.current()
+      expect(successor?.id).toBe(SessionId('successor'))
+      await successor?.whenIdle()
+      await new Promise(resolve => setTimeout(resolve, 50))
+
+      // It boots on the configured route and converges to the file at its first step boundary: a
+      // switch is not lost by the generation that follows it. Every request the successor made is
+      // counted here, however many turns the handoff and the carried input open between them.
+      expect(successor?.options.model).toBe(DEFAULT_MODEL)
+      const successorRoutes = harness.routes().slice(before)
+      expect(successorRoutes.length).toBeGreaterThan(0)
+      expect(successorRoutes.every(route => route === `${DEFAULT_PROVIDER}/switched`)).toBe(true)
     } finally {
       await harness.dispose()
     }

@@ -184,8 +184,10 @@ export function apply(ctx: Context, config: ModelSwitchConfig): void {
     try {
       text = await readFile(config.switchFile, 'utf8')
     } catch (error) {
-      // No file is the normal state: it means the operator has asked for nothing, and the agent
-      // keeps the route it was created with.
+      // No file is the normal state: the operator has asked for nothing, so nothing moves. The route
+      // stays where it is, including a switch already applied — deleting the file must never change
+      // a live system by accident. Back to the deployment default means deleting the file *and
+      // restarting* (the next boot reads the config), or writing that default into the file.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
       const reason = `cannot read ${config.switchFile}: ${error instanceof Error ? error.message : String(error)}`
       if (decided.get(id) !== reason) {
