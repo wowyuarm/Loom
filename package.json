@@ -75,8 +75,9 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run",
-    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('core-skills','lib/core-skills',{recursive:true})\""
+    "test": "node scripts/check-core-skills.mjs && vitest run",
+    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('core-skills','lib/core-skills',{recursive:true})\"",
+    "check:core-skills": "node scripts/check-core-skills.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
