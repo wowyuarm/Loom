@@ -70,6 +70,10 @@ Loom 默认 `allow: []`（谁都不能说话）。把授权写进 `channel-gatew
 - 模型 id 用接口真正认的形式：显示名 `deepseek-v4.1-flash`，但端点只认带前缀的 `deepseek/deepseek-v4.1-flash`，填错回合里报 `400 unsupported_model`。
 - 验证看 `turn/end` 的 `reason` 是不是 `completed`，不能只看“回合结束了”。切回原模型只改这一行，provider 留着不影响。
 
+**不重启换模型。** 上面这条改完要重启才生效。要在**进程不动**的前提下换，写部署侧的控制文件
+`$DSH_HOME/loom/model-switch.json`——放哪、什么格式、怎么确认、被拒时什么行为，见
+[`subsystems/model-switch.md`](subsystems/model-switch.md)。
+
 ## profile 硬要求
 
 部署 profile 的 `package.json` 必须有非空的 `name` 和 `version`。漏 `version` 不会启动失败，而是**每个模型请求都失败**（`REQUEST_EXTENSION`）——插件清单上报器要求每个活跃包都声明 name+version。

@@ -15,6 +15,7 @@
 | `CONTEXT.md`（待建） | 稳定的 Loom 术语与所有权边界 | 命名或所有权产生歧义 |
 | `architecture.md`（待建） | 模块/包关系、Host 边界、事实分层 | 改动跨越模块或包边界 |
 | `subsystems/<capability>.md`（随模块补入） | 单个能力的对外契约（一个能力一篇） | 改那个能力，或交接 |
+| [`subsystems/model-switch.md`](subsystems/model-switch.md) | 模型热切换：控制文件放哪、什么格式、怎么生效与撤销、拒绝语义、边界 | 换活体的模型而想不重启；改这个能力 |
 | `adr/NNNN-*.md`（随决策补入） | 不可逆的持久化、恢复或 Session 取舍及其理由 | 做出或追溯此类决策 |
 
 易漂移的东西（命令、具体文件路径、代码片段）不进 `docs/`，它们属于源码、`package.json` 或脚本。
