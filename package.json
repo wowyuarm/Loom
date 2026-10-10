@@ -38,6 +38,10 @@
       "types": "./lib/agent-runtime/index.d.ts",
       "default": "./lib/agent-runtime/index.js"
     },
+    "./model-switch": {
+      "types": "./lib/model-switch/index.d.ts",
+      "default": "./lib/model-switch/index.js"
+    },
     "./orientation": {
       "types": "./lib/orientation/index.d.ts",
       "default": "./lib/orientation/index.js"

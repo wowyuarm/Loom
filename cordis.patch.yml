@@ -187,6 +187,16 @@
       config:
         workspace: !!js dshHomePath('loom/workspace')
 
+    # Model hot-switch: a deployment-side control file moves the live agent's model route at the
+    # next step boundary, with no restart. Listed before agent-runtime on purpose — the seam is
+    # installed from `agent/created`, so it must already be listening when the agent boots.
+    # `switchFile` lives outside the workspace: it is an operator artifact. A missing file is the
+    # normal state and means "keep the configured default".
+    - id: model-switch
+      name: 'loom/model-switch'
+      config:
+        switchFile: !!js dshHomePath('loom/model-switch.json')
+
     # Boots the one agent (resume the pointed-to session, or create the first one) and owns
     # every context rollover. Model and provider come from base's default-model plugin, so
     # no agentOptions here.

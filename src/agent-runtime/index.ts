@@ -55,8 +55,11 @@ function resolveAgentOptions(ctx: Context, config: AgentRuntimeConfig): AgentOpt
  * budget prefers the session's own persisted request context and falls back to resolving the
  * default-model selection, so a timeline read does not force a provider round-trip once a
  * generation has recorded its route.
+ *
+ * Exported so a test can price the budget against the same code the deployment runs, rather than
+ * re-deriving the number it is supposed to be checking.
  */
-function retrievalDeps(ctx: Context): RetrievalDeps {
+export function retrievalDeps(ctx: Context): RetrievalDeps {
   const reader = new StoredSessionReader(ctx)
   const meter = (): ReturnType<typeof ctx.get<'tokenMeter'>> => ctx.get('tokenMeter')
   const budgetOf = async (agent: Agent): Promise<ContextBudget | undefined> => {

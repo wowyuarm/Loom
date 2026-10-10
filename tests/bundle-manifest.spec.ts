@@ -71,6 +71,7 @@ describe('loom bundle manifest', () => {
     expect(byId.get('after-interaction')?.name).toBe('loom/after-interaction')
     expect(byId.get('workspace-history')?.name).toBe('loom/workspace-history')
     expect(byId.get('turn-failures')?.name).toBe('loom/turn-failures')
+    expect(byId.get('model-switch')?.name).toBe('loom/model-switch')
     expect(byId.get('jev')?.name).toBe('@wowyuarm/dsh-jev')
 
     // Base's stack is still there.
