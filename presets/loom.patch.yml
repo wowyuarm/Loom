@@ -56,6 +56,24 @@
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
 
+          # ── skills ──────────────────────────────────────────────────────────────────
+
+          # The agent's own procedures. This row replaces base's `skill-filesystem` with Loom's
+          # provider: it wraps the Harness filesystem provider with its default roots off, so
+          # discovery is scoped to the skills Loom ships plus the ones the agent keeps in its
+          # workspace `skills/` directory — project and user roots never leak in, and nothing the
+          # agent did not write (or we did not ship) is ever in its catalog. Same contrivance as
+          # the compaction row below: the id is base's row, which is what keeps the provider in
+          # this agent's own layer instead of the host layer every session inherits.
+          - id: skill-filesystem
+            name: 'loom/skills'
+            config:
+              workspace: !!js dshHomePath('loom/workspace')
+
+          # The model-facing `skill` tool: lists the catalog and loads a body on demand.
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
           # ── compaction ──────────────────────────────────────────────────────────────
 
           # The context-pressure floor. Loom's agent-runtime owns pressure through the

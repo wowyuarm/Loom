@@ -153,10 +153,14 @@ describe('loom bundle manifest', () => {
 
     for (const row of leaves) {
       expect(row.id).toBeDefined()
-      // Every agent-plane row either mounts a DSH package, or replaces a DSH row with our own
-      // implementation of the same service. The second case is the load-bearing one: it is only
-      // legitimate because the row id is the base row's, which the assertion below proves.
-      expect(row.name).toMatch(/^(@deepseek-ai|@wowyuarm)\//)
+      // Every agent-plane row either mounts a DSH package, replaces a DSH row with our own
+      // implementation of the same service, or mounts one of this package's own plugins. The
+      // second case is the load-bearing one: it is only legitimate because the row id is the
+      // base row's, which the assertion below proves. `loom/` is listed because a preset row
+      // mounting our own plugin is legitimate and is the only way a provider lands in this
+      // agent's own layer — mounted from the host plane it would file into the global layer
+      // every session inherits.
+      expect(row.name).toMatch(/^(@deepseek-ai|@wowyuarm|loom)\//)
       // A preset row whose base counterpart stayed enabled would sit in the global layer too,
       // which every agent inherits — the tool would reach the model without this file naming it.
       expect(byId.get(row.id as string)?.disabled, `base row "${row.id}" is still enabled`).toBe(true)

@@ -57,6 +57,10 @@
     "./channels": {
       "types": "./lib/channels/index.d.ts",
       "default": "./lib/channels/index.js"
+    },
+    "./skills": {
+      "types": "./lib/skills/index.d.ts",
+      "default": "./lib/skills/index.js"
     }
   },
   "bin": {
@@ -66,12 +70,13 @@
     "bin/loom.mjs",
     "lib/**/*",
     "cordis.patch.yml",
-    "presets/**/*"
+    "presets/**/*",
+    "core-skills/**/*"
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json"
+    "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('core-skills','lib/core-skills',{recursive:true})\""
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
