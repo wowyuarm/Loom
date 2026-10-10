@@ -228,6 +228,16 @@
       config:
         workspace: !!js dshHomePath('loom/workspace')
 
+    # A turn that did not complete, where operations and the agent can both see it: one warning on
+    # the sink `log` writes to the journal, and one fact appended to the agent's own attention
+    # material so its next turn can know the last one did not succeed. Nothing here retries, fails
+    # over, or changes a model route — it only reports. The record it appends is committed by the
+    # next successful turn, so its version is attributed to that turn (see the plugin).
+    - id: turn-failures
+      name: 'loom/turn-failures'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')
+
     # Jev (TypeSafe System One) as a service: one headless decision call, no tools and no policy of
     # its own — thresholds and postures belong to whoever asks. It is a service rather than a tool
     # because its consumer asks for a judgement while the main model is not running.

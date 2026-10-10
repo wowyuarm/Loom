@@ -54,6 +54,10 @@
       "types": "./lib/workspace-history/index.d.ts",
       "default": "./lib/workspace-history/index.js"
     },
+    "./turn-failures": {
+      "types": "./lib/turn-failures/index.d.ts",
+      "default": "./lib/turn-failures/index.js"
+    },
     "./channels": {
       "types": "./lib/channels/index.d.ts",
       "default": "./lib/channels/index.js"
