@@ -6,8 +6,8 @@ import '@deepseek-ai/dsh-system-prompt'
  * Neutral, mechanical orientation about the harness the agent runs in — continuity, recall, and
  * the shape of the durable self it keeps in workspace files. It carries the MENTAL MODEL of those
  * files (what each one answers, what goes where, when a thread is a thread) because that model must
- * be in front of the agent every turn to steer every write — it cannot live only in an on-touch
- * file the agent may not have read. What it deliberately leaves out is the step-by-step upkeep
+ * be in front of the agent every turn to steer every write — it cannot live only in a file the
+ * agent may not have read. What it deliberately leaves out is the step-by-step upkeep
  * (how to compact memory, when to demote a note, how to reshape an over-budget file): that is
  * procedure, not orientation, and lives in the workspace's own `workspace-upkeep` skill — the one
  * under its `skills/`, which it owns and can revise, and which it reaches for when it does the

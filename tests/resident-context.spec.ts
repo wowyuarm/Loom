@@ -98,7 +98,7 @@ describe('resident-context projection', () => {
       expect(identity?.text).toBe('I am the agent.')
       expect(identity?.interpolate).toBe(false)
       // The memory-model guidance is no longer a system section — how to keep the files lives in
-      // the workspace's own AGENTS.md, surfaced on-touch, not in the prompt.
+      // the workspace's own `workspace-upkeep` skill, read on demand, not in the prompt.
       expect(assembly.sections.find(s => s.name === 'loom:memory-guidance')).toBeUndefined()
     } finally {
       await rm(ws, { recursive: true, force: true })

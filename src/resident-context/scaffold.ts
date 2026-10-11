@@ -21,8 +21,8 @@ When it feels settled — when you could say in your own words who you are and w
 `
 
 /**
- * Materialize the workspace skeleton: the material files and their directories (empty), the
- * housekeeping guide, and — only for a never-initialized workspace — the first-waking prompt. The
+ * Materialize the workspace skeleton: the material files and their directories (empty), the skills
+ * it wakes up with, and — only for a never-initialized workspace — the first-waking prompt. The
  * agent never has to conjure its own file layout.
  *
  * Every write is create-if-absent: an existing file is never overwritten, so running this over a
