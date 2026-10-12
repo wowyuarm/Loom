@@ -33,7 +33,7 @@ npm run build          # 清理 lib/ 后按 tsconfig.build 产出发布物
 
 1. 行为改动随带对应文档更新（落点见[维护规则](<AGENTS.md>)）与受影响检查。
 2. 报告写：改了什么、跑了哪些验证、各自的结论与边界。没验证的明确说，并指出谁能补。
-3. 提交一个闭合工作单元，message 为简短英语 `type(scope): description`；不夹带他人未提交的工作。`.scratch/` 下的研究记录遵循[其自身规则](<../.scratch/AGENTS.md>)，默认不进工程提交。
+3. 提交一个闭合工作单元，不夹带他人未提交的工作；commit message 规范见[根指令](<../AGENTS.md#写作与提交>)。`.scratch/` 下的研究记录遵循[其自身规则](<../.scratch/AGENTS.md>)，默认不进工程提交。
 
 ## 常见陷阱
 
