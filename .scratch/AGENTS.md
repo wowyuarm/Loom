@@ -44,6 +44,14 @@ Each `issues/NN-<slug>.md` uses a fixed skeleton, numbered from `01` in dependen
 - **Archive is history**: archived states and terminology only represent the working context of their time and never override current implementation; do not rewrite archives to match new code.
 - **Transient artifacts**: logs, debug output, and downloads go in `local/` (gitignored), never into active or archive.
 
+## Git tracking
+
+Only finished work records are committed; in-progress ones are not.
+
+- **`active/` stays untracked** while a work item is still in progress. It holds live notes that change many times a day, and its conclusions are not yet desensitized; committing it freezes half-formed state and leaks material into history that was never cleaned.
+- **A work record is desensitized, archived, and only then committed** — normally amended into the commit holding the substantive work it belongs to (`git commit --amend`), so the record lands with the change it explains rather than as a standalone "docs" commit. See [docs/AGENTS.md](../docs/AGENTS.md) for the one-line commit rule.
+- A file in `active/` is not durable: its work item is still moving, and once it closes the files move to `archive/`. So links pointing into `active/` are not safe to depend on — point at `archive/` or at maintained docs instead. `.scratch/README.md` may name active items, as prose rather than as links.
+
 ## Directory index
 
 See [README.md](README.md).

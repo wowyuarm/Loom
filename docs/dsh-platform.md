@@ -42,8 +42,11 @@ Patch 用两种不同的条目：顶层 `id` 修改已有行，`insert` 添加�
 | 工具执行、文件权限、后台 jobs | `dsh-tools`、`dsh-tool-*`、`dsh-sandbox-*`、`dsh-jobs-*` | [运行时权限](<subsystems/runtime.md#存储与权限边界>)、[Preset](<../presets/loom.patch.yml>) |
 | 技能 catalog、发现与正文读取 | `dsh-skill`、`dsh-skill-filesystem`、`dsh-tool-skill` | [技能包装层](<../src/skills/index.ts>) |
 | 配置与模块热重载 | `dsh-hmr`、loader、可编辑配置 | [部署指南](<cookbook/deployment.md>) |
+| 子 agent 委托（Loom 未用） | `dsh-subagent` 及其 `ctx.tools.restrict({allow})` | Loom 只跑一个主主体，不委托子 agent；`restrict` 在 Loom 内无调用者 |
 
 Loom 也依赖独立发布的 continuity、jev 与渠道网关包。版本同样以 lockfile 为准，它们不是 DSH 内置功能；continuity 的 Host 适配在[能力页](<subsystems/continuity.md>)，网关授权与传输在[渠道页](<subsystems/channels.md>)，不要把提供方的行为归给包装层。
+
+`ctx.tools.restrict({ allow })` 容易被读成"声明某个 agent 工具面"的接缝，它不是：上游唯一的生产调用者是 `dsh-subagent` 给子 agent 过滤继承能力，而 Loom 只有一个主主体、不建子 agent，所以本仓库没有调用点。声明 agent 能力面走 [Preset 清单](<../presets/loom.patch.yml>)。
 
 ## 两条提示排序轴
 

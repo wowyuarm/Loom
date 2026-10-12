@@ -2,11 +2,16 @@
 /**
  * Mechanical gate for the maintained documentation tree.
  *
- * Checks every Markdown file in the maintained set (repo root README/AGENTS/CONTEXT and
- * everything under docs/, excluding .scratch): local links resolve to files that exist,
- * fragment anchors match a heading or an explicit <a id>, and no local link leaves the
- * repository. .scratch is not part of the maintained set — it is history and working
- * material, frozen rather than maintained — but maintained pages may link into it.
+ * Checks every Markdown file in the two tracked trees: the maintained set (repo root
+ * README/AGENTS/CONTEXT and everything under docs/) and the work-record tree (.scratch,
+ * except the gitignored .scratch/local/). For both it enforces that local links resolve to
+ * files that exist, that fragment anchors match a heading or an explicit <a id>, and that no
+ * local link leaves the repository.
+ *
+ * The two trees keep different disciplines: docs/ is maintained, so its prose must describe
+ * current behavior; .scratch is history and working material, so its conclusions are allowed
+ * to be superseded by later source. Links are the one rule shared by both — a work record
+ * that is tracked in git should still point at things a reader can open.
  *
  * Anchors follow GitHub's slug rule (github-slugger), including the -1, -2 suffixes
  * for repeated headings, plus explicit HTML ids. Fenced code is ignored.
@@ -30,22 +35,27 @@ const repositoryRoot = rootFlag >= 0 && args[rootFlag + 1]
 const failures = []
 const fail = (where, message) => failures.push(`${where}: ${message}`)
 
-/** Markdown files this gate owns: maintained entries only. */
+/**
+ * Markdown files this gate owns: maintained entries plus the work-record tree. `.scratch/local/`
+ * is gitignored private scratch and is never checked — its links may dangle on purpose.
+ */
 async function maintainedFiles(root) {
   const files = []
   for (const name of ['README.md', 'AGENTS.md', 'CONTEXT.md']) {
     if (existsSync(join(root, name))) files.push(name)
   }
-  const docs = join(root, 'docs')
-  if (existsSync(docs)) {
+  for (const tree of ['docs', '.scratch']) {
+    const base = join(root, tree)
+    if (!existsSync(base)) continue
     const walk = async (dir, prefix) => {
       for (const entry of await readdir(dir, { withFileTypes: true })) {
+        if (tree === '.scratch' && prefix === '' && entry.name === 'local') continue
         const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`
         if (entry.isDirectory()) await walk(join(dir, entry.name), rel)
-        else if (entry.isFile() && entry.name.endsWith('.md')) files.push(`docs/${rel}`)
+        else if (entry.isFile() && entry.name.endsWith('.md')) files.push(`${tree}/${rel}`)
       }
     }
-    await walk(docs, '')
+    await walk(base, '')
   }
   return files.sort()
 }
@@ -84,13 +94,21 @@ function anchorsOf(markdown) {
   return anchors
 }
 
-/** Every local link/image target, excluding fenced code (lexer does that for us). */
+/**
+ * Every local link/image target, excluding fenced code (lexer does that for us).
+ * List items live on `items` and table cells on `header` / `rows`, not `tokens` — without
+ * those four recursions every link inside a list or a table escapes the check.
+ */
 function linksOf(markdown) {
   const links = []
   const visit = (list) => {
+    if (!Array.isArray(list)) return
     for (const token of list) {
       if ((token.type === 'link' || token.type === 'image') && token.href) links.push(token.href)
-      if (token.tokens) visit(token.tokens)
+      visit(token.tokens)
+      visit(token.items)
+      visit(token.header)
+      if (Array.isArray(token.rows)) for (const row of token.rows) visit(row)
     }
   }
   visit(lexer(markdown))

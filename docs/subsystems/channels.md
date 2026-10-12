@@ -30,6 +30,8 @@ Loom 消费方只接 `workspace`，需要网关的 `channels` 服务以及 `runt
 
 不确定记录以动态 context `loom:undelivered`（order 45）进入后续请求，提醒先核实、不要盲目重发。相同 `(channel, route)` 上较晚的成功发送会让旧不确定记录退出提醒集合，但不把旧记录改成已送达。Loom 没有自动重发或自动切 provider。
 
+提醒集合每次组装请求时对整张 effect 表读一遍算出（`uncertainDeliveries()`），且 delivered 记录不清理——表随部署寿命单调增长。单会话一次一条的量级下无影响；长期高频部署会随记录数线性变慢，这是已知未优化项，不是保证的吞吐。
+
 ## 未发送文本的提醒
 
 一个已交付输入对应的 Turn 写了 assistant 文本却没有调用 `message` 时，`agent/turn-stopping` 会 steer 一次 notice，让主体决定发送或保持沉默；不会强制发送，也不会形成重复提醒循环。调用过 `message` 即使发送失败，也不再次催发，因为不确定投递上下文已负责说明风险。

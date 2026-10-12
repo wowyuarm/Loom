@@ -93,6 +93,32 @@ describe('check-docs', () => {
     }
   })
 
+  it('rejects broken links inside list items and table cells', async () => {
+    // List items hang off `items` and table cells off `header`/`rows`, not `tokens`: a traversal
+    // that only follows `tokens` misses both, so this fixture fails loudly if that regresses.
+    const root = await fixture({
+      'README.md': [
+        '# 标题',
+        '',
+        '- [列表里缺文件](nope-list.md)',
+        '',
+        '| 列 | 列 |',
+        '| --- | --- |',
+        '| [表头缺](nope-header.md) | [单元格缺](nope-cell.md) |',
+        '',
+      ].join('\n'),
+    })
+    try {
+      const result = await check(root)
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain('nope-list.md')
+      expect(result.stderr).toContain('nope-header.md')
+      expect(result.stderr).toContain('nope-cell.md')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects CRLF and missing trailing newline', async () => {
     const root = await fixture({ 'README.md': '# 标题\r\n没有结尾' })
     try {
@@ -100,6 +126,36 @@ describe('check-docs', () => {
       expect(result.code).toBe(1)
       expect(result.stderr).toContain('newline')
       expect(result.stderr).toContain('LF')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('covers .scratch work records but skips the gitignored .scratch/local/', async () => {
+    const root = await fixture({
+      'README.md': '# 标题\n',
+      '.scratch/README.md': '# 索引\n\n[工作项](active/work/README.md)\n',
+      '.scratch/active/work/README.md': '# 工作项\n\n[回索引](../../README.md)\n',
+      // local/ is private scratch: a dangling link there must not fail the gate.
+      '.scratch/local/draft.md': '# 草稿\n\n[随便](nowhere.md)\n',
+    })
+    try {
+      const result = await check(root)
+      expect(result.code, result.stderr).toBe(0)
+      expect(result.stdout).toContain('3 file(s)')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a broken link inside .scratch', async () => {
+    const root = await fixture({
+      '.scratch/active/work/README.md': '# 工作项\n\n[缺文件](../gone/README.md)\n',
+    })
+    try {
+      const result = await check(root)
+      expect(result.code).toBe(1)
+      expect(result.stderr).toContain('gone/README.md')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

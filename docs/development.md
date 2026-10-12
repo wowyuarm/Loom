@@ -24,8 +24,10 @@ npm run build          # 清理 lib/ 后按 tsconfig.build 产出发布物
 | --- | --- | --- |
 | 插件行为（src/） | `npm run typecheck` + 对应能力测试 | 跨插件协作 → `npm test`（含 [boot-smoke](<../tests/boot-smoke.spec.ts>) 组装验证） |
 | 组合清单（cordis.patch.yml / presets/） | [bundle-manifest 测试](<../tests/bundle-manifest.spec.ts>) | 真 Profile 组合 → `DSH_HOME=<隔离 home> node bin/loom.mjs --profile <名> --dump-config`，见[部署指南](<cookbook/deployment.md>) |
-| 文档（docs/、README、AGENTS、CONTEXT） | `npm run test:docs` | 其中引用的命令逐个实际执行过 |
+| 文档（docs/、README、AGENTS、CONTEXT）与[工作记录](<../.scratch/README.md>) | `npm run test:docs` | 其中引用的命令逐个实际执行过 |
 | 发布物（exports/files/bin） | `npm run build` | 在隔离 home 以产物挂载验证 |
+
+`test:docs` 对文档与工作记录的要求不同：`docs/` 是维护集，文字必须描述当前行为；`.scratch/` 是历史与工作材料，结论可以被后来的源码推翻，但既然入了版本库，其中的链接就该能打开——门只检查链接与维护结构，不检查结论新旧。
 
 **证据写进报告时只说做过的。** 单元测试证明编排逻辑，组装冒烟证明插件接得上，dump-config 只证明清单组合，真实渠道/provider/部署操作各是独立的验证，不能互相冒充。
 
