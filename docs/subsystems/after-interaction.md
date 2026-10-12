@@ -6,9 +6,9 @@
 
 配置为 `workspace`，依赖 `agentRuntime`、`clock`、`jev`、`sessionProjections` 和 `timer`。缺少 jev 服务时本插件不激活，不妨碍主运行时。定时器由 Cordis effect 持有，只活在当前插件生命周期内，重启不会恢复未触发的检查。
 
-主主体接纳人的输入时取消旧定时器；由该输入开启的 Turn 以 `completed` 结束后，随机等待一段时间再检查。等待窗口见[定时实现](<../../src/after-interaction/alarm.ts>)，不是部署配置字段。
+真人输入进入主主体 inbox 时取消旧定时器与当前判断，并移除自身尚未接纳的 notice；包含该输入的 Turn（包括人中途加入自主回合）以 `completed` 结束后，随机等待一段时间再检查。等待窗口见[定时实现](<../../src/after-interaction/alarm.ts>)，不是部署配置字段。
 
-触发时必须仍是原主 Agent、处于 idle 且没有待处理输入，再通过 `runMaintenance` 取得维护窗口。条件不满足就丢弃，不补排、不重试；换代后的主体不会接到旧 generation 的定时检查。判断前后都复查人的新输入，避免把已经失效的停顿当成机会。
+触发时必须仍是原主 Agent、处于 idle 且没有待处理输入，再通过 `runMaintenance` 取得维护窗口。条件不满足就丢弃，不补排、不重试；换代后的主体不会接到旧 generation 的定时检查。判断前后都复查人的新输入与取消状态，避免把已经失效的停顿当成机会。与长期自主检查的配合见 [pulse](<pulse.md>)。
 
 ## 判断与模型看到什么
 

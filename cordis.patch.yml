@@ -271,3 +271,17 @@
       name: 'loom/after-interaction'
       config:
         workspace: !!js dshHomePath('loom/workspace')
+
+    # The activity-anchored heartbeat. after-interaction above answers "is this conversation still
+    # alive" in the minutes after the person stops; this answers the question that one can never
+    # reach — "does the subject's own account have anything to move" once any activity (the
+    # person's or its own) has been quiet for a window. The two share no state and both fold from
+    # the same session log: an after-interaction wake is activity that pushes this check out, a
+    # pure pulse wake does not arm after-interaction; a human joining it does. The person outranks
+    # both. `dryRun` (on here) records each attend in the ledger instead of steering, so the real distribution is
+    # what calibrates the threshold before any wake is enabled.
+    - id: pulse
+      name: 'loom/pulse'
+      config:
+        workspace: !!js dshHomePath('loom/workspace')
+        dryRun: true

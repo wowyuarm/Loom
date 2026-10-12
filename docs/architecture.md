@@ -51,6 +51,7 @@ Loom 把 DSH 的可替换插件栈组合成一个长期存在的 Individual。�
 | 工作区版本与行修改时间 | 工作区 Git；workspace-history 尝试提交和读取 | 没有仓库时不自动初始化，也不阻止 Turn |
 | 模型路由控制文件 | 部署侧文件；model-switch 每 Step 读取 | 路径归属不是文件访问隔离 |
 | 对话后定时检查 | after-interaction 插件生命周期内的内存 | 不持久、不跨重启恢复，不是未来任务调度器 |
+| 活动时间线与 pulse 账本 | pulse 插件：Session 投影恢复回合事实，storage-domain 保存跨重启/换代的时刻与记录 | 不补跑漏掉的心跳，quiet 检查不算活动，不是未来任务调度器 |
 
 ## 能力参考与验证入口
 
@@ -62,6 +63,7 @@ Loom 把 DSH 的可替换插件栈组合成一个长期存在的 Individual。�
 | channels / turn-failures / log | 渠道收发、投递不确定性、失败可见 | [渠道](<subsystems/channels.md>) |
 | skills | 单工作区的技能发现与初始技能 | [技能](<subsystems/skills.md>) |
 | after-interaction | 人开启的对话停顿后做一次判断 | [对话后检查](<subsystems/after-interaction.md>) |
+| pulse | 任何活动冷却约 30 分钟后做一次二元判断，必要时唤醒主体 | [pulse](<subsystems/pulse.md>) |
 | model-switch | 请求边界切换部署声明的模型路由 | [模型切换](<subsystems/model-switch.md>) |
 
 改动应沿上述职责定位，不按“底层/上层”拆出半条工作路径。最小整栈验证入口是 [boot-smoke](<../tests/boot-smoke.spec.ts>)；它使用脚本化 mock 模型和临时工作区，不证明真实渠道或真实 provider 的可用性。验证选择见[开发指南](<development.md>)。

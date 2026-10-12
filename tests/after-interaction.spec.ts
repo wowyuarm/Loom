@@ -153,6 +153,25 @@ describe('loom after-interaction fold', () => {
     expect(state.exchanges.at(-1)).toEqual({ from: 'loom', text: '在的，怎么了？', place: '', time: 3_000, turn: 1 })
   })
 
+  it('folds a human message steered into a non-user turn as that turn\'s pause trigger', () => {
+    // The pulse scenario: the subject is awake on a non-user notice (a pulse, or any other
+    // non-user source), the person steers a message into that running turn, and the fold must
+    // record it as this turn's human input — which is what lets the pause after this turn arm a
+    // check even though the turn was not opened by the person.
+    let state = initial()
+    state = applyAfterInteractionEvent(state, turnStart(1))
+    // A non-user notice opens the turn (a pulse): not the person, so it neither arms nor counts.
+    state = applyAfterInteractionEvent(state, inbound('a quiet moment', 1_000, '@loom/pulse'))
+    expect(state.lastHumanInputTime).toBeNull()
+    expect(state.lastHumanTurn).toBe(0)
+
+    // The person steers into the running turn.
+    state = applyAfterInteractionEvent(state, inbound('[telegram · direct]\n我看到你在弄那个', 1_500))
+    expect(state.lastHumanInputTime).toBe(1_500)
+    // The arming fact: the human input landed in turn 1, so turn 1's end is a pause they caused.
+    expect(state.lastHumanTurn).toBe(1)
+  })
+
   it('spends the conversation budget from the newest message backwards, whole messages only', () => {
     // Each message is 100 characters long, so the budget holds forty of them and no more.
     const said = (index: number): string => `第 ${index} 句`.padEnd(100, '。')
@@ -637,7 +656,11 @@ describe('loom after-interaction check', () => {
   it('steps aside when the person speaks while the judgement is in flight', async () => {
     let release: ((result: JevResult) => void) | undefined
     const judged = new Promise<JevResult>(resolve => { release = resolve })
-    const h = await boot(new MockAdapter([textResponse('在的。'), textResponse('好')]), () => judged)
+    let abortSeen = false
+    const h = await boot(new MockAdapter([textResponse('在的。'), textResponse('好')]), request => {
+      request.signal?.addEventListener('abort', () => { abortSeen = true }, { once: true })
+      return judged
+    })
     try {
       const agent = live(h)
       await runTurn(agent, '那个事你看了吗')
@@ -650,6 +673,7 @@ describe('loom after-interaction check', () => {
       // ⑤ The judgement call is the window: their message lands in the inbox while the maintenance
       // task holds the agent, so the log cannot carry it yet and the pass has to look.
       agent.followup(createUserMessage({ content: [{ type: 'text', text: '算了，我想起来了' }], source: { kind: 'user' } }))
+      expect(abortSeen).toBe(true)
       release?.(verdict({ quiet: 0.05, speak: 0.9, act: 0.05 }))
       await agent.whenIdle()
 

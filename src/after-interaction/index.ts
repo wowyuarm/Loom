@@ -65,6 +65,17 @@ export function apply(ctx: Context, config: AfterInteractionConfig): void {
   // The timer belongs to this fiber, so a restart drops a pending silence instead of replaying it.
   const alarm = new SilenceAlarm(contextTimer(ctx))
   const logger = ctx.logger('after-interaction')
+  let evaluation: { agent: Agent; controller: AbortController } | undefined
+  ctx.effect(() => () => { evaluation?.controller.abort() }, 'after-interaction.cancel')
+  ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    if (agent !== ctx.agentRuntime.current() || message.source.kind !== 'user') return
+    alarm.cancel()
+    if (evaluation?.agent === agent) evaluation.controller.abort()
+    // During maintenance, a human input is queued before any user/message event can be committed.
+    for (const notice of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) {
+      if (notice.source.kind === AFTER_INTERACTION_SOURCE_KIND) agent.inbox.remove(notice.id)
+    }
+  })
 
   ctx.on('session/event', (session, event) => {
     const agent = ctx.agentRuntime.current()
@@ -86,14 +97,17 @@ export function apply(ctx: Context, config: AfterInteractionConfig): void {
     const state = ctx.sessionProjections.stateOf(session, AFTER_INTERACTION_KEY)
     if (state === undefined) return
     // ① The design's one-clock rule (§4a①): only a pause the person caused may arm a check. The
-    // turn that just committed has to be the one their input opened — a turn this plugin's own note
-    // opened ends here too, and arming on it would make every check feed the next one.
+    // turn that just committed must contain human input, including input steered into an autonomous
+    // turn. A purely autonomous turn must not arm another after-interaction check.
     if (state.lastHumanTurn !== event.data.turn) return
     if (alarm.pending) return
     const delayMs = silenceDelay()
     logger.info(`silence armed after turn ${event.data.turn}: ${Math.round(delayMs / 1000)}s`)
     alarm.arm(delayMs, () => {
-      void check(ctx, config, logger, agent)
+      const controller = new AbortController()
+      evaluation = { agent, controller }
+      void check(ctx, config, logger, agent, controller.signal)
+        .finally(() => { if (evaluation?.controller === controller) evaluation = undefined })
     })
   })
 }
@@ -105,7 +119,7 @@ export function apply(ctx: Context, config: AfterInteractionConfig): void {
  * task, or a turn that opened in between all mean this pause never really stopped, and the design
  * drops the check without rescheduling it (§4a②) — the next pause the person causes asks again.
  */
-async function check(ctx: Context, config: AfterInteractionConfig, logger: Logger, agent: Agent): Promise<void> {
+async function check(ctx: Context, config: AfterInteractionConfig, logger: Logger, agent: Agent, cancel: AbortSignal): Promise<void> {
   if (agent !== ctx.agentRuntime.current()) {
     logger.info('after-interaction check dropped: the generation moved on')
     return
@@ -115,7 +129,7 @@ async function check(ctx: Context, config: AfterInteractionConfig, logger: Logge
     return
   }
   try {
-    await agent.runMaintenance(signal => runPass(ctx, config, logger, agent, signal))
+    await agent.runMaintenance(signal => runPass(ctx, config, logger, agent, AbortSignal.any([signal, cancel])))
   } catch (error: unknown) {
     // `runMaintenance` throws synchronously when a turn or another maintenance task already owns the
     // agent. The phase check above is the guard; this is the backstop for the race it cannot see.
@@ -140,7 +154,7 @@ async function runPass(
   }
   const now = ctx.clock.now()
   const materials = await readMaterials(config.workspace, state)
-  if (hasPendingInput(agent)) {
+  if (signal.aborted || agent !== ctx.agentRuntime.current() || hasPendingInput(agent)) {
     logger.info('after-interaction check stepped aside: the person wrote first')
     return
   }
@@ -174,7 +188,7 @@ async function runPass(
   // snapshot was taken before the call, so anything later than it wins; nothing awaits between this
   // recheck and the hand-off, so nothing can slip in behind it.
   const latest = ctx.sessionProjections.stateOf(agent.session, AFTER_INTERACTION_KEY)
-  if (hasPendingInput(agent) || (latest?.lastHumanInputTime ?? 0) > now) {
+  if (signal.aborted || agent !== ctx.agentRuntime.current() || hasPendingInput(agent) || (latest?.lastHumanInputTime ?? 0) > now) {
     logger.info('after-interaction stepped aside: the person spoke again before the check finished')
     return
   }

@@ -54,6 +54,10 @@
       "types": "./lib/after-interaction/index.d.ts",
       "default": "./lib/after-interaction/index.js"
     },
+    "./pulse": {
+      "types": "./lib/pulse/index.d.ts",
+      "default": "./lib/pulse/index.js"
+    },
     "./workspace-history": {
       "types": "./lib/workspace-history/index.d.ts",
       "default": "./lib/workspace-history/index.js"

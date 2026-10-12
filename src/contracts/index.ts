@@ -114,12 +114,19 @@ export interface RuntimeState {
 export const AFTER_INTERACTION_SOURCE_KIND = '@loom/after-interaction'
 
 /**
+ * Attribution id of the pulse plugin's own content: the quiet moment it hands the agent when the
+ * activity timeline has been still long enough. It sits here rather than in that plugin because
+ * two modules must agree on it — the producer stamps it, and the continuity host classifies it.
+ */
+export const PULSE_SOURCE_KIND = '@loom/pulse'
+
+/**
  * Source kinds whose content is about a moment rather than a fact: an observation that was true
  * when it was written and that a successor generation should rederive from its own log instead of
  * inheriting as text. The continuity host answers `isEphemeralNotice` from this list, and each
  * producer stamps its own content with the same entry.
  */
-export const ephemeralNoticeSourceKinds: readonly string[] = [AFTER_INTERACTION_SOURCE_KIND]
+export const ephemeralNoticeSourceKinds: readonly string[] = [AFTER_INTERACTION_SOURCE_KIND, PULSE_SOURCE_KIND]
 
 declare module '@deepseek-ai/cordis' {
   interface Events {

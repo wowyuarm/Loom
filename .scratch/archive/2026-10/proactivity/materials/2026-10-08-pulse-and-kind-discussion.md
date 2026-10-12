@@ -89,7 +89,7 @@
 ## 2. 关键机制与代码对接事实
 
 ### 2.1 现有代码中的硬编码缺陷
-在 [`src/agent-runtime/runtime.ts`](../../../../src/agent-runtime/runtime.ts#L172-L178)：
+在 [`src/agent-runtime/runtime.ts`](../../../../../src/agent-runtime/runtime.ts#L172-L178)：
 ```ts
 deliver(text: string): boolean {
   const agent = this.handle?.agent
@@ -111,13 +111,13 @@ deliver(text: string, source?: MessageSource): boolean
 ### 2.3 周边插件分流纪律（核心守则）
 当且仅当输入的 `source.kind !== 'user'` 时：
 1. **`channels` 旁路追问**：
-   [`src/channels/index.ts`](../../../../src/channels/index.ts) 中的 `UnansweredReplyWatch` 仅在 `source.kind === 'user'` 时标记 `inboundArrived()`。对 `@loom/pulse`，模型写了文本但未调用 `message` 工具是绝对合法的内部思考，严禁弹出 `unansweredReplyNotice`。
+   [`src/channels/index.ts`](../../../../../src/channels/index.ts) 中的 `UnansweredReplyWatch` 仅在 `source.kind === 'user'` 时标记 `inboundArrived()`。对 `@loom/pulse`，模型写了文本但未调用 `message` 工具是绝对合法的内部思考，严禁弹出 `unansweredReplyNotice`。
 2. **`after-interaction` 严禁布防**：
-   严格守住 §4a① 铁律。[`src/after-interaction/index.ts`](../../../../src/after-interaction/index.ts#L88-L91) 必须确认刚结束的 turn 是由 `source.kind === 'user'` 开启的。非 user 唤醒产生的 turn 结束后，**绝不挂静默闹钟**，杜绝自激死循环。
+   严格守住 §4a① 铁律。`src/after-interaction/index.ts`（后被 pulse 取代，见 `src/pulse/`）必须确认刚结束的 turn 是由 `source.kind === 'user'` 开启的。非 user 唤醒产生的 turn 结束后，**绝不挂静默闹钟**，杜绝自激死循环。
 3. **`time-context` 防污染**：
    不更新 `lastHumanInputTime`，人类未开口的客观事实不被覆盖。
 4. **`context-continuity` 标记临时通知**：
-   在 [`src/contracts/index.ts`](../../../../src/contracts/index.ts#L122) 中，将 `@loom/pulse` 登记进 `ephemeralNoticeSourceKinds`。Session rollover 换代时，此类引导通知不按历史文本机械继承，保持主线干净。
+   在 [`src/contracts/index.ts`](../../../../../src/contracts/index.ts#L122) 中，将 `@loom/pulse` 登记进 `ephemeralNoticeSourceKinds`。Session rollover 换代时，此类引导通知不按历史文本机械继承，保持主线干净。
 
 ### 2.4 Prompt Framing 姿态引导
 给主模型的输入带有明确的语义信封：

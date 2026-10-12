@@ -16,6 +16,7 @@
 | 改渠道、附件或交付可靠性 | [渠道](<subsystems/channels.md>) | [消费实现](<../src/channels/index.ts>)与[渠道测试](<../tests/channels.spec.ts>) |
 | 改技能范围或初始技能 | [技能](<subsystems/skills.md>) | [技能提供方](<../src/skills/index.ts>)与[测试](<../tests/skills.spec.ts>) |
 | 改对话后的唤醒判断 | [对话后检查](<subsystems/after-interaction.md>) | [实现](<../src/after-interaction/index.ts>)与[测试](<../tests/after-interaction.spec.ts>)；未决研究见[工作记录](<../.scratch/README.md>) |
+| 改长期无人的自主唤醒 | [pulse](<subsystems/pulse.md>) | [实现](<../src/pulse/index.ts>)与[测试](<../tests/pulse.spec.ts>) |
 | 改活体模型路由 | [模型切换](<subsystems/model-switch.md>) | [实现](<../src/model-switch/index.ts>)与[测试](<../tests/model-switch.spec.ts>) |
 | 部署、授权或配置模型 | [部署指南](<cookbook/deployment.md>) | [组合声明](<../cordis.patch.yml>) |
 | 安装或替换外部插件 | [扩展指南](<cookbook/extending.md>) | 对应插件的配置与版本声明 |
