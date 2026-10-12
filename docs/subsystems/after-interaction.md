@@ -1,0 +1,25 @@
+# 对话后的单次检查
+
+`after-interaction` 在人开启的对话停顿后，做一次独立判断，必要时给主主体一条可行动的情境提示。它不是未来任务调度器，也不会因自身检查后的 Turn 无限重启定时器。研究中的其它主动性方案不属于本文的当前行为。
+
+## 条件与生命周期
+
+配置为 `workspace`，依赖 `agentRuntime`、`clock`、`jev`、`sessionProjections` 和 `timer`。缺少 jev 服务时本插件不激活，不妨碍主运行时。定时器由 Cordis effect 持有，只活在当前插件生命周期内，重启不会恢复未触发的检查。
+
+主主体接纳人的输入时取消旧定时器；由该输入开启的 Turn 以 `completed` 结束后，随机等待一段时间再检查。等待窗口见[定时实现](<../../src/after-interaction/alarm.ts>)，不是部署配置字段。
+
+触发时必须仍是原主 Agent、处于 idle 且没有待处理输入，再通过 `runMaintenance` 取得维护窗口。条件不满足就丢弃，不补排、不重试；换代后的主体不会接到旧 generation 的定时检查。判断前后都复查人的新输入，避免把已经失效的停顿当成机会。
+
+## 判断与模型看到什么
+
+判断输入包括当前 UTC+8 时刻、距人上次输入的间隔、从 Session 投影取得的有界近期对话，以及工作区 attention/threads 的有界文本。材料读取失败按空处理，精确限制见[判断材料](<../../src/after-interaction/materials.ts>)。
+
+jev 只返回 `quiet`、`speak`、`act` 的概率；Loom 按 quiet 阈值决定是否 wake，再选择 speak/act。概率必须是有限数，但当前代码不另校验概率区间或总和。阈值及提问是校准的一部分，权威在[verdict](<../../src/after-interaction/verdict.ts>)，不能从文档另加 quiet hours、冷却或次数限制。
+
+调用失败、无法读取结果或 verdict 为 quiet 时保持沉默。非 quiet 时，主主体只看到一条 `@loom/after-interaction` notice；不看到概率，也不重复全部材料。notice 建议继续说话或推进未完成工作，主体仍可判断没有真实事项而结束。对外行动仍经[渠道 message](<channels.md>)，该插件自己不发消息。
+
+独立判断会消费 jev 的请求；主模型只有收到 notice 才产生下一轮。notice 是一时情境，不在[换代](<continuity.md>)时作为普通输入再携带。概率在运维日志中用于观察，不能据此声称当前校准已经保证主体行动质量。
+
+## 验证入口
+
+[after-interaction 测试](<../../tests/after-interaction.spec.ts>)使用可控 timer 与判断结果，覆盖只由人输入触发、idle 检查、判断失败、竞态让路与情况提示。它证明机械条件和文本，不证明真实 jev 在长期对话中的判断质量；行为评估需另外给出真实材料与观察证据。

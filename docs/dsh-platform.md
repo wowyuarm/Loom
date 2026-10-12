@@ -1,163 +1,58 @@
-# DSH 底座：模型、接缝与操作
+# DSH 底座与核对路径
 
-Loom 是坐在 DeepSeek Harness（DSH）上的一个 bundle。本文写 **DSH 的组合模型、Loom 实际用到的接缝，以及怎么把一个 Loom 部署跑起来**——都是已在真实运行中验证过的事实。
+Loom 复用 DeepSeek Harness（DSH）的插件组合、模型、循环、Session、工具和存储。本文说明如何找对依赖契约与组合接缝，不代替上游参考，也不把上游最新能力当作 Loom 当前事实。Loom 自己的协作见[架构](<architecture.md>)，操作见[部署](<cookbook/deployment.md>)与[扩展](<cookbook/extending.md>)。
 
-动手改任何能力前先读 DSH 对应子系统的源码和已有插件（根 [`AGENTS.md`](../AGENTS.md) 的规矩）；本文只给地图和已经踩实的路，不替代读源码。
+## 先确认实际版本
 
-## 一、Loom 在哪一层
+[package.json](<../package.json>)声明工程使用的 DSH 包，[npm lockfile](<../package-lock.json>)确定安装结果；[仓库启动器](<../bin/loom.mjs>)使用其中的本地运行时。不要用全局 `dsh` 或 npm `latest` 推断本仓库的版本。
 
-DSH 是一棵 Cordis 插件树，一切都是插件。组合靠三层，没有接线函数：
+```sh
+node bin/loom.mjs --version
+npm ls @deepseek-ai/dsh @deepseek-ai/dsh-base @deepseek-ai/cordis
+```
 
-| 概念 | 是什么 | 例子 |
+[上游仓库](<https://github.com/deepseek-ai/deepseek-harness>)与[上游文档](<https://deepseek-harness.github.io/deepseek-harness/>)用于定位和理解。旁边即使有 DSH checkout，也须核对其版本、提交和本次涉及的实现是否与安装包一致；安装包的导出声明和实际代码才是当前运行栈的契约。需要未发布行为时，先单独处理依赖升级，不把新 API 顺手写进 Loom。
+
+## 组合模型
+
+- **Plugin** 是一个可挂载能力，通过 Cordis 服务、事件与 effect 注册协作。
+- **Bundle** 由包的 `dsh.bundle.patch` 声明一份或多份有序 patch；Loom 当前发布 [Host](<../cordis.patch.yml>)和 [Preset 声明](<../presets/loom.patch.yml>)两份。
+- **Profile** 用自己的 package manifest 选择有序 Bundle，并加部署 patch。Loom 的常驻渠道入口不需要另一个 app Bundle；headless/web 等入口会带来它们自己的 Agent 生命周期，不能当作主主体的同义入口。
+
+当前 launcher 的覆盖顺序是：**Bundle 列表 → Profile patch → DSH home patch → 命令行 `--patch`**。home 层比 Profile 晚，会覆盖所有使用该 home 的 Profile；排错不能只读 Profile 文件。启动器还可能应用明确的环境策略，例如 telemetry opt-out。
+
+Patch 用两种不同的条目：顶层 `id` 修改已有行，`insert` 添加行。`config` 是整份替换，不深合并；改已有行时先读组合后的完整配置。`disabled: true` 保留并关闭行。`!!js` 在组合预览中保留表达式，在挂载时求值；不要把预览里的表达式当成已验证路径。
+
+模块名可以是包子路径、相对模块或 file URL。相对路径以声明该行的 patch 目录为基准；Bundle 和模块解析还使用运行时安装及 Profile 锚点。实际查找顺序和 provenance 应核对同版本 app-boot/loader，而不是凭启动 cwd 猜测。
+
+## 沿接缝找上游
+
+下表是阅读路由，不是第二份 API 签名表。安装后在相应 `node_modules/@deepseek-ai/<包>` 的导出声明与代码中定位；对应源码目录在上游仓库。
+
+| 本次涉及的问题 | 上游包族 / 接缝 | Loom 中的消费者或证据 |
 | --- | --- | --- |
-| plugin | 一个能力，经 `ctx` 服务与事件交互 | `@deepseek-ai/dsh-agent-loop` |
-| bundle | 一份插件清单（patch），包自带 | `@deepseek-ai/dsh-base`、`loom` |
-| profile | 有序 bundle 列表 + 自己的 patch 层 | `$DSH_HOME/profiles/<name>/` |
+| 清单、覆盖、路径、兼容性检查 | `dsh-app-boot`、`cordis-plugin-include`、`cordis-plugin-loader` | [Bundle 测试](<../tests/bundle-manifest.spec.ts>)、[包声明](<../package.json>) |
+| service / event / waterfall / effect | `cordis` | [contracts](<../src/contracts/index.ts>)与各插件 `inject` / `apply` |
+| 提示 section、动态 context 与请求组装 | `dsh-system-prompt`、`dsh-agent-loop` | [材料](<subsystems/materials.md>)、[resident-context 测试](<../tests/resident-context.spec.ts>) |
+| Agent 创建、写租约、输入与模型选择 | `dsh-agent`、`dsh-agent-loop`、`dsh-agent-default-model` | [运行时](<subsystems/runtime.md>)、[模型切换](<subsystems/model-switch.md>) |
+| 模型适配器、请求及 provider 元数据 | `dsh-llm` 与所选 provider | [mock adapter](<../tests/support/mock-adapter.ts>)、[boot-live](<../tests/boot-live.spec.ts>) |
+| Session 事件、投影与检索 | `dsh-session`、`dsh-session-projection`、`dsh-session-query-*`、`dsh-session-persistence-*` | [连续性检索](<../src/context-continuity/retrieval.ts>) |
+| 校验过的 KV domain 与底层 medium | `dsh-storage`、`dsh-storage-domain`、`dsh-storage-sqlite` | [域声明](<../src/runtime-state/domain.ts>)、[状态测试](<../tests/runtime-state.spec.ts>) |
+| Agent plane、scope 与 isolate realm | `dsh-agent-preset-registry`、`dsh-agent-preset` | [Preset](<../presets/loom.patch.yml>)、[创建窗口](<../src/agent-runtime/index.ts>) |
+| 工具执行、文件权限、后台 jobs | `dsh-tools`、`dsh-tool-*`、`dsh-sandbox-*`、`dsh-jobs-*` | [运行时权限](<subsystems/runtime.md#存储与权限边界>)、[Preset](<../presets/loom.patch.yml>) |
+| 技能 catalog、发现与正文读取 | `dsh-skill`、`dsh-skill-filesystem`、`dsh-tool-skill` | [技能包装层](<../src/skills/index.ts>) |
+| 配置与模块热重载 | `dsh-hmr`、loader、可编辑配置 | [部署指南](<cookbook/deployment.md>) |
 
-**Loom 是 bundle，不是 app。** 一个完整部署是三段叠加：
+Loom 也依赖独立发布的 continuity、jev 与渠道网关包。版本同样以 lockfile 为准，它们不是 DSH 内置功能；continuity 的 Host 适配在[能力页](<subsystems/continuity.md>)，网关授权与传输在[渠道页](<subsystems/channels.md>)，不要把提供方的行为归给包装层。
 
-```
-  dsh-base          标准栈：llm / session / agent / agent-loop / tools /
-                    system-prompt / sandbox / skill / compaction / credentials
-+ 一个 app bundle   人机入口：headless / web / acp / sdk
-+ loom              让这套栈成为一个持续存在的 agent
-```
+## 两条提示排序轴
 
-app bundle 是可替换的：将来 channels（Telegram 等）就是 Loom 自己的入口，那时不必要人机 app。
+System sections 与动态 contexts 独立排序，order 不能跨两块比较。动态函数在 assembly 中现读，DSH loop 管理快照持久记录和重注入；“现读”不意味着每个 Step 追加一份重复文本。Loom 的具体位置与预算见[材料参考](<subsystems/materials.md>)。
 
-**Loom 只换上层、复用底层，是顺着 DSH 的纹理走，不是硬改。** DSH 的底层机制——turn/step 循环、service/event/waterfall 接缝、session/storage/sandbox——是中立的，不预设 agent 是干什么的；"编码 agent" 的味道集中在上层那批任务脚手架插件（`goal`、`plan-mode`、`tool-todo`、`tool-ralph` 及其工具面）。Loom 在 `cordis.patch.yml` 里禁掉的正是这层脚手架，复用的是中立底层，所以转向发生在配置层，不需要 fork 或改 DSH 内部。这也是复用 92 个插件里保留约 67 个、只自写 7 个插件就能把 "编码 CLI" 改造成 "持续存在的个体" 的原因。
+事件通常是全局广播，监听器必须明确是否过滤主 Session；不要从服务名猜它只作用于主主体。返回 disposer 的注册和异步资源关闭应由 effect 持有并等待完成，尤其是持久化设施。新增能力的操作例子见[开发指南](<cookbook/adding-capability.md>)。
 
-## 二、组合机制（写 bundle patch 必须知道）
+## 验证与升级边界
 
-包的 `package.json` 声明 `dsh.bundle.patch: "./cordis.patch.yml"`，loader 据此挂载。
+配置 dump 只检查组合，不导入并激活每个插件，也不证明 credential、sandbox 或真实请求可用。测试栈、实际挂载和真实外部效果是不同证据，选择见[开发指南](<development.md>)。
 
-patch 文件是一个操作列表，**两种条目，语义完全不同**：
-
-```yaml
-# 改已有行：顶层 id。注意 config 是整份替换，不是合并 —— 要把该行配置写全
-- id: storage-domain
-  config:
-    backend: json            # base 原有的值也必须重述，否则丢失
-    routes:
-      loom_runtime_state: sqlite
-
-# 新增行：insert
-- insert:
-    - id: clock
-      name: 'loom/clock'
-```
-
-其它要点：
-
-- **叠加顺序**：bundle 按 profile 列表顺序 → profile 自己的 patch → 启动器 `--patch`。同一 id 后写的赢。
-- **`!!js` 表达式在组合期不求值**，composeEntries 里是 `{__jsExpr: "..."}`，挂载期才算。可用词汇：`dshHomePath('...')`、`process.env`、`process.cwd()`、`ctx.get(...)`。
-- **插件 `name` 是模块标识符**，loader 要能解析。单包多插件就用子路径导出（`loom/clock` ← package.json `exports` 的 `./clock`）。
-- 关掉某行用 `disabled: true`，不是删除。
-
-## 三、怎么跑一个部署
-
-`$DSH_HOME` 是部署根：一个 home 就是一个部署，profile、session、storage、凭据都在里面。
-
-profile 目录 = `package.json`（`dsh.profile.bundles` 有序列表）+ 可选的 `cordis.patch.yml`：
-
-```json
-{ "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-headless", "loom"] } } }
-```
-
-launcher 的两条关键命令：
-
-| 命令 | 用途 |
-| --- | --- |
-| `dsh --profile <name> --dump-config` | 打印组合后的完整插件树并退出，**带来源标注**（`# == dsh-base, patched by loom`）。验证清单的第一手段，不花钱不联网。 |
-| `dsh --profile <name> "<任务>"` | 配合 headless app 跑一次任务后退出。验证整栈真能挂载、真能跑一轮。 |
-
-开发中的 bundle 让 profile 能解析到：在 profile 的 `node_modules/` 里软链到源码目录即可（profile 是第二解析锚点）。
-
-### 版本对齐陷阱
-
-- **npm 的 `latest` dist-tag 被故意压在一个很低的版本**（`dsh-base` 的 latest 是 `0.0.1-rc.1`），直接 `npm view <pkg> version` 会误导。要看 `versions` 列表并显式装对齐的版本；alpha 线在 `alpha` tag 上。
-- 整套 DSH 包必须同版本线（Loom 当前钉在 `0.1.7-rc.2`），`dsh-base` 会把子插件 pin 在同线。
-- **升一个小版本要预期包改名和配置字段增减**。`0.1.6 → 0.1.7` 就换掉了 preset 机制：`@deepseek-ai/dsh-agent-presets`（复数，根目录发现式）变成 `dsh-agent-preset-registry` + `dsh-agent-preset`（单数，声明式），旧配置字段（`roots`、`includeShippedRoot`、`includeUserRoot`）在 0.1.7 里一个都不存在。升级前先 `npm view <包>@<目标版本> version` 逐个确认存在，再看 `--dump-config` 有没有报错。
-- `cordis` 版本要同时满足 DSH 的 peer（`^4.0.2`）和 loader/include 的 peer（`~4.0.4`）——取交集。
-
-## 四、Loom 用到的接缝
-
-| 接缝 | 用法 | 关键约束 |
-| --- | --- | --- |
-| service | `ctx.provide('name', impl)` / `inject = ['name']` | 名字裸用功能名（DSH 惯例），撞名在加载期直接报错 |
-| 静态提示段 | `ctx.systemPrompt.section({name, order, text})` | 跨轮稳定；`deployment:persona-prefix` 占 order 0，base 留空 |
-| 动态上下文 | `ctx.systemPrompt.context({name, order, text})` | **每轮重新求值**，`text` 用函数就能现读文件 |
-| 工具 | `ctx.tools.register(defineTool({...}))` | 返回 disposer；`exec.agent?.id` 是 SessionId |
-| KV 域 | `ctx.storageDomain.open(spec)` | 域名/表名必须匹配 `/^[a-z][a-z0-9_]*$/` |
-| 会话投影 | `ctx.sessionProjections.register(def)` / `.stateOf(session, key)` | register 返回 disposer；投影按 key 全局注册一次，对每个 session 驱动 |
-| agent 生命周期 | `ctx.agents.create({sessionId, meta})` / `.resume({resumeSessionId})` | 返回 handle，**disposer 是一种能力**：只有持有者能拆 |
-| 会话事件 | `ctx.on('session/event', (session, event) => …)` | 全局广播，消费者自己按 session 过滤 |
-| 轮次闸门 | `ctx.on('agent/pre-step', async ({agent, messages}, next) => …)` | waterfall，可返回 `{kind:'reject'}` 挡下这一步 |
-
-两条**互相独立**的排序轴，渲染成两块，不要混淆：
-
-```
-  静态系统提示（sections）          动态上下文快照（contexts）
-  0      persona-prefix（base 留空）  10   identity      ← 每轮现读
-  100    loom:orientation            20/25 memory core/index
-  500+   策略与工具 schema            30   threads-index
-  10200  persona-suffix              40   attention
-                                     110+ base 的 sandbox/approval
-```
-
-身份的落点：**persona 留空，identity.md 承载身份**。persona 是部署写死的静态段，identity.md 是 agent 自己长期维护、每轮现读的自我模型——Loom 选后者，因为身份该由 agent 自己攒。
-
-## 五、验证分三层
-
-| 层 | 怎么做 | 证明什么 |
-| --- | --- | --- |
-| 单元 | 真实现 + 打桩依赖（如真 runtime-state + 假 agent registry） | 编排逻辑、顺序、持久化语义 |
-| 组装冒烟 | 最小栈 7 件（llm/session/projection/system-prompt/tools/agents/agent-loop）+ 脚本化 mock 模型 | 插件之间真的接得上、一轮真的能跑完 |
-| 真部署 | `dsh --profile … --dump-config` 然后真跑一次 | 清单真组合、整栈真挂载、真模型真回答 |
-
-mock 模型的配方来自 DSH 自己的 `agent-loop/tests/agent.spec.ts`：`AgentLoop` 配 `{agents: []}`（**loop 自己不建 agent**，留给插件驱动），`ctx.llm.registerAdapter(['mock'], adapter)` 注册脚本化 adapter，`agent.followup(msg)` 送输入，`await agent.whenIdle()` 等这一轮结束。
-
-要真 key 的测试用环境变量 gate（没 key 自动 skip），默认套件保持离线确定。
-
-## 六、踩过的坑
-
-- **sqlite 键不能含 NUL**（`\u0000` 是 C 字符串终止符，会被截断）。复合键用 `JSON.stringify([a, b])` 编码，不要用分隔符拼接。
-- **域的 close disposer 必须 await**（`ctx.effect(() => async () => { await domain.close() })`），否则重启时 sqlite 可能还没 flush。
-- **域 global 的 `initial` 要类型断言**：TS 从字面量推出 `{}`，需要 `as` 到 schema 推导出的类型。
-- **域 global 存不了 null**（那是"从未写过"的哨兵），要存可空的值就包一层对象。
-- **用 `ctx.systemPrompt` / `ctx.tools` 前要副作用 import** 对应包，否则类型增强没加载。
-- **patch 的 `config` 是整份替换**，改一行 base 的配置要把该行其它字段重述一遍。
-- **`assemble()` 返回 Promise**，别忘了 await。
-
-## 七、Loom 自己的约定
-
-命名照 DSH（厂商前缀只加在包名和共享命名空间上）：
-
-| 层 | 约定 | 例 |
-| --- | --- | --- |
-| 包 | `@loom/<cap>` | `@loom/runtime-state` |
-| 插件 name / id | 裸功能名 | `runtime-state`、`agent-runtime` |
-| ctx 服务 | 裸 camelCase | `ctx.runtimeState`、`ctx.clock` |
-| 存储域 | `loom_<cap>` | `loom_runtime_state`（域是共享命名空间，要前缀） |
-| 归属 id | `@loom/<cap>` | `@loom/context-continuity`（要全局唯一） |
-| 模型可见的工具 | 裸 `verb_noun` | `memory_write`（模型不该看到厂商名） |
-
-服务接口集中在 `src/contracts/`（纯类型 + ctx 类型增强，零实现）。插件之间**只经 ctx 服务与事件交互**，不互相 import 实现——这是"能被替换"的支点：换一个提供同名服务的插件即可，不需要改消费者。
-
-## 八、把 DSH 当底座：性质与风险
-
-前七节是已跑通的事实。本节把这个底座的性质和代价讲清，供跟版和长期运行时决策。已验证的事实与尚未验证的关注点分开标注。
-
-把底座押在 DSH 上是对的选择——一个 agent harness 真正难写、且人人都要重造的通用底座（模型适配、可回放 session、agent 循环、工具、sandbox、持久化、compaction、凭据），DSH 已做成可替换插件且文档扎实，自研这些不会更好。代价是绑上了一个还在快速迭代的 preview，下面四条是已知性质和要守的纪律。
-
-1. **仍在 developer preview，承诺破坏性变更（事实）。** DSH README 大写声明 `THERE WILL BE COMPATIBILITY-BREAKING CHANGES`，版本还在 alpha/rc 线。Loom 钉在 `0.1.7-rc.2` 并稳定一段时间，升级是单独的工作项（预检清单见上一节）。
-   - 纪律：钉死一条版本线，不无理由追新；对 DSH 的接缝依赖收敛在 `src/contracts/`，上游改了只需动这一处。
-
-2. **版本偏斜是已发生的真实故障（事实）。** 见 §三「版本对齐陷阱」——整套 DSH 包不同线会导致启动失败、session 序号撞号、日志损坏，且是同源反复出现的一簇问题。
-   - 纪律：整套 DSH 包保持同版本线；升级第一道门是 `dsh --profile loom --dump-config`（离线、不花钱）核对组合树，再真跑一轮，别图快跳过。
-
-3. **DeepSeek 生态是 base 的默认深绑（事实）。** base 默认挂 `dsh-llm-deepseek`、`dsh-deepseek-account-platform`、`session-log-deepseek`、`deepseek-llm-api-extensions`。因为一切是插件，这是"可换"（换一个提供同 service 的插件）而非"锁死"，但真要换到中立生态要付适配成本。
-   - 纪律：清楚这是默认不是约束；需要中立时按插件替换，不要 fork DSH。
-
-4. **长期运行下的持久化成熟度未验证（关注点，Loom 自身尚未观测到该故障）。** DSH 的 session 持久化在"一次性编码任务"场景下验证充分；Loom 是长期存在、持续接消息、长期高频写的 individual，负载 profile 与 DSH 的设计场景不同。同生态的 agent-team 项目已在此撞到性能坑（session read 记录偏胖 + 每批全量 replay 顶 CPU）——这是 Loom 独有形态最可能复现的坑。
-   - 纪律：进入长期运行前，对 session/storage 做一次真实负载压测，别等撞墙才补。
+升级需单独检查包名、导出、配置字段、事件、provider 路由与持久数据兼容性。不要用版本豁免跳过未知风险；先在隔离 home 验证组合、受影响测试及一次有明确成功判据的真实请求。真实部署的重启、凭据与外部发送必须由拥有该操作授权的人执行，不能借文档验证隐式触发。

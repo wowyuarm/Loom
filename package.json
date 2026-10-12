@@ -82,7 +82,9 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node scripts/check-seeded-skills.mjs && vitest run",
+    "test": "node scripts/check-seeded-skills.mjs && npm run test:docs && vitest run",
+    "test:docs": "node scripts/check-docs.mjs && vitest run scripts/check-docs.test.mjs",
+    "check:docs": "node scripts/check-docs.mjs",
     "build": "node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "check:seeded-skills": "node scripts/check-seeded-skills.mjs"
   },
@@ -126,7 +128,10 @@
     "@types/node": "^24.0.0",
     "@wowyuarm/dsh-context-continuity": "^0.3.0",
     "@wowyuarm/dsh-jev": "0.1.1",
+    "entities": "8.0.0",
+    "github-slugger": "2.0.0",
     "js-yaml": "^4.3.2",
+    "marked": "18.1.0",
     "typescript": "^5.8.3",
     "vitest": "^4.1.8"
   },
