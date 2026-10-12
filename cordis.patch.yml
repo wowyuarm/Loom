@@ -38,7 +38,9 @@
 
 # Drop base's task-execution scaffolding. It equips a coding agent working a bounded task;
 # Loom is a continuous individual, and these tools plus their prompt sections are noise here.
-# Subagents stay: spawning helpers is a general capability, not task scaffolding.
+# Subagent tools are dropped with the rest: spawning helpers is task scaffolding here, and Loom runs
+# one continuous individual rather than delegating. The `subagents` *registry* stays enabled in the
+# host plane (below) — that is service plumbing, not a tool this agent can call.
 - id: plan-mode
   disabled: true
 - id: goal

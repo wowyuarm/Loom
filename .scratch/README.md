@@ -15,6 +15,23 @@
 
 ## 当前工作项入口
 
-本节只列尚未结束的工作项；已结束的见 `archive/YYYY-MM/`。
+本节只列尚未结束的工作项；已结束的见下节。
 
-- [continuity-and-memory](active/continuity-and-memory/README.md)：连续性 Individual 的 session（记录层）与 memory（理解层）设计——三轴模型、醒来 bundle、薄 memory 工具、search 双通道、jev 接缝。
+- [loom-architecture](active/loom-architecture/FRAMEWORK.md)：全局骨架——模块分解、数据所有权、DSH 复用判定、第一个切片边界。各模块在其下逐一展开。
+- [workspace — 初始化缺口](active/workspace/initialization-gaps.md)：Instance Root 的 provisioning 层仍是缺口（workspace 层已落地）。取舍已收进 [ADR 0001](../docs/adr/0001-no-provisioning-primitive.md)。
+- [proactivity](active/proactivity/README.md)：after-interaction 已有源码实现，继续由 体验侧 评估；总体主动性原则已记入 DESIGN，当前收敛活动锚定的 jev-pulse（DESIGN §9），唯一未决是 §9.7 self-source 给不给；未授权新实现或派发。§9.11 收有三个"更后"候选。
+
+## 已归档
+
+这些工作项已由源码落地，**当前行为以 `src/` 与 `docs/` 为准**；下面的材料只代表当时的设计上下文，不覆盖落地行为（[AGENTS.md](AGENTS.md) 的归档规则）。
+
+- [continuity-and-memory](archive/2026-10/continuity-and-memory/README.md)：材料/记忆与连续性召回的设计。
+- [channels](archive/2026-10/channels/README.md)：独立的 dsh-channel-gateway 方案 + Loom 消费层。
+- [runtime-state](archive/2026-10/runtime-state/README.md)：连续性 store，v1 = 指针 + 去重账本。
+- [effect-delivery](archive/2026-10/effect-delivery/README.md)：出站 Effect/Delivery 账本。
+- [assembly-persona](archive/2026-10/assembly-persona/README.md)：boot/reattach、单活锁、中性 persona vs identity、Loom bundle。
+- [dsh-alignment](archive/2026-10/dsh-alignment/README.md)：逐模块对照 DSH——分层与接缝地图、已确认的判断错误；B 工作项（检索 + 回返/checkpoint）由 `8eced7c` 实装。
+- [workspace — 结构设计](archive/2026-10/workspace/README.md)：Instance Root 结构与两区边界。已落地，且其中"材料放 Workspace 根""靠 `agent-instructions` 注入 AGENTS.md"两处结论已被当前实现推翻——照原样保留，不回写。
+- [context-management](archive/2026-10/context-management/README.md)：长期 context 管理的**研究**（不是已落地设计）。注意区分：栈里已有按字符数、overflow 时触发的工具裁剪（`tool-result-pruner`），本项要的是按 token 水位主动触发的那一档——后者未实现。归档理由是它已从"进行中工作"转为可重开的研究材料，不是因为做完了。
+
+注：`dsh-alignment` 里的"更后候选"（`tool-ask-user`、`ctx.commands`、`ctx.webhookRuntime`）已移入 proactivity DESIGN §9.11；`restrict` 那条防走错方向的结论已进 `docs/dsh-platform.md` 的接缝表。两样都没有随归档消失。
