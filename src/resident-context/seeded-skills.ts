@@ -163,10 +163,56 @@ These files are your durable self between context windows — shown to you at th
 This file is yours and it is the record of your own machinery, so when the machinery changes, change it here — a file you have started keeping, one you have renamed, a home you have stopped using. A skill that describes a layout it no longer has will send you to the wrong place. Update this in the same breath as the change, and a later you will find the way in.
 `
 
-/** The seeded files: two skills, each self-contained including what its body links to. */
+const MODEL_ROUTE = `---
+name: model-route
+description: How to move the model route you are running on — the control file, which route names are legal, how to confirm the move took, and how to get back. Read this when you want a different model to answer you, or when you need to undo a move you made.
+---
+
+# Moving your own model route
+
+You run as a route: a provider and a model, sometimes with a reasoning effort. A deployment-side control file decides which one. It is re-read before every step assembles, so what you write there takes effect on your next message — no restart.
+
+## The control file
+
+\`$DSH_HOME/loom/model-switch.json\`, outside your workspace on purpose — it is a decision about the machinery, not part of your materials.
+
+\`\`\`json
+{"provider": "<provider>", "model": "<model>", "reasoningEffort": "<effort>"}
+\`\`\`
+
+- \`provider\` and \`model\` — both required, always as a pair, spelled exactly as the deployment declares them.
+- \`reasoningEffort\` — optional, and only when that exact route offers the one you name.
+
+The file is one whole decision or nothing at all. An unknown key, a missing field, a route that does not resolve, an effort that route does not offer — any one of these and the entire file is ignored. No part of it is applied, your current route keeps running, and a single warning reaches the journal. A move therefore happens completely or not at all, and you are never left half-moved.
+
+Leaving the file in place is normal: it records what you are asking for, not what is currently live. Deleting it changes nothing while you are running.
+
+## Which routes you may name
+
+Only routes this deployment already declares. Declaring a new one lives in the deployment's own configuration, which is read when the process starts — it needs a restart, and it is not yours to add. Naming an undeclared route is the usual way this fails, and it fails safe: the warning names the missing route and you stay where you were.
+
+If you want a model the deployment does not declare, ask for it to be declared. Do not switch to the name and hope.
+
+## Confirm the move
+
+\`journalctl --user -u loom.service | grep model-switch\`
+
+A move that took logs \`model switch: <from> -> <to>\`. A refused file logs \`ignoring …\` with the reason. The platform also tells you inside your own conversation that the route moved — but only when the provider or the model changed. Changing the effort alone is silent.
+
+## Getting back
+
+Write the route you want; nothing else is needed, and the next message follows it. To return to the deployment's own default, either write that default into the file or delete the file and restart — the default is applied at boot and only at boot.
+
+## Before you move
+
+You cannot undo a move from the inside if it lands somewhere that cannot answer you: the file would still name the broken route and you would have no turn in which to write it back. Move to a route you have seen work, and when you are unsure whether one works, ask first rather than after. Then tell the person you are talking with — which model answers them is theirs to know.
+`
+
+/** The seeded files: the skills it wakes up with, each self-contained including what its body links to. */
 export const seededSkillFiles: readonly SeededSkillFile[] = [
   { path: 'skills/agent-skill-manager/SKILL.md', content: SKILL_MANAGER },
   { path: 'skills/agent-skill-manager/references/writing-great-skills.md', content: WRITING_GREAT_SKILLS },
   { path: 'skills/agent-skill-manager/references/auth-and-config.md', content: AUTH_AND_CONFIG },
   { path: 'skills/workspace-upkeep/SKILL.md', content: WORKSPACE_UPKEEP },
+  { path: 'skills/model-route/SKILL.md', content: MODEL_ROUTE },
 ]

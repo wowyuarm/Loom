@@ -60,6 +60,7 @@ describe('loom skills provider', () => {
       const names = await list()
       expect(names).toContain('agent-skill-manager')
       expect(names).toContain('workspace-upkeep')
+      expect(names).toContain('model-route')
     } finally {
       await rm(workspace, { recursive: true, force: true })
     }

@@ -293,6 +293,7 @@ describe('workspace scaffold', () => {
       expect(existsSync(join(ws, 'memory/notes'))).toBe(true)
       expect(existsSync(join(ws, 'skills/agent-skill-manager/SKILL.md'))).toBe(true)
       expect(existsSync(join(ws, 'skills/workspace-upkeep/SKILL.md'))).toBe(true)
+      expect(existsSync(join(ws, 'skills/model-route/SKILL.md'))).toBe(true)
       expect(await readFile(join(ws, 'bootstrap.md'), 'utf8')).toContain('waking for the first time')
 
       // Once born — identity written, bootstrap.md deleted — a second call must leave it untouched.
