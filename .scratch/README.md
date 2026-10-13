@@ -31,7 +31,7 @@
 - [assembly-persona](archive/2026-10/assembly-persona/README.md)：boot/reattach、单活锁、中性 persona vs identity、Loom bundle。
 - [dsh-alignment](archive/2026-10/dsh-alignment/README.md)：逐模块对照 DSH——分层与接缝地图、已确认的判断错误；B 工作项（检索 + 回返/checkpoint）由 `8eced7c` 实装。
 - [workspace — 结构设计](archive/2026-10/workspace/README.md)：Instance Root 结构与两区边界。已落地，且其中"材料放 Workspace 根""靠 `agent-instructions` 注入 AGENTS.md"两处结论已被当前实现推翻——照原样保留，不回写。
-- [proactivity](archive/2026-10/proactivity/README.md)：活动锚定的自主检查（`pulse`）与对话后检查（after-interaction）两轨并存的设计与研究；pulse 已实现、默认 dry-run，能力页见 `docs/subsystems/pulse.md`。归档含系统研究、Jev 实验与实施票。
+- [proactivity](archive/2026-10/proactivity/README.md)：活动锚定的自主检查（`pulse`）与对话后检查（after-interaction）两轨并存的设计与研究；pulse 已实现；早先的 dry-run 只记录开关已由 `8586b62` 从源码移除，现在装上即真唤醒，能力页见 `docs/subsystems/pulse.md`。归档含系统研究、Jev 实验与实施票。
 - [context-management](archive/2026-10/context-management/README.md)：长期 context 管理的**研究**（不是已落地设计）。注意区分：栈里已有按字符数、overflow 时触发的工具裁剪（`tool-result-pruner`），本项要的是按 token 水位主动触发的那一档——后者未实现。归档理由是它已从"进行中工作"转为可重开的研究材料，不是因为做完了。
 
 注：`dsh-alignment` 里的"更后候选"（`tool-ask-user`、`ctx.commands`、`ctx.webhookRuntime`）已移入 proactivity DESIGN §9.11；`restrict` 那条防走错方向的结论已进 `docs/dsh-platform.md` 的接缝表。两样都没有随归档消失。
