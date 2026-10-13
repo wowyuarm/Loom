@@ -42,7 +42,7 @@ function result(attend = 0.9): JevResult {
 }
 
 async function boot(mock: MockAdapter, decide: (r: JevRequest) => Promise<JevResult>,
-  options: { dryRun?: boolean; workspace?: string } = {}) {
+  options: { workspace?: string } = {}) {
   const workspace = options.workspace ?? await mkdtemp(join(tmpdir(), 'loom-pulse-'))
   const ctx = new Context()
   const fibers: Fiber[] = []
@@ -82,7 +82,7 @@ async function boot(mock: MockAdapter, decide: (r: JevRequest) => Promise<JevRes
     }
     return real(fn, delay, ...args)
   }) as typeof setTimeout)
-  await load(PulsePlugin, { workspace, dryRun: options.dryRun ?? false })
+  await load(PulsePlugin, { workspace })
   let stored: import('../src/pulse/ledger.ts').PulseState | undefined
   let checkCount = 0
   ctx.on('domain/changed', (change) => {
@@ -109,8 +109,8 @@ async function settleCheck(h: Awaited<ReturnType<typeof boot>>) {
 }
 
 describe('pulse running with the real loop', () => {
-  it('keeps quiet checks separate from activity, respects cadence and dry-run, and resumes persisted scheduling', async () => {
-    const h = await boot(new MockAdapter([textResponse('ok')]), async () => result(), { dryRun: true })
+  it('keeps quiet checks separate from activity and cadence, and resumes persisted scheduling', async () => {
+    const h = await boot(new MockAdapter([textResponse('ok')]), async () => result(0.1))
     let again: Awaited<ReturnType<typeof boot>> | undefined
     try {
       await human(h)
@@ -120,12 +120,12 @@ describe('pulse running with the real loop', () => {
       h.clock.set(activity + 30 * 60_000); h.tick(); await settleCheck(h)
       expect(h.mock.requests).toHaveLength(1)
       expect(h.stored!.lastActivityTime).toBe(activity)
-      expect(h.stored!.lastCheck?.outcome).toBe('shadow')
+      expect(h.stored!.lastCheck?.outcome).toBe('quiet')
       h.clock.advance(5 * 60_000); h.tick()
       await new Promise(r => setTimeout(r, 25)); expect(h.requests).toHaveLength(1)
       const workspace = h.workspace
       await h.dispose(false)
-      again = await boot(new MockAdapter([]), async () => result(0.1), { workspace, dryRun: true })
+      again = await boot(new MockAdapter([]), async () => result(0.1), { workspace })
       again.clock.set(activity + 59 * 60_000); again.tick()
       await new Promise(r => setTimeout(r, 25)); expect(again.requests).toHaveLength(0)
       again.clock.set(activity + 600 * 60_000); again.tick(); await vi.waitFor(() => expect(again!.requests).toHaveLength(1)); await settleCheck(again)
@@ -151,6 +151,10 @@ describe('pulse running with the real loop', () => {
       expect(text).toContain('I am the same Individual'); expect(text).toContain('remaining evidence')
       expect(text).toContain('threads/research.md'); expect(text).toContain('Persistent understanding'); expect(text).toContain('memory/notes/evidence.md')
       expect(text).toContain('autonomous wake'); expect(text).toContain('own working moment')
+      // The woken subject must be able to tell the two apart: its own turns count as activity, so the
+      // person's absence needs its own figure.
+      expect(text).toContain('since the last activity')
+      expect(text).toMatch(/The person last spoke \d+ minutes? ago/)
       expect(text).toContain('@loom/time-context'); expect(text).not.toContain('jev-stub')
       await vi.waitFor(() => expect(h.ctx.agentRuntime.current()!.id).not.toBe(original), { timeout: 5_000 })
       await h.ctx.agentRuntime.current()!.whenIdle()
@@ -162,7 +166,7 @@ describe('pulse running with the real loop', () => {
 
   it('keeps present activity and material state when returning to an old checkpoint', async () => {
     const mock = new MockAdapter([toolCallResponse('ck1', 'context_checkpoint', { name: 'old point' }), textResponse('checkpoint recorded')])
-    const h = await boot(mock, async () => result(), { dryRun: true })
+    const h = await boot(mock, async () => result(0.1))
     try {
       const original = h.ctx.agentRuntime.current()!.id
       await human(h, 'record a checkpoint')
@@ -308,7 +312,7 @@ describe('pulse running with the real loop', () => {
   })
 
   it('marks truncated non-English materials and treats unreadable material as an error, not an empty source', async () => {
-    const h = await boot(new MockAdapter([]), async () => result(), { dryRun: true })
+    const h = await boot(new MockAdapter([]), async () => result(0.1))
     try {
       await writeFile(join(h.workspace, 'attention/attention.md'), '自己的线'.repeat(20))
       const materials = await readPulseMaterials(h.workspace, 20)

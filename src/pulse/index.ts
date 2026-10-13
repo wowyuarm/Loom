@@ -18,7 +18,7 @@ export interface PulseConfig {
   workspace: string
   /** Idle window after any turn, including autonomous turns. Default 30 minutes. */
   silenceWindowMinutes?: number
-  /** Minimum interval between check attempts, including failures and shadow results. Default 30 minutes. */
+  /** Minimum interval between check attempts, including failures and quiet results. Default 30 minutes. */
   checkCadenceMinutes?: number
   /** Poll resolution. Default 5 minutes. */
   pollMinutes?: number
@@ -26,13 +26,11 @@ export interface PulseConfig {
   materialLimit?: number
   /** Uncalibrated initial gate; attend must strictly exceed it. Default 0.5. */
   attendThreshold?: number
-  /** Record judgements without waking the subject. Default true. */
-  dryRun?: boolean
 }
 const configSchema = z.object({ workspace: z.string().min(1),
   silenceWindowMinutes: z.number().positive().default(30), checkCadenceMinutes: z.number().positive().default(30),
   pollMinutes: z.number().positive().default(5), materialLimit: z.number().int().positive().default(8_000),
-  attendThreshold: z.number().min(0).max(1).default(0.5), dryRun: z.boolean().default(true) })
+  attendThreshold: z.number().min(0).max(1).default(0.5) })
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap { '@loom/pulse': { kind: typeof PULSE_SOURCE_KIND } & ContextFormed }
@@ -138,7 +136,7 @@ export async function apply(ctx: Context, input: PulseConfig): Promise<void> {
           const verdict = readVerdict(result.answers.pulse, config.attendThreshold)
           record = { ...record, model: result.model,
             ...(verdict === undefined ? {} : { attend: verdict.pAttend,
-              outcome: verdict.attend ? 'shadow' : 'quiet' }) }
+              outcome: verdict.attend ? 'queued' : 'quiet' }) }
         } catch (error) {
           logger.warn(`pulse judgement ${combined.aborted ? 'cancelled' : 'failed'}: ${errorText(error)}`)
         }
@@ -146,13 +144,11 @@ export async function apply(ctx: Context, input: PulseConfig): Promise<void> {
         logger.info(`pulse ${record.model ?? 'unavailable'}: attend=${record.attend ?? 'unreadable'} → ${record.outcome}`)
         await ledger.table('check').put(String(at), record)
         await update(current => ({ ...current, lastCheck: record }))
-        if (combined.aborted || stale() || record.outcome !== 'shadow' || config.dryRun) return
-        const notice = createUserMessage({ content: [{ type: 'text', text: renderSituation(at, lastActivityTime) }],
+        if (combined.aborted || stale() || record.outcome !== 'queued') return
+        const notice = createUserMessage({ content: [{ type: 'text',
+          text: renderSituation(at, lastActivityTime, snapshot.lastHumanInputTime) }],
           source: { kind: PULSE_SOURCE_KIND, form: 'notice', summary: boundContextSummary('pulse: an autonomous working moment') } })
         agent.steer(notice)
-        record = { ...record, outcome: 'queued' }
-        await ledger.table('check').put(String(at), record)
-        await update(current => ({ ...current, lastCheck: record }))
         if (combined.aborted || stale(notice.id)) {
           agent.inbox.remove(notice.id)
           record = { ...record, outcome: 'withdrawn' }

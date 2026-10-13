@@ -7,7 +7,7 @@ const checkSchema = z.object({
   state: z.string(),
   model: z.string().optional(),
   attend: z.number().optional(),
-  outcome: z.enum(['quiet', 'shadow', 'queued', 'failed', 'cancelled', 'withdrawn']),
+  outcome: z.enum(['quiet', 'queued', 'failed', 'cancelled', 'withdrawn']),
 })
 export type PulseCheckRow = z.infer<typeof checkSchema>
 

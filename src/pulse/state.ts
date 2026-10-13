@@ -57,8 +57,18 @@ export function renderJudgeState(input: { now: number; state: PulseState; materi
   return lines.join('\n')
 }
 
-export function renderSituation(now: number, lastActivityTime: number): string {
-  return `The moment is quiet — ${elapsedText(now - lastActivityTime)} since the last activity. `
+/**
+ * What the woken subject is told. The two figures are stated separately on purpose: "last activity"
+ * counts the subject's own turns, so on its own it cannot say how long the person has been away —
+ * and after one autonomous turn it stops tracking the person at all. `lastHumanInputTime` is null
+ * when the person has not spoken in anything this generation can see.
+ */
+export function renderSituation(now: number, lastActivityTime: number, lastHumanInputTime: number | null): string {
+  const away = lastHumanInputTime === null
+    ? 'No input from the person is visible in this session.'
+    : `The person last spoke ${elapsedText(now - lastHumanInputTime)} ago.`
+  return `The moment is quiet — ${elapsedText(now - lastActivityTime)} since the last activity, `
+    + `which counts your own turns as well as the person's. ${away} `
     + 'This is your own working moment, not a request from the person. Your attention, threads index, '
     + 'and memory are in context; read the relevant thread or note when you need its details. '
     + 'Continue a line worth continuing, and leave changed facts, next steps, or reasons for waiting in your '
