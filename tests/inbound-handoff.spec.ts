@@ -76,10 +76,7 @@ class RecordingRuntime implements AgentRuntime {
   current(): Agent | undefined {
     return this.live ? this.agent() : undefined
   }
-  deliver(text: string): boolean {
-    return this.deliverTracked(text) !== undefined
-  }
-  deliverTracked(text: string): MessageId | undefined {
+  deliver(text: string): MessageId | undefined {
     if (!this.live) return undefined
     const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
     this.messages.push(message)
@@ -105,7 +102,7 @@ interface Harness {
 }
 
 /** Boot just the channels stack over a real runtime-state medium, with a controllable agent. */
-async function bootChannels(path: string, runtime: RecordingRuntime): Promise<Harness> {
+async function bootChannels(path: string, runtime: RecordingRuntime, channelsConfig?: unknown): Promise<Harness> {
   const workspace = await mkdtemp(join(tmpdir(), 'loom-handoff-'))
   const ctx = new Context()
   const fibers: Fiber[] = []
@@ -122,7 +119,7 @@ async function bootChannels(path: string, runtime: RecordingRuntime): Promise<Ha
   await load(RuntimeStatePlugin)
   ctx.provide('agentRuntime', runtime)
   await load(ChannelGatewayPlugin, { allow: ['*'] })
-  await load(ChannelsPlugin, { workspace })
+  await load(ChannelsPlugin, channelsConfig ?? { workspace })
 
   const channel = new MockChannel()
   const unregister = ctx.channels.register(channel)
@@ -227,6 +224,44 @@ describe('durable inbound handoff', () => {
       await new Promise(resolve => setTimeout(resolve, 20))
       expect(runtime.delivered).toHaveLength(1)
       expect(h.runtimeState.isAccepted('mock-chat', 'm1')).toBe(true)
+    } finally {
+      await h.dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('channels configuration and handoff scoping', () => {
+  // An absent workspace degrades every attachment to a path-less marker that reads exactly like a
+  // transport fault, with no diagnostic naming the cause. The load is where that is decidable, so
+  // the row fails there rather than at the first attachment.
+  it('fails the load when the workspace is absent, rather than degrading attachments silently', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-handoff-'))
+    const runtime = new RecordingRuntime()
+    runtime.live = true
+    await expect(bootChannels(join(dir, 'state.sqlite'), runtime, {})).rejects.toThrow()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('confirms a handoff only against the live generation\'s own log', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-handoff-'))
+    const runtime = new RecordingRuntime()
+    runtime.live = true
+    const h = await bootChannels(join(dir, 'state.sqlite'), runtime)
+    try {
+      h.channel.receive(inbound('m1', 'hello'))
+      await vi.waitFor(() => { expect(h.runtimeState.pendingInputs()).toHaveLength(1) })
+
+      // The same message id committed by another session is not this input's handoff: an id
+      // collision across sessions must not retire a record whose message is still undelivered.
+      h.ctx.emit('session/event', { id: 'another-session' } as unknown as Session,
+        { type: 'user/message', data: runtime.messages[0] } as unknown as SessionEvent)
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(h.runtimeState.pendingInputs()).toHaveLength(1)
+
+      // The live session's own commit confirms it.
+      commitUserMessage(h.ctx, runtime.messages[0]!)
+      await vi.waitFor(() => { expect(h.runtimeState.pendingInputs()).toEqual([]) })
     } finally {
       await h.dispose()
       await rm(dir, { recursive: true, force: true })

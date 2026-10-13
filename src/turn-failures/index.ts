@@ -52,8 +52,11 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { TurnEndReason } from '@deepseek-ai/dsh-session'
+// Side-effect import: the `agentRuntime` Context augmentation this plugin filters on.
+import '../contracts/index.ts'
 
 export const name = 'turn-failures'
+export const inject = ['agentRuntime']
 
 export interface TurnFailuresConfig {
   /** The agent's workspace root. The record lands in the attention material inside it. */
@@ -156,7 +159,11 @@ export function apply(ctx: Context, config: TurnFailuresConfig): void {
   // can fail close together and each read-modify-write would otherwise drop the other's line.
   let queue: Promise<void> = Promise.resolve()
 
-  ctx.on('session/event', (_session, event) => {
+  // Only the live generation's log describes the individual's own turns. An auxiliary
+  // session's turn end is not a failure the individual can act on, and recording it here would put
+  // a fact about someone else's work in the one material reserved for its own.
+  ctx.on('session/event', (session, event) => {
+    if (session.id !== ctx.agentRuntime.current()?.session.id) return
     if (event.type !== 'turn/end') return
     const { turn, reason } = event.data
     const report = reportFor(turn, reason)

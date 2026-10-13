@@ -14,6 +14,7 @@
  * turn goes on — this is a convenience the turn must survive without, not a mechanism it depends on.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { z } from 'zod'
 import { commitWorkspaceTurn, lineModifiedTimes } from './git.ts'
 
 export const name = 'workspace-history'
@@ -23,7 +24,15 @@ export interface WorkspaceHistoryConfig {
   workspace: string
 }
 
-export function apply(ctx: Context, config: WorkspaceHistoryConfig): void {
+/**
+ * The row's configuration, validated before the plugin activates. `workspace` is required because
+ * every snapshot and blame runs in it: an unset workspace throws inside an async `turn/end`
+ * handler, where the rejection is unhandled rather than reported by the plugin that owns it.
+ */
+const workspaceHistoryConfigSchema = z.object({ workspace: z.string().min(1) })
+
+export function apply(ctx: Context, input: WorkspaceHistoryConfig): void {
+  const config = workspaceHistoryConfigSchema.parse(input)
   const logger = ctx.logger('workspace-history')
   ctx.provide('workspaceHistory', {
     lineModifiedTimes: (relPath: string) => lineModifiedTimes(config.workspace, relPath),

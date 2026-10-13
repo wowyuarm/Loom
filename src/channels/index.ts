@@ -4,6 +4,7 @@ import { basename, extname, join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type AssistantMessage, type ContextFormed, type MessageId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
+import { z } from 'zod'
 import '@deepseek-ai/dsh-tools'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
 import '@deepseek-ai/dsh-system-prompt'
@@ -42,6 +43,13 @@ export interface ChannelsConfig {
 }
 
 /**
+ * The row's configuration, validated before the plugin activates. `workspace` is required because
+ * every attachment path is derived from it: an unset workspace would degrade every attachment to a
+ * "download failed" marker with no diagnostic, which is indistinguishable from a transport fault.
+ */
+const channelsConfigSchema = z.object({ workspace: z.string().min(1) })
+
+/**
  * The one conversation the agent is currently addressing: the channel and the opaque route of
  * the message it is answering. `send_message` resolves to this so the model never handles a
  * route. v1 tracks a single focus — the most recently delivered inbound — which fits a reactive
@@ -59,7 +67,8 @@ interface ActiveConversation {
  * authorization; this is the seam that turns an authorized message into an agent turn and lets
  * the agent answer back, files included.
  */
-export function apply(ctx: Context, config: ChannelsConfig): void {
+export function apply(ctx: Context, input: ChannelsConfig): void {
+  const config = channelsConfigSchema.parse(input)
   const focus = new ActiveConversationTracker()
   const unanswered = new UnansweredReplyWatch()
   registerInboundConsumer(ctx, config, focus, unanswered)
@@ -245,9 +254,12 @@ function registerInboundConsumer(
   })
 
   // A pending input becomes delivered only when its `user/message` commits to a session log.
-  // `deliverTracked` returning an id means the message reached the process inbox, not that any
+  // `deliver` returning an id means the message reached the process inbox, not that any
   // turn committed it — the rollover admission gate can even carry it to a successor generation.
-  ctx.on('session/event', (_session, event) => {
+  // Only the live generation's log can confirm one of this plugin's own handoffs: an id from
+  // another session is a different message that happens to collide, never a confirmation.
+  ctx.on('session/event', (session, event) => {
+    if (session.id !== agentRuntime.current()?.session.id) return
     if (event.type !== 'user/message') return
     const pending = handoffs.confirm(event.data.id)
     if (pending === undefined) return
@@ -301,7 +313,7 @@ function registerInboundConsumer(
   ): Promise<void> {
     if (handoffs.attemptedAlready(channel, providerMessageId)) return
     focus.set(channel, route)
-    const messageId = agentRuntime.deliverTracked(text)
+    const messageId = agentRuntime.deliver(text)
     if (messageId === undefined) {
       logger.warn(`no live agent to receive ${channel}:${providerMessageId}; message recorded, not delivered`)
       return

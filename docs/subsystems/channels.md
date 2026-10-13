@@ -8,9 +8,9 @@ Loom 消费方只接 `workspace`，需要网关的 `channels` 服务以及 `runt
 
 ## 输入接受与焦点
 
-`channel/inbound` 到来时先查 `(channel, providerMessageId)` 去重，在工作区完成附件处理并构造规范化正文，然后把正文和来源元数据持久写成 `pending`，最后调用 `agentRuntime.deliverTracked`。模型看到渠道、场所类别、发送者、正文及附件标记；传输 route 不作为工具参数暴露。
+`channel/inbound` 到来时先查 `(channel, providerMessageId)` 去重，在工作区完成附件处理并构造规范化正文，然后把正文和来源元数据持久写成 `pending`，最后调用 `agentRuntime.deliver`。模型看到渠道、场所类别、发送者、正文及附件标记；传输 route 不作为工具参数暴露。
 
-`pending` 只有在匹配的 Session `user/message` 事件提交后才变为 `delivered`。没有活 Agent、换代窗口或进程重启时，带正文的 pending 输入会在 Agent ready 或插件重新挂载后重投；交接确认前崩溃允许产生重复，但不会静默丢失。旧版本只有 accepted 标记而没有正文的记录仍可去重，不能伪造重放内容。当前进程用小型 handoff ledger 避免同一输入在 drain 期间反复尝试；这不是跨进程 exactly-once，也不是消息 broker。准确路径见[输入消费实现](<../../src/channels/index.ts>)。
+`pending` 只有在**当前主 Session** 的匹配 `user/message` 事件提交后才变为 `delivered`；别的 Session 提交同 id 的消息不是本次交接的确认。没有活 Agent、换代窗口或进程重启时，带正文的 pending 输入会在 Agent ready 或插件重新挂载后重投；交接确认前崩溃允许产生重复，但不会静默丢失。旧版本只有 accepted 标记而没有正文的记录仍可去重，不能伪造重放内容。当前进程用小型 handoff ledger 避免同一输入在 drain 期间反复尝试；这不是跨进程 exactly-once，也不是消息 broker。准确路径见[输入消费实现](<../../src/channels/index.ts>)。
 
 `message` 发到最近一次成功交给 Agent 的输入设置的内存焦点，模型不能指定 channel/route；重启后焦点为空，须有新输入或 pending 重投才可发消息。多渠道并发输入时焦点会变，不能把“答某条旧消息”当作绑定了其 route 的保证；多 channel 仍只是同一 Individual 的入口，本轮没有引入独立 Agent 或 per-channel 路由。
 
@@ -47,7 +47,7 @@ Loom 消费方只接 `workspace`，需要网关的 `channels` 服务以及 `runt
 | `completed` / `aborted` / `forked` | 不额外报告 | 不追加 |
 | 未认识的扩展原因 | 只报告原因名 | 不猜测失败 |
 
-上游文本压成有界单行；写材料失败只记告警，不重试 Turn、不发送用户通知。当前监听器没有按主 Session 过滤，辅助 Session 的失败也可能写到同一份 attention；不能把记录范围说成只有主主体。异步写入只串行化该插件自己的追加，不与主体文件工具组成共同事务。失败材料立即落盘，但工作区留版等下次成功 Turn，时间归属可能偏后。准确规则见[失败实现](<../../src/turn-failures/index.ts>)。
+上游文本压成有界单行；写材料失败只记告警，不重试 Turn、不发送用户通知。监听器只处理当前主 Session 的 `turn/end`，辅助 Session 的失败不写入这份 attention。异步写入只串行化该插件自己的追加，不与主体文件工具组成共同事务。失败材料立即落盘，但工作区留版等下次成功 Turn，时间归属可能偏后。准确规则见[失败实现](<../../src/turn-failures/index.ts>)。
 
 ## 验证入口
 

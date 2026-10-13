@@ -267,7 +267,7 @@ describe('LoomAgentRuntime.executeTransition', () => {
       expect(reg.agent('s0').disposed).toBe(false)
       expect(runtime.current()?.id).toBe(SessionId('s0'))
       expect(runtimeState.getCurrentSession()).toEqual({ sessionId: 's0' })
-      expect(runtime.deliver('still here')).toBe(true)
+      expect(runtime.deliver('still here')).toBeDefined()
       expect(reg.agent('s0').order).toEqual(['steer'])
     } finally {
       await dispose()
@@ -288,7 +288,9 @@ describe('LoomAgentRuntime.deliver', () => {
       })
       await runtime.boot()
 
-      expect(runtime.deliver('into this turn')).toBe(true)
+      // The returned id is the created message's identity: the caller confirms the handoff by
+      // matching this id in the session log, never by the call's own success.
+      expect(runtime.deliver('into this turn')).toBeDefined()
 
       // Steering is the only boundary external input may take: a `message` call is a tool
       // call, not the end of a turn, so nothing here may hold a person's words for later.
@@ -311,7 +313,7 @@ describe('LoomAgentRuntime.deliver', () => {
         workspace: '/ws',
         newSessionId: () => SessionId('s0'),
       })
-      expect(runtime.deliver('nobody home')).toBe(false)
+      expect(runtime.deliver('nobody home')).toBeUndefined()
     } finally {
       await dispose()
     }

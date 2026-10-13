@@ -188,11 +188,7 @@ export class LoomAgentRuntime implements AgentRuntime {
     return this.handle?.agent
   }
 
-  deliver(text: string): boolean {
-    return this.deliverTracked(text) !== undefined
-  }
-
-  deliverTracked(text: string): MessageId | undefined {
+  deliver(text: string): MessageId | undefined {
     const agent = this.handle?.agent
     if (agent === undefined) return undefined
     const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })

@@ -16,7 +16,7 @@
 
 DSH 对被创建或恢复的 Session 持有跨进程写租约；同一 Session 被另一进程占有时拒绝写入。这个保证不等于“两个同时空指针启动必然被部署级锁挡住”，Loom 没有另建 Instance Root 锁。
 
-`deliver(text)` 把独立 user message steer 到当前主 Agent：idle 时开始处理，运行中在最近的 Step 边界消费，不截断在飞的工具调用。`deliverTracked(text)` 额外返回 message id，供 channels 等待对应的 Session `user/message` 提交；没有活句柄时分别返回 `false` / `undefined`。runtime 本身不保存外部输入队列，持久 pending 与恢复由[渠道](<channels.md>)负责。
+`deliver(text)` 把独立 user message steer 到当前主 Agent：idle 时开始处理，运行中在最近的 Step 边界消费，不截断在飞的工具调用。它返回创建的 message id，调用方据此等待对应的 Session `user/message` 提交；没有活句柄时返回 `undefined`。返回 id 只代表消息进入进程内 inbox，不代表任何 Turn 提交了它。runtime 本身不保存外部输入队列，持久 pending 与恢复由[渠道](<channels.md>)负责。
 
 ## 存储与权限边界
 

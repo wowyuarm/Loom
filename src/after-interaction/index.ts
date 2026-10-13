@@ -30,6 +30,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { boundContextSummary, createUserMessage, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { errorText, type JevResult } from '@wowyuarm/dsh-jev'
+import { z } from 'zod'
 // Side-effect import: pulls the `jev` Context augmentation from dsh-jev, and the `timer` one from
 // cordis-plugin-timer, so `ctx.jev` and `ctx.timeout` are typed where this plugin uses them.
 import '@wowyuarm/dsh-jev'
@@ -48,6 +49,13 @@ export interface AfterInteractionConfig {
   workspace: string
 }
 
+/**
+ * The row's configuration, validated before the plugin activates. `workspace` is required because
+ * the check reads resident materials under it: an unset workspace would render every material as
+ * absent, which reads as "the individual keeps no materials" rather than as a misconfiguration.
+ */
+const afterInteractionConfigSchema = z.object({ workspace: z.string().min(1) })
+
 /** One-line account of a situation notice, recorded in its durable source. */
 const SITUATION_SUMMARY = 'after-interaction: a quiet pause worth a look'
 
@@ -60,7 +68,8 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-export function apply(ctx: Context, config: AfterInteractionConfig): void {
+export function apply(ctx: Context, input: AfterInteractionConfig): void {
+  const config = afterInteractionConfigSchema.parse(input)
   registerAfterInteractionProjection(ctx)
   // The timer belongs to this fiber, so a restart drops a pending silence instead of replaying it.
   const alarm = new SilenceAlarm(contextTimer(ctx))

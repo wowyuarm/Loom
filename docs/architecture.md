@@ -18,7 +18,7 @@ Loom 把 DSH 的可替换插件栈组合成一个长期存在的 Individual。�
 外部渠道
   → 网关与适配器：规范输入、授权
   → Loom channels：规范输入、附件落盘、持久记录 pending、更新当前会话焦点
-  → agentRuntime.deliverTracked：steer 到主主体最近的 step 边界，Session 提交前保持 pending
+  → agentRuntime.deliver：steer 到主主体最近的 step 边界，Session 提交前保持 pending
   → DSH loop：组装提示与工具，接纳输入，调用模型与工具
       ├─ resident-context：身份、记忆、线索与关注
       ├─ time-context：当前时刻与间隔

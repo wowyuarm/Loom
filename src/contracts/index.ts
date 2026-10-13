@@ -201,8 +201,13 @@ export interface AgentRuntime {
   /**
    * Submit external text to the live agent as steering — the next step boundary. An idle agent
    * opens a turn with it; a running agent consumes it at its next step, so a message arriving
-   * mid-tool-call waits for that call to finish rather than interrupting it. Returns false when
-   * there is no live agent to receive it (before boot, or after disposal).
+   * mid-tool-call waits for that call to finish rather than interrupting it. Returns the created
+   * user message's id, or `undefined` when there is no live agent to receive it (before boot, or
+   * after disposal).
+   *
+   * The returned id is an inbox identity, not a durable confirmation: the caller confirms the
+   * handoff by matching the `user/message` Session event that commits it. Treating the call's own
+   * success as durable would record an input the agent never saw.
    *
    * There is deliberately no target parameter. External input is always steering: a turn ends
    * when the model owes no further response, never because it happened to send a message, so
@@ -210,14 +215,7 @@ export interface AgentRuntime {
    * Owning input delivery here keeps the single agent handle's whole lifecycle — boot, rollover
    * carry, external input — in one place.
    */
-  deliver(text: string): boolean
-  /**
-   * {@link deliver}, but observable: returns the created user message's id so a caller can
-   * confirm the handoff against the session log (the matching `user/message` event) rather than
-   * treating the call's own success as durable confirmation. Returns `undefined` when there is
-   * no live agent, exactly like `deliver` returning false.
-   */
-  deliverTracked(text: string): MessageId | undefined
+  deliver(text: string): MessageId | undefined
 }
 
 export type { SessionId }
