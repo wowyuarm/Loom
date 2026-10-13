@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, type AssistantMessage, type ContextFormed, type UserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type AssistantMessage, type ContextFormed, type MessageId, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { defineTool, type ToolDefinition } from '@deepseek-ai/dsh-tools'
 import '@deepseek-ai/dsh-tools'
 // Side-effect import: pulls the `systemPrompt` Context augmentation from dsh-system-prompt.
@@ -187,6 +187,41 @@ class ActiveConversationTracker {
   }
 }
 
+/**
+ * The in-process ledger of handoffs awaiting confirmation. Keyed by the created
+ * `user/message` id, and separately by the accepted-input key, so a drain never creates a second
+ * attempt for a record this process already handed off. Entries persist for the process
+ * lifetime until the matching Session event commits; the accepting set and durable accepted
+ * record then stop normal and concurrent duplicates without retaining every historical key in memory.
+ */
+class HandoffLedger {
+  private readonly awaiting = new Map<MessageId, { channel: string; providerMessageId: string }>()
+  private readonly attempted = new Set<string>()
+
+  attemptedAlready(channel: string, providerMessageId: string): boolean {
+    return this.attempted.has(handoffKey(channel, providerMessageId))
+  }
+
+  record(messageId: MessageId, channel: string, providerMessageId: string): void {
+    this.awaiting.set(messageId, { channel, providerMessageId })
+    this.attempted.add(handoffKey(channel, providerMessageId))
+  }
+
+  /** The input a committed `user/message` confirms, or undefined for a message we did not send. */
+  confirm(messageId: MessageId): { channel: string; providerMessageId: string } | undefined {
+    const pending = this.awaiting.get(messageId)
+    if (pending === undefined) return undefined
+    this.awaiting.delete(messageId)
+    this.attempted.delete(handoffKey(pending.channel, pending.providerMessageId))
+    return pending
+  }
+}
+
+/** In-process key for one accepted input; a separator no realistic id contains. */
+function handoffKey(channel: string, providerMessageId: string): string {
+  return `${channel}\u0000${providerMessageId}`
+}
+
 function registerInboundConsumer(
   ctx: Context,
   config: ChannelsConfig,
@@ -197,6 +232,11 @@ function registerInboundConsumer(
   const agentRuntime: AgentRuntime = ctx.agentRuntime
   const clock: Clock = ctx.clock
   const logger = ctx.logger('channels')
+  const handoffs = new HandoffLedger()
+  // The durable ledger is intentionally not an atomic claim primitive. This small in-process set
+  // closes the normal concurrent-event window before the first record is written; after a restart,
+  // a duplicate remains an allowed at-least-once outcome.
+  const accepting = new Set<string>()
 
   ctx.on('channel/inbound', (message: InboundMessage) => {
     void acceptInbound(message).catch((error: unknown) => {
@@ -204,8 +244,45 @@ function registerInboundConsumer(
     })
   })
 
+  // A pending input becomes delivered only when its `user/message` commits to a session log.
+  // `deliverTracked` returning an id means the message reached the process inbox, not that any
+  // turn committed it — the rollover admission gate can even carry it to a successor generation.
+  ctx.on('session/event', (_session, event) => {
+    if (event.type !== 'user/message') return
+    const pending = handoffs.confirm(event.data.id)
+    if (pending === undefined) return
+    void runtimeState.confirmInput(pending.channel, pending.providerMessageId).catch((error: unknown) => {
+      logger.warn(`failed to confirm ${pending.channel}:${pending.providerMessageId}: ${String(error)}`)
+    })
+  })
+
+  let draining: Promise<void> | undefined
+  // Both an agent-ready signal and this plugin's own mount drain: the boot signal fires before
+  // this plugin mounted (the service is provided only after boot), so the mount drain is not
+  // redundant, and a rollover successor signals after the mount.
+  ctx.on('loom/agent-ready', () => { void drainPending() })
+  void drainPending()
+
+  function drainPending(): Promise<void> {
+    if (draining !== undefined) return draining
+    const run = async (): Promise<void> => {
+      if (agentRuntime.current() === undefined) return
+      for (const input of runtimeState.pendingInputs()) {
+        const text = input.text
+        if (text === undefined) continue
+        await handOff(input.channel, input.providerMessageId, input.route, text)
+      }
+    }
+    // Queue the body in a microtask so `draining` is visible before any handoff can synchronously
+    // emit another ready signal. A mount drain and a rollover-ready drain therefore share one pass.
+    draining = Promise.resolve().then(run).finally(() => { draining = undefined })
+    return draining
+  }
+
   /**
-   * Deliver one accepted inbound to the agent.
+   * Hand one accepted input to the live agent and remember it until its `user/message` commits.
+   * A key already attempted in this process is skipped, so a drain cannot spin on the same record;
+   * a later process has no memory of the attempt and may redeliver — the allowed duplicate.
    *
    * Every inbound steers. Steering is DSH's own "nearest step boundary" boundary: an idle agent
    * opens a turn with it, and a running agent consumes it at its next step — so a message arriving
@@ -216,26 +293,51 @@ function registerInboundConsumer(
    * same step, the loop claims them together and the model sees them as the separate inputs they
    * are.
    */
-  async function acceptInbound(message: InboundMessage): Promise<void> {
-    if (runtimeState.isAccepted(message.channel, message.providerMessageId)) return
-    await runtimeState.recordAccepted({
-      channel: message.channel,
-      providerMessageId: message.providerMessageId,
-      actor: message.actor.id,
-      place: message.place.route,
-      visibility: message.visibility,
-      route: message.place.route,
-      acceptedAt: clock.now(),
-    })
-    focus.set(message.channel, message.place.route)
-    const text = await framedText(ctx, config, message, logger)
-    if (!agentRuntime.deliver(text)) {
-      logger.warn(`no live agent to receive ${message.channel}:${message.providerMessageId}; message recorded, not delivered`)
+  async function handOff(
+    channel: string,
+    providerMessageId: string,
+    route: string,
+    text: string,
+  ): Promise<void> {
+    if (handoffs.attemptedAlready(channel, providerMessageId)) return
+    focus.set(channel, route)
+    const messageId = agentRuntime.deliverTracked(text)
+    if (messageId === undefined) {
+      logger.warn(`no live agent to receive ${channel}:${providerMessageId}; message recorded, not delivered`)
       return
     }
-    // Only a delivered inbound is one the agent owes an answer to; a recorded-but-undelivered
-    // message was never seen, so nothing about it can be a reply the model forgot to send.
+    handoffs.record(messageId, channel, providerMessageId)
+    // Only an input the agent actually received is one it owes an answer to; a recorded-but-
+    // undelivered message was never seen, so nothing about it can be a reply the model forgot.
     unanswered.inboundArrived()
+  }
+
+  /**
+   * Accept one inbound message: dedup, prepare the full text (attachments included), persist it
+   * as pending, then try to hand it to the live agent. The text is persisted before delivery so an
+   * Agent that is absent, rolling over, or on the far side of a restart can still be given it.
+   */
+  async function acceptInbound(message: InboundMessage): Promise<void> {
+    const key = handoffKey(message.channel, message.providerMessageId)
+    if (runtimeState.isAccepted(message.channel, message.providerMessageId) || accepting.has(key)) return
+    accepting.add(key)
+    try {
+      const text = await framedText(ctx, config, message, logger)
+      await runtimeState.recordAccepted({
+        channel: message.channel,
+        providerMessageId: message.providerMessageId,
+        actor: message.actor.id,
+        place: message.place.route,
+        visibility: message.visibility,
+        route: message.place.route,
+        acceptedAt: clock.now(),
+        text,
+        deliveryState: 'pending',
+      })
+      await handOff(message.channel, message.providerMessageId, message.place.route, text)
+    } finally {
+      accepting.delete(key)
+    }
   }
 }
 
