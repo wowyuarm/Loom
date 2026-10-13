@@ -7,6 +7,11 @@
 | 记录 | 决定 | 状态 |
 | --- | --- | --- |
 | [0001 不建部署准备层](<0001-no-provisioning-primitive.md>) | 部署只给只读与 create-if-absent 的 primitive + 文档配方，不做向导或控制面 | 有效 |
+| [0002 通过 DSH 接缝扩展](<0002-dsh-seams-over-loom-core.md>) | Loom 不建特权 core，跨插件协作走 DSH 接缝与 contracts | 有效 |
+| [0003 事实平面各自单一所有者](<0003-single-owner-fact-planes.md>) | Session、Runtime state、Workspace 材料和渠道传输不互相复制为第二权威 | 有效 |
+| [0004 Session 派生状态用 Projection](<0004-session-state-through-projections.md>) | 新的运行时派生状态通过 Projection 重建，不新增同步历史读取 | 有效 |
+| [0005 Delivery 是外部事实](<0005-delivery-is-the-external-fact.md>) | 只有 Delivery ledger 的 delivered 能作为已向渠道投递的事实 | 有效 |
+| [0006 入站采用可恢复的至少一次交付](<0006-at-least-once-inbound-acceptance.md>) | 持久接纳后的输入可恢复重投，允许重复，不引入 exactly-once 基础设施 | 有效 |
 
 新条目按 `NNNN-<短标题>.md` 递增：
 
