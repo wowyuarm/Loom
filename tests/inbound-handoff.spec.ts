@@ -196,6 +196,32 @@ describe('durable inbound handoff', () => {
     }
   })
 
+  it('redelivers an unconfirmed input on the next pass instead of abandoning it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-handoff-'))
+    const runtime = new RecordingRuntime()
+    runtime.live = true
+    const h = await bootChannels(join(dir, 'state.sqlite'), runtime)
+    try {
+      h.channel.receive(inbound('m1', 'never confirmed'))
+      await vi.waitFor(() => { expect(runtime.delivered).toHaveLength(1) })
+
+      // The steer reached the inbox but no turn ever committed its user/message — a cancelled
+      // turn, a disposal, or a rollover admission gate that carried it to a successor. The next
+      // ready signal must hand it off again rather than treat one attempt as spent: the record
+      // is still pending, so the input is still owed to the subject.
+      for (let i = 0; i < 3; i++) h.ctx.emit('loom/agent-ready', runtime.current()!)
+      await vi.waitFor(() => { expect(runtime.delivered).toHaveLength(2) })
+
+      // A concurrent drain within one pass still hands off exactly once.
+      await vi.waitFor(() => { expect(runtime.delivered).toHaveLength(2) })
+      expect(h.runtimeState.pendingInputs()).toHaveLength(1)
+      expect(h.runtimeState.isAccepted('mock-chat', 'm1')).toBe(true)
+    } finally {
+      await h.dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('does not create a second in-process handoff when the same input arrives concurrently', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loom-handoff-'))
     const runtime = new RecordingRuntime()

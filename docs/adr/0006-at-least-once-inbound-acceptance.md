@@ -13,6 +13,8 @@
 
 输入在 Session 的 `user/message` 事件持久提交后才从 pending 变为已交接。没有活 Agent、投递失败或进程在交接前退出时，输入继续留在 pending；恢复逻辑只重投入站输入，不自动重发任何出站 Effect。
 
+一次投递尝试不构成交接。`deliver` 只说明消息进入进程内 inbox；取消、dispose 或换代门控都可能在 `user/message` 提交前让它消失。因此只要输入仍是 pending，每一轮恢复都重新尝试交给 Agent，不把上一次尝试当作已花费：上一轮尝试记录在下一轮开始前作废，重复是允许的，放弃不是。
+
 多个 channel 仍是同一个 Individual 的沟通入口。入站记录保留 actor、place、visibility、channel 和规范化内容；channel 不拥有 Identity、Memory、Session lineage 或独立恢复状态。
 
 ## 理由与代价

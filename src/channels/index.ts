@@ -197,21 +197,37 @@ class ActiveConversationTracker {
 }
 
 /**
- * The in-process ledger of handoffs awaiting confirmation. Keyed by the created
- * `user/message` id, and separately by the accepted-input key, so a drain never creates a second
- * attempt for a record this process already handed off. Entries persist for the process
- * lifetime until the matching Session event commits; the accepting set and durable accepted
- * record then stop normal and concurrent duplicates without retaining every historical key in memory.
+ * The in-process ledger of handoffs awaiting confirmation, keyed by the created `user/message`
+ * id, plus the accepted-input keys the current drain pass has already attempted.
+ *
+ * The durable `deliveryState` is the authority on whether an input was handed off; this ledger
+ * only pairs a delivered message with the record it must confirm. `attempted` therefore lives
+ * for one drain pass: it closes the window where an inbound accept and a concurrent drain would
+ * each hand off the same record, and {@link beginPass} retires it so a later pass may retry an
+ * input whose confirmation never came. Retaining it until confirmation instead would silently
+ * drop that input for the rest of the process's life.
  */
 class HandoffLedger {
   private readonly awaiting = new Map<MessageId, { channel: string; providerMessageId: string }>()
   private readonly attempted = new Set<string>()
+
+  /** Retire the previous pass's attempts so this one may hand off every unconfirmed record again. */
+  beginPass(): void {
+    this.attempted.clear()
+  }
 
   attemptedAlready(channel: string, providerMessageId: string): boolean {
     return this.attempted.has(handoffKey(channel, providerMessageId))
   }
 
   record(messageId: MessageId, channel: string, providerMessageId: string): void {
+    // A retry supersedes the attempt it replaces: the superseded message never commits its own
+    // `user/message`, so keeping it would leak one map entry per retry.
+    for (const [id, pending] of this.awaiting) {
+      if (pending.channel === channel && pending.providerMessageId === providerMessageId) {
+        this.awaiting.delete(id)
+      }
+    }
     this.awaiting.set(messageId, { channel, providerMessageId })
     this.attempted.add(handoffKey(channel, providerMessageId))
   }
@@ -279,6 +295,9 @@ function registerInboundConsumer(
     if (draining !== undefined) return draining
     const run = async (): Promise<void> => {
       if (agentRuntime.current() === undefined) return
+      // Retire the last pass's attempts before this one: an input whose confirmation never
+      // arrived is handed off again rather than abandoned until the process restarts.
+      handoffs.beginPass()
       for (const input of runtimeState.pendingInputs()) {
         const text = input.text
         if (text === undefined) continue
@@ -293,8 +312,10 @@ function registerInboundConsumer(
 
   /**
    * Hand one accepted input to the live agent and remember it until its `user/message` commits.
-   * A key already attempted in this process is skipped, so a drain cannot spin on the same record;
-   * a later process has no memory of the attempt and may redeliver — the allowed duplicate.
+   * A key the current drain pass already attempted is skipped, so an inbound accept and a
+   * concurrent drain cannot both hand off the same record; the next pass retries it when its
+   * confirmation has not arrived. A restart forgets the attempts entirely and redelivers — the
+   * allowed duplicate.
    *
    * Every inbound steers. Steering is DSH's own "nearest step boundary" boundary: an idle agent
    * opens a turn with it, and a running agent consumes it at its next step — so a message arriving

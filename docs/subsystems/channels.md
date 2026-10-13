@@ -10,7 +10,9 @@ Loom 消费方只接 `workspace`，需要网关的 `channels` 服务以及 `runt
 
 `channel/inbound` 到来时先查 `(channel, providerMessageId)` 去重，在工作区完成附件处理并构造规范化正文，然后把正文和来源元数据持久写成 `pending`，最后调用 `agentRuntime.deliver`。模型看到渠道、场所类别、发送者、正文及附件标记；传输 route 不作为工具参数暴露。
 
-`pending` 只有在**当前主 Session** 的匹配 `user/message` 事件提交后才变为 `delivered`；别的 Session 提交同 id 的消息不是本次交接的确认。没有活 Agent、换代窗口或进程重启时，带正文的 pending 输入会在 Agent ready 或插件重新挂载后重投；交接确认前崩溃允许产生重复，但不会静默丢失。旧版本只有 accepted 标记而没有正文的记录仍可去重，不能伪造重放内容。当前进程用小型 handoff ledger 避免同一输入在 drain 期间反复尝试；这不是跨进程 exactly-once，也不是消息 broker。准确路径见[输入消费实现](<../../src/channels/index.ts>)。
+`pending` 只有在**当前主 Session** 的匹配 `user/message` 事件提交后才变为 `delivered`；别的 Session 提交同 id 的消息不是本次交接的确认。没有活 Agent、换代窗口或进程重启时，带正文的 pending 输入会在 Agent ready 或插件重新挂载后重投；交接确认前崩溃允许产生重复，但不会静默丢失。旧版本只有 accepted 标记而没有正文的记录仍可去重，不能伪造重放内容。当前进程用小型 handoff ledger 避免同一输入在同一轮 drain 里被尝试两次；这不是跨进程 exactly-once，也不是消息 broker。准确路径见[输入消费实现](<../../src/channels/index.ts>)。
+
+投递一次不等于交接完成：`deliver` 返回的 message id 只说明消息进入进程内 inbox，取消、dispose 或换代门控都可能在 `user/message` 提交前让它消失。因此每轮 drain 开始时上一轮的尝试记录作废，仍未确认的 pending 输入在下一轮重新交给 Agent——重复是允许的，放弃不是。`runtimeState.isAccepted` 挡住外部重复投递，同轮 drain 的 ledger 挡住本进程并发重复。
 
 `message` 发到最近一次成功交给 Agent 的输入设置的内存焦点，模型不能指定 channel/route；重启后焦点为空，须有新输入或 pending 重投才可发消息。多渠道并发输入时焦点会变，不能把“答某条旧消息”当作绑定了其 route 的保证；多 channel 仍只是同一 Individual 的入口，本轮没有引入独立 Agent 或 per-channel 路由。
 
@@ -51,4 +53,4 @@ Loom 消费方只接 `workspace`，需要网关的 `channels` 服务以及 `runt
 
 ## 验证入口
 
-[渠道测试](<../../tests/channels.spec.ts>)覆盖交付、焦点、附件、发送三态和提醒；[入站交接测试](<../../tests/inbound-handoff.spec.ts>)覆盖无 Agent、重启重投、Session 确认和并发重复；[runtime-state 测试](<../../tests/runtime-state.spec.ts>)覆盖持久记录与不确定性筛选；[turn-failures 测试](<../../tests/turn-failures.spec.ts>)和[日志测试](<../../tests/log.spec.ts>)覆盖故障可见性。这些使用测试网关，不证明真实 Telegram token、授权或远端投递成功。
+[渠道测试](<../../tests/channels.spec.ts>)覆盖交付、焦点、附件、发送三态和提醒；[入站交接测试](<../../tests/inbound-handoff.spec.ts>)覆盖无 Agent、重启重投、Session 确认、并发重复与未确认输入的下一轮重投；[runtime-state 测试](<../../tests/runtime-state.spec.ts>)覆盖持久记录与不确定性筛选；[turn-failures 测试](<../../tests/turn-failures.spec.ts>)和[日志测试](<../../tests/log.spec.ts>)覆盖故障可见性。这些使用测试网关，不证明真实 Telegram token、授权或远端投递成功。

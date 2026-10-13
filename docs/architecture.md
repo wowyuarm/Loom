@@ -28,7 +28,7 @@ Loom 把 DSH 的可替换插件栈组合成一个长期存在的 Individual。�
   → Turn 结束：工作区留版、失败记录或对话后检查
 ```
 
-每个输入保持一个独立 user message；运行中到达的输入不截断工具调用。持久接纳但尚未出现 Session `user/message` 的输入会在 Agent 恢复、换代完成或重启后重投，因此可能重复；这不是恰好一次处理。只有 `message` 工具向当前焦点投递，普通 assistant 文本不会自动发到渠道。发送与 Turn 结束是不同事实。限制及失败路径见[渠道](<subsystems/channels.md>)。
+每个输入保持一个独立 user message；运行中到达的输入不截断工具调用。持久接纳但尚未出现 Session `user/message` 的输入会在 Agent 恢复、换代完成或重启后重投，因此可能重复；这不是恰好一次处理。一次投递尝试本身不构成交接：只要输入仍是 pending，下一轮恢复就重新交给 Agent。只有 `message` 工具向当前焦点投递，普通 assistant 文本不会自动发到渠道。发送与 Turn 结束是不同事实。限制及失败路径见[渠道](<subsystems/channels.md>)。
 
 ## 主主体如何跨重启与换代继续
 
@@ -44,7 +44,7 @@ Loom 把 DSH 的可替换插件栈组合成一个长期存在的 Individual。�
 | --- | --- | --- |
 | 模型历史与生命周期事件 | DSH Session / persistence；Loom 经投影和历史读方消费 | 不是主体记忆，也不是工作区备份 |
 | 当前主 Session 指针 | runtime-state 保存；agent-runtime 在启动和换代写入 | 不复制 lineage；祖先关系来自 Session header |
-| 入站接纳与交接状态 | runtime-state 保存；channels 写入规范化 pending，Session `user/message` 提交后确认 | 允许恢复重投和重复，不是恰好一次队列 |
+| 入站接纳与交接状态 | runtime-state 保存；channels 写入规范化 pending，Session `user/message` 提交后确认 | 允许恢复重投和重复，一次尝试不等于已交接，不是恰好一次队列 |
 | 所属 Session 集合 | runtime-state 保存；runtime 写、历史搜索读 | 搜索范围不等于可返回的当前祖先链 |
 | 出站尝试与结果 | runtime-state 保存；channels 写入和渲染不确定性 | 无自动重发，无端到端恰好一次投递 |
 | 身份、记忆、线索、关注、技能 | Individual 的工作区；resident-context 读取，技能提供方发现 | 不由工程文档规定其人格或判断 |

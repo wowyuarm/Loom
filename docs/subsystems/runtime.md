@@ -20,7 +20,7 @@ DSH 对被创建或恢复的 Session 持有跨进程写租约；同一 Session �
 
 ## 存储与权限边界
 
-指针只保存 Session id，祖先关系取自 Session header；所属会话记录用于历史搜索授权，不能用来决定哪个祖先可返回。入站 pending/交接记录与出站投递记录由渠道消费方写入；入站允许恢复重投，出站仍不自动重发。各记录用途见[架构的数据归属表](<../architecture.md#持久事实由谁持有>)。
+指针只保存 Session id，祖先关系取自 Session header；所属会话记录用于历史搜索授权，不能用来决定哪个祖先可返回。入站 pending/交接记录与出站投递记录由渠道消费方写入；入站允许恢复重投且一次尝试不等于已交接，出站仍不自动重发。各记录用途见[架构的数据归属表](<../architecture.md#持久事实由谁持有>)。
 
 换代先创建 successor、记录所属 Session 并提交 current pointer，再退休旧 Agent；successor 创建失败时旧句柄仍在。主 Session 在启动和换代激活时被写入 `danger-full-access` 文件策略；准确行为见[运行时](<../../src/agent-runtime/runtime.ts>)。工作区是默认 cwd，不是权限围栏。主体可经文件或 shell 工具访问同 uid 能访问的部署侧文件，不能在文档中声称它物理上无法修改配置。插件仍然区分配置归属和材料归属。
 
