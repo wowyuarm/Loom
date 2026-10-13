@@ -21,7 +21,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import SessionStore from '@deepseek-ai/dsh-session'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { defineTool } from '@deepseek-ai/dsh-tools'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import SessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
@@ -47,6 +47,7 @@ import {
   HUMAN_TEXT_LIMIT,
   REPLY_TEXT_LIMIT,
   applyAfterInteractionEvent,
+  afterInteractionProjection,
   flatten,
   sentText,
   splitProvenance,
@@ -64,7 +65,7 @@ type AfterInteractionNoticeSource = Extract<AfterInteractionSource, { form: 'not
 
 /** The state a fold starts from, as the projection's own `init` builds it. */
 function initial(): AfterInteractionState {
-  return { turn: 0, exchanges: [], lastHumanInputTime: null, lastHumanTurn: 0 }
+  return { turn: 0, exchanges: [], pending: [], lastHumanInputTime: null, lastHumanTurn: 0 }
 }
 
 /** One session event carrying only the fields the fold reads. */
@@ -81,8 +82,17 @@ function inbound(text: string, time: number, kind = 'user'): SessionEvent {
   return event('user/message', time, { source: { kind }, content: [{ type: 'text', text }] })
 }
 
-function toolCall(time: number, name: string, args: unknown): SessionEvent {
-  return event('tool/call', time, { turn: 1, step: 1, callId: 'c1', name, arguments: JSON.stringify(args) })
+function toolCall(time: number, name: string, args: unknown, callId = 'c1', turn = 1): SessionEvent {
+  return event('tool/call', time, { turn, step: 1, callId, name, arguments: JSON.stringify(args) })
+}
+
+/** One tool result, carrying only the fields the fold reads: which call, and whether it failed. */
+function toolResult(time: number, callId: string, isError = false): SessionEvent {
+  return event('tool/result', time, {
+    turn: 1,
+    step: 1,
+    message: { role: 'tool', toolCallId: callId, ...(isError ? { isError: true } : {}) },
+  })
 }
 
 /** One judgement answer carrying a full distribution. */
@@ -146,11 +156,88 @@ describe('loom after-interaction fold', () => {
     // ① The turn the person's input opened is what lets a stopping turn arm a check at all.
     expect(state.lastHumanTurn).toBe(1)
 
-    // Assistant text reaches nobody; what reached the person is the `message` tool's own text.
+    // Assistant text reaches nobody; what reached the person is the `message` tool's own text —
+    // and only once its result confirms the send.
     expect(applyAfterInteractionEvent(state, event('assistant/message', 2_000))).toBe(state)
     expect(applyAfterInteractionEvent(state, toolCall(2_000, 'read_file', { path: 'x' }))).toBe(state)
-    state = applyAfterInteractionEvent(state, toolCall(3_000, 'message', { text: '在的，怎么了？' }))
+    const attempt = applyAfterInteractionEvent(state, toolCall(3_000, 'message', { text: '在的，怎么了？' }))
+    // The call alone said nothing yet: it is pending, not an exchange.
+    expect(attempt.exchanges).toBe(state.exchanges)
+    expect(attempt.pending).toEqual([{ callId: 'c1', text: '在的，怎么了？', time: 3_000, turn: 1 }])
+    // The matching successful result appends the exchange, dated when the call was made.
+    state = applyAfterInteractionEvent(attempt, toolResult(3_050, 'c1'))
+    expect(state.pending).toEqual([])
     expect(state.exchanges.at(-1)).toEqual({ from: 'loom', text: '在的，怎么了？', place: '', time: 3_000, turn: 1 })
+  })
+
+  it('records only a send whose matched result reported success', () => {
+    let state = initial()
+    state = applyAfterInteractionEvent(state, turnStart(1))
+
+    // A failed result drops the pending call and appends nothing: the person never got it.
+    state = applyAfterInteractionEvent(state, toolCall(1_000, 'message', { text: '这条没发出去' }))
+    state = applyAfterInteractionEvent(state, toolResult(1_100, 'c1', true))
+    expect(state.pending).toEqual([])
+    expect(state.exchanges).toEqual([])
+
+    // A result with no matching call is a claim the fold cannot confirm; it changes nothing.
+    expect(applyAfterInteractionEvent(state, toolResult(2_000, 'ghost'))).toBe(state)
+    expect(state.exchanges).toEqual([])
+
+    // A call whose result never commits stays pending and never becomes something Loom said.
+    state = applyAfterInteractionEvent(state, toolCall(3_000, 'message', { text: '还在等结果' }))
+    expect(state.pending).toHaveLength(1)
+    expect(state.exchanges).toEqual([])
+
+    // Arguments the model mangled asked to say nothing: not pending, not an exchange.
+    const malformed = event('tool/call', 4_000, { turn: 1, step: 1, callId: 'c9', name: 'message', arguments: 'not json' })
+    expect(applyAfterInteractionEvent(state, malformed)).toBe(state)
+  })
+
+  it('pairs several in-flight calls by id, however their results arrive', () => {
+    let state = initial()
+    state = applyAfterInteractionEvent(state, turnStart(1))
+    state = applyAfterInteractionEvent(state, toolCall(1_000, 'message', { text: '第一句' }, 'a'))
+    state = applyAfterInteractionEvent(state, toolCall(1_100, 'message', { text: '第二句' }, 'b'))
+    expect(state.pending.map(send => send.callId)).toEqual(['a', 'b'])
+
+    // Out of order, and the older one failed: only the successful send is recorded, at its call time.
+    state = applyAfterInteractionEvent(state, toolResult(1_200, 'b'))
+    expect(state.exchanges).toEqual([{ from: 'loom', text: '第二句', place: '', time: 1_100, turn: 1 }])
+    state = applyAfterInteractionEvent(state, toolResult(1_300, 'a', true))
+    expect(state.exchanges).toHaveLength(1)
+    expect(state.pending).toEqual([])
+
+    // The same call id restated is one attempt, not two.
+    const once = applyAfterInteractionEvent(state, toolCall(2_000, 'message', { text: '重复' }, 'c'))
+    expect(applyAfterInteractionEvent(once, toolCall(2_050, 'message', { text: '重复' }, 'c'))).toBe(once)
+  })
+
+  it('forgets a call the turn ended without answering', () => {
+    let state = initial()
+    state = applyAfterInteractionEvent(state, turnStart(1))
+    state = applyAfterInteractionEvent(state, toolCall(1_000, 'message', { text: '被打断了' }))
+    expect(state.pending).toHaveLength(1)
+    // The turn was interrupted before the result; the next turn can never answer that id.
+    state = applyAfterInteractionEvent(state, turnStart(2))
+    expect(state.pending).toEqual([])
+    expect(state.exchanges).toEqual([])
+  })
+
+  it('refolds a full log under its bumped version into the same sent exchange', () => {
+    // A persisted checkpoint carries the registering unit's `stateVersion`; the bump makes the
+    // framework discard an older row and refold the log. Replaying that log reaches the same Loom
+    // exchange the call-only fold used to produce, now backed by the call's successful result.
+    expect(afterInteractionProjection.stateVersion).toBe(2)
+    let state = initial()
+    state = applyAfterInteractionEvent(state, turnStart(1))
+    state = applyAfterInteractionEvent(state, toolCall(1_000, 'message', { text: '在的' }))
+    state = applyAfterInteractionEvent(state, toolResult(1_050, 'c1'))
+    state = applyAfterInteractionEvent(state, inbound('[telegram]\n在吗', 1_100))
+    expect(state.exchanges).toEqual([
+      { from: 'loom', text: '在的', place: '', time: 1_000, turn: 1 },
+      { from: 'human', text: '在吗', place: 'telegram', time: 1_100, turn: 1 },
+    ])
   })
 
   it('folds a human message steered into a non-user turn as that turn\'s pause trigger', () => {
@@ -488,6 +575,16 @@ async function boot(mock: MockAdapter, decide: Decide): Promise<Harness> {
   await load(TokenMeter)
   await load(SystemPrompt)
   await load(ToolRuntime)
+  // The deployment's real `message` tool is registered by `channels`; this harness composes
+  // without it, so a successful send needs a tool of its own. The fold keys on the call's name and
+  // its result's success, so a stub that succeeds stands in for the channel seam.
+  ctx.tools.register(defineTool({
+    name: 'message',
+    description: 'Send a message to the person.',
+    parameters: { text: { type: 'string', required: true, description: 'The message to send.' } },
+    output: { schema: { type: 'string' }, render: () => [{ type: 'text', text: 'sent' }] },
+    execute: async () => 'sent',
+  }))
   await load(AgentRegistry)
   await load(AgentLoop, { agents: [] })
   await load(Storage)

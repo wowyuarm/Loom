@@ -15,7 +15,11 @@
  *   (`source.kind` other than `user`) is context, not something anyone said, and would poison a
  *   reading of "what is the live thread here";
  * - what Loom actually sent them, which is the `message` tool's own `text`; assistant text reaches
- *   nobody;
+ *   nobody. A send is only recorded once its matching `tool/result` has committed and reported
+ *   success — a failed or still-pending call is not something Loom said; an unknown outcome may
+ *   have reached the remote channel but cannot confirm that fact, so this projection stays
+ *   conservative (see the delivery-is-the-external-fact ADR). The call is held pending until then,
+ *   so the fold carries a small list of in-flight `message` calls alongside the conversation;
  * - the conversation under a whole-message character budget ({@link CONVERSATION_BUDGET}), spent
  *   from the newest message backwards, so the state stays small without ever cutting a message in
  *   half;
@@ -74,12 +78,32 @@ export interface Exchange {
   readonly turn: number
 }
 
+/**
+ * A `message` call the fold has seen but whose `tool/result` has not committed yet. Only a matching
+ * successful result turns this into an {@link Exchange}: assistant text never reaches the person,
+ * and neither does a call the tool answered with an error. Held by call id, the one key the result
+ * carries back; the text, time, and turn are the call's own, so a late result still records when
+ * the send was attempted.
+ */
+export interface PendingSend {
+  /** The provider-issued id pairing this call with its `tool/result`. */
+  readonly callId: string
+  /** The clipped text the call asked to send, already validated by {@link sentText}. */
+  readonly text: string
+  /** Event time of the call, epoch milliseconds. */
+  readonly time: number
+  /** The turn the call was made in. */
+  readonly turn: number
+}
+
 /** Everything a check needs from the log: the recent conversation and which turn the person opened. */
 export interface AfterInteractionState {
   /** The turn the fold is currently inside; 0 before the first `turn/start`. */
   readonly turn: number
   /** The most recent exchanges, oldest first, bounded to {@link CONVERSATION_BUDGET} code units. */
   readonly exchanges: readonly Exchange[]
+  /** `message` calls awaiting their result, oldest first. Empty when nothing is in flight. */
+  readonly pending: readonly PendingSend[]
   /** Event time of the latest human input in the log, or null when the person never spoke here. */
   readonly lastHumanInputTime: number | null
   /** The turn that latest human input opened; 0 when there is none. */
@@ -100,7 +124,12 @@ export function applyAfterInteractionEvent(state: AfterInteractionState, event: 
   if (event.type === 'turn/start') {
     const turn = event.data.turn
     if (turn === state.turn) return state
-    return { ...state, turn }
+    // A send's result is committed inside the turn that made the call; a new turn means any call
+    // still pending was interrupted and will never be answered. Drop it rather than let a stale id
+    // squat in the state forever. (Call ids are provider-issued and unique, so this only forgets
+    // orphans — it cannot mispair a later result.)
+    const pending = state.pending.filter(send => send.turn === turn)
+    return pending.length === state.pending.length ? { ...state, turn } : { ...state, turn, pending }
   }
   if (event.type === 'user/message') {
     if (event.data.source.kind !== 'user') return state
@@ -117,8 +146,25 @@ export function applyAfterInteractionEvent(state: AfterInteractionState, event: 
   if (event.type === 'tool/call') {
     if (event.data.name !== SEND_MESSAGE_TOOL) return state
     const text = sentText(event.data.arguments)
+    // Malformed arguments are a call that asked to say nothing: fail closed rather than fold a
+    // blank exchange or hold a placeholder pending forever.
     if (text === '') return state
-    return withExchange(state, { from: 'loom', text, place: '', time: event.time, turn: state.turn })
+    const callId = event.data.callId
+    if (typeof callId !== 'string' || callId === '') return state
+    if (state.pending.some(send => send.callId === callId)) return state
+    return { ...state, pending: [...state.pending, { callId, text, time: event.time, turn: state.turn }] }
+  }
+  if (event.type === 'tool/result') {
+    const result = event.data.message
+    // Defensive on the shape as well as the value: an unreadable result cannot confirm anything.
+    if (result === undefined || typeof result.toolCallId !== 'string') return state
+    const index = state.pending.findIndex(send => send.callId === result.toolCallId)
+    // A result the fold never saw a matching call for confirms nothing — no exchange, no state.
+    if (index === -1) return state
+    const pending = state.pending.toSpliced(index, 1)
+    const send = state.pending[index]
+    if (result.isError === true || send === undefined) return { ...state, pending }
+    return withExchange({ ...state, pending }, { from: 'loom', text: send.text, place: '', time: send.time, turn: send.turn })
   }
   return state
 }
@@ -203,12 +249,22 @@ export const afterInteractionProjection: ProjectionDefinition<typeof AFTER_INTER
       time: z.number(),
       turn: z.number(),
     })),
+    pending: z.array(z.object({
+      callId: z.string(),
+      text: z.string(),
+      time: z.number(),
+      turn: z.number(),
+    })),
     lastHumanInputTime: z.number().nullable(),
     lastHumanTurn: z.number(),
   }),
-  init: () => ({ turn: 0, exchanges: [], lastHumanInputTime: null, lastHumanTurn: 0 }),
+  init: () => ({ turn: 0, exchanges: [], pending: [], lastHumanInputTime: null, lastHumanTurn: 0 }),
   apply: applyAfterInteractionEvent,
-  stateVersion: 1,
+  // 2: a `message` call is no longer folded on the call alone — the state gained pending sends and
+  // only a successful matching `tool/result` appends an exchange. An older checkpoint is forward
+  // incompatible, so the framework discards it on the version mismatch and refolds the log, where
+  // every call and result is present again and succeeds into the same exchange it used to.
+  stateVersion: 2,
 }
 
 /**

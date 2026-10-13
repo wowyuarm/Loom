@@ -20,6 +20,8 @@ jev 只返回 `quiet`、`speak`、`act` 的概率；Loom 按 quiet 阈值决定�
 
 独立判断会消费 jev 的请求；主模型只有收到 notice 才产生下一轮。notice 是一时情境，不在[换代](<continuity.md>)时作为普通输入再携带。概率在运维日志中用于观察，不能据此声称当前校准已经保证主体行动质量。
 
+近期对话投影只把**成功完成**的 `message` tool call 当作 Loom 一侧的对话记录：`tool/call(message)` 先把 call id、文本、时间与 turn 记为一条待定发送，只有 matching 且未标 `isError` 的 `tool/result` 才把这条发送追加进近期对话。失败的结果、找不到 matching call 的结果、参数 malformed 的调用都不产生 Loom 发言；发送结果缺失时该 call 一直待定，进入下一个 turn 时作为被打断的孤儿丢弃。判断与模型因此只看到已经成功完成 `message` 的内容，与[Delivery 事实 ADR](<../adr/0005-delivery-is-the-external-fact.md>)一致。若进程在渠道返回后、Delivery ledger 写入前崩溃，远端可能已经收到但本投影会保守省略；`unknown` 仍由渠道的未确认投递上下文保留，不能据此自动重发。
+
 ## 验证入口
 
-[after-interaction 测试](<../../tests/after-interaction.spec.ts>)使用可控 timer 与判断结果，覆盖只由人输入触发、idle 检查、判断失败、竞态让路与情况提示。它证明机械条件和文本，不证明真实 jev 在长期对话中的判断质量；行为评估需另外给出真实材料与观察证据。
+[after-interaction 测试](<../../tests/after-interaction.spec.ts>)使用可控 timer 与判断结果，覆盖只由人输入触发、idle 检查、判断失败、竞态让路与情况提示；unit 层另覆盖发送成功才进入近期对话、失败/未知/无匹配/malformed 的 fail-closed 行为与多 call 配对。它证明机械条件和文本，不证明真实 jev 在长期对话中的判断质量；行为评估需另外给出真实材料与观察证据。
