@@ -131,8 +131,12 @@ describe('loom boot smoke', () => {
       agent?.followup(createUserMessage({ content: [{ type: 'text', text: 'please roll over' }], source: { kind: 'user' } }))
 
       // The swap settles asynchronously at the idle boundary after the triggering turn ends.
+      // The pointer is committed before the old handle retires, so wait for the two to agree:
+      // until the successor is published, current() is still the previous generation.
       await vi.waitFor(() => {
-        expect(loom.ctx.runtimeState.getCurrentSession()?.sessionId).not.toBe(original)
+        const pointer = loom.ctx.runtimeState.getCurrentSession()?.sessionId
+        expect(pointer).not.toBe(original)
+        expect(loom.ctx.agentRuntime.current()?.id).toBe(pointer)
       }, { timeout: 5000 })
 
       const after = loom.ctx.runtimeState.getCurrentSession()
@@ -180,7 +184,9 @@ describe('loom boot smoke', () => {
       loom.ctx.agentRuntime.current()?.followup(createUserMessage({ content: [{ type: 'text', text: 'return to before risk' }], source: { kind: 'user' } }))
 
       await vi.waitFor(() => {
-        expect(loom.ctx.runtimeState.getCurrentSession()?.sessionId).not.toBe(s0)
+        const pointer = loom.ctx.runtimeState.getCurrentSession()?.sessionId
+        expect(pointer).not.toBe(s0)
+        expect(loom.ctx.agentRuntime.current()?.id).toBe(pointer)
       }, { timeout: 5000 })
 
       // A checkpoint return seeds the successor with the exact prefix and parents at the

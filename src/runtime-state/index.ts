@@ -33,6 +33,22 @@ class RuntimeStateService implements RuntimeState {
     await this.domain.table('accepted_input').put(acceptedInputKey(input.channel, input.providerMessageId), input)
   }
 
+  pendingInputs(): AcceptedInput[] {
+    return [...this.domain.table('accepted_input').entries()]
+      .map(([, input]) => input)
+      .filter(input => input.deliveryState === 'pending' && input.text !== undefined)
+      .sort((a, b) => a.acceptedAt - b.acceptedAt)
+  }
+
+  async confirmInput(channel: string, providerMessageId: string): Promise<void> {
+    const table = this.domain.table('accepted_input')
+    const current = table.get(acceptedInputKey(channel, providerMessageId))
+    // A confirmation can arrive after the record was somehow removed; dedup already answers for
+    // it, so there is nothing durable to repair.
+    if (current === undefined) return
+    await table.put(acceptedInputKey(channel, providerMessageId), { ...current, deliveryState: 'delivered' })
+  }
+
   async recordSession(sessionId: string): Promise<void> {
     await this.domain.table('owned_session').put(sessionId, { sessionId })
   }

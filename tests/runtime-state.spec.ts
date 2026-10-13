@@ -94,6 +94,51 @@ describe('continuity store — accepted-input dedup', () => {
   })
 })
 
+describe('continuity store — pending inbound handoff', () => {
+  it('returns text-bearing pending inputs oldest-first and drops them once confirmed', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const { loom, dispose } = await boot(join(dir, 'continuity.sqlite'))
+    try {
+      await loom.recordAccepted(sampleInput({ providerMessageId: 'm-2', acceptedAt: 2_000, text: 'second', deliveryState: 'pending' }))
+      await loom.recordAccepted(sampleInput({ providerMessageId: 'm-1', acceptedAt: 1_000, text: 'first', deliveryState: 'pending' }))
+      expect(loom.pendingInputs().map(i => i.providerMessageId)).toEqual(['m-1', 'm-2'])
+
+      await loom.confirmInput('telegram', 'm-1')
+      expect(loom.pendingInputs().map(i => i.providerMessageId)).toEqual(['m-2'])
+      // Confirmation is not deletion: the record still dedups a repeat.
+      expect(loom.isAccepted('telegram', 'm-1')).toBe(true)
+    } finally {
+      await dispose()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('never offers a legacy record (no text) for replay, and the medium carrying it reopens', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))
+    const path = join(dir, 'continuity.sqlite')
+    try {
+      const first = await boot(path)
+      // A record accepted before the text/deliveryState fields existed: it must stay dedupable but
+      // must not be fabricated into a replayable body.
+      await first.loom.recordAccepted(sampleInput())
+      await first.dispose()
+
+      const second = await boot(path)
+      try {
+        expect(second.loom.isAccepted('telegram', 'm-1')).toBe(true)
+        expect(second.loom.pendingInputs()).toEqual([])
+        // Confirming a legacy record is a harmless no-op that keeps dedup working.
+        await second.loom.confirmInput('telegram', 'm-1')
+        expect(second.loom.isAccepted('telegram', 'm-1')).toBe(true)
+      } finally {
+        await second.dispose()
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('continuity store — owned-session ledger', () => {
   it('accumulates every recorded session and is idempotent per id', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'loom-continuity-'))

@@ -120,6 +120,7 @@ export async function apply(ctx: Context, config: AgentRuntimeConfig): Promise<v
     workspace: config.workspace,
     projectionOf: agent => ctx.sessionProjections.stateOf(agent.session, CONTEXT_CONTINUITY_PROJECTION_KEY),
     mountPreset: async agentCtx => { await ctx.agentPresets.mount(agentCtx, config.agentPreset) },
+    onReady: agent => { ctx.emit('loom/agent-ready', agent) },
     retrieval: retrievalDeps(ctx),
     pressure: {
       compactionFor: agent => ctx.agentPresets.serviceFor(agent, 'compaction'),

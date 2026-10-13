@@ -5,7 +5,7 @@ import { SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { TokenMeter } from '@deepseek-ai/dsh-token-meter'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type MessageId } from '@deepseek-ai/dsh-llm'
 import {
   ContextContinuityCoordinator,
   createContextProjectionDefinition,
@@ -55,6 +55,19 @@ function pinSandboxMode(session: Session): boolean {
 }
 
 /**
+ * Best-effort disposal on an already-failing transition path. The original error is the one
+ * worth surfacing; a failure to clean up an unborn successor must not replace it. A session left
+ * undisposed here is the extreme storage failure the design leaves to the log and the operator.
+ */
+async function disposeQuietly(handle: AgentHandle): Promise<void> {
+  try {
+    await handle.dispose()
+  } catch {
+    // Swallowed: rollback failed, and the caller is already throwing the cause that matters.
+  }
+}
+
+/**
  * The ctx-derived capabilities the retrieval and return surface needs: reading archived ancestor
  * logs, the token meter, the handoff budget, and the session-query engine. Present in a real
  * deployment; omitted in unit tests that exercise the swap mechanics without a search stack, where
@@ -85,6 +98,12 @@ export interface RuntimeDeps {
   projectionOf?: (agent: Agent) => ContextProjectionState | undefined
   /** Coordinator diagnostics sink; omitted in production unless a logger is wired. */
   log?: (message: string) => void
+  /**
+   * Called when the live agent (re)becomes ready to receive external input: after the initial
+   * boot, and after a rollover successor is published and handed its handoff/carried input. The
+   * plugin turns this into the `loom/agent-ready` event pending input drains on.
+   */
+  onReady?: (agent: Agent) => void
   /** Session id minter for a first boot; overridable for deterministic tests. */
   newSessionId?: () => SessionId
   /** Retrieval/return capabilities; omit to register only the rollover tool (unit tests). */
@@ -170,11 +189,15 @@ export class LoomAgentRuntime implements AgentRuntime {
   }
 
   deliver(text: string): boolean {
+    return this.deliverTracked(text) !== undefined
+  }
+
+  deliverTracked(text: string): MessageId | undefined {
     const agent = this.handle?.agent
-    if (agent === undefined) return false
+    if (agent === undefined) return undefined
     const message = createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
     agent.steer(message)
-    return true
+    return message.id
   }
 
   /**
@@ -278,15 +301,21 @@ export class LoomAgentRuntime implements AgentRuntime {
     // Finish a swap a restart interrupted after the rollover result was durable but before the
     // successor took over: the engine re-derives the pending intent from the folded projection.
     this.coordinator.recoverPendingTransition(LOOM_SUBJECT_ID, this.handle.agent, this.handle.agent.id)
+    // Announced last: a recovery transition above may itself swap in a successor and announce it.
+    this.deps.onReady?.(this.handle.agent)
   }
 
   /**
-   * One generation swap at an idle boundary: build the handoff, dispose the old agent (releasing
-   * the single-active lease), create the successor at the plan's deterministic session id chained
-   * to its predecessor, commit the current-generation pointer, then deliver the handoff ahead of
-   * any carried input. The engine derived newSessionId/requestId, so a crash mid-swap re-drives to
-   * the same identity; a throw here leaves the previous generation recoverable, which the
-   * coordinator relies on.
+   * One generation swap at an idle boundary. The successor is prepared BEFORE the old agent
+   * retires, so the window in which input could arrive with no live agent is gone: the old handle
+   * keeps receiving input until the successor exists and the pointer names it.
+   *
+   * Order: build the handoff, resolve the seed, create the successor, commit the pointer and
+   * owned-session record, dispose the old handle, then publish the successor and deliver the
+   * handoff ahead of any carried input. A successor create failure leaves the previous generation
+   * live and the pointer untouched. A pointer/record write failure disposes the unborn successor
+   * and keeps the previous handle. Nothing here is a cross-store transaction: an extreme storage
+   * failure after the pointer moved is left to the log and the operator.
    *
    * The successor's `parentSession` is the previous generation. That header field is the lineage:
    * the context-continuity engine walks it to classify a searched generation as current, prior, or
@@ -296,7 +325,7 @@ export class LoomAgentRuntime implements AgentRuntime {
    * A fresh rollover seeds nothing and parents at the previous generation. A checkpoint return
    * (`plan.checkpointRef`) instead seeds the successor with the exact prefix through the cited
    * anchor and parents at that anchor's source generation. The seed is resolved BEFORE the old
-   * agent is disposed: a violation there fails the whole swap with the previous generation intact,
+   * agent is retired: a violation there fails the whole swap with the previous generation intact,
    * never a guessed seed over a wrong prefix.
    */
   async executeTransition(plan: TransitionPlan): Promise<void> {
@@ -306,11 +335,10 @@ export class LoomAgentRuntime implements AgentRuntime {
       ? undefined
       : await this.retrieval.resolveCheckpointSeed(plan.checkpointRef)
 
-    if (this.handle !== undefined) {
-      await this.handle.dispose()
-      this.handle = undefined
-    }
+    const previous = this.handle
     const parentSession = seed === undefined ? plan.previousSessionId : seed.sourceSessionId
+    // Create while the old handle is still published: a failure here is the safe direction, with
+    // current() still returning the old agent and the pointer still naming its session.
     const successor = await this.deps.agents.create({
       sessionId: plan.newSessionId,
       meta: {
@@ -322,13 +350,41 @@ export class LoomAgentRuntime implements AgentRuntime {
       ...(this.deps.agentOptions === undefined ? {} : { agentOptions: this.deps.agentOptions }),
       ...(setup === undefined ? {} : { setup }),
     })
-    await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId })
-    await this.deps.runtimeState.recordSession(String(plan.newSessionId))
+    try {
+      // Record the successor before moving the pointer. If either write fails, the old pointer and
+      // handle remain the recovery path; an unreferenced owned-session row is harmless.
+      await this.deps.runtimeState.recordSession(String(plan.newSessionId))
+      await this.deps.runtimeState.setCurrentSession({ sessionId: plan.newSessionId })
+    } catch (error) {
+      // The pointer did not move when the write failed. Discard the successor so it is not left
+      // live-but-unreachable, and keep serving input from the old generation.
+      await disposeQuietly(successor)
+      throw error
+    }
+    if (previous !== undefined) {
+      try {
+        await previous.dispose()
+      } catch (error) {
+        // Roll back the pointer before discarding the successor. A disposal failure may have
+        // partially stopped the old handle, but retaining it as current is safer than publishing
+        // two live generations; the original error remains the transition failure.
+        try {
+          await this.deps.runtimeState.setCurrentSession({ sessionId: plan.previousSessionId })
+        } catch {
+          // Swallowed: rollback itself failed; the transition error and the durable pointer are
+          // the operator-visible evidence of this extreme storage failure.
+          this.deps.log?.('context rollover failed to roll back the current-session pointer')
+        }
+        await disposeQuietly(successor)
+        throw error
+      }
+    }
     this.handle = successor
     pinSandboxMode(successor.agent.session)
 
     successor.agent.steer(handoff)
     for (const message of plan.carriedInput) successor.agent.followup(message)
+    this.deps.onReady?.(successor.agent)
   }
 
   async dispose(): Promise<void> {

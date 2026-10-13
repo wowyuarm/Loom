@@ -6,6 +6,7 @@
  */
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { MessageId } from '@deepseek-ai/dsh-llm'
 
 /** The single time source. Loom's own code reads "now" here instead of calling Date.now(). */
 export interface Clock {
@@ -70,12 +71,23 @@ export interface AcceptedInput {
   route: string
   /** epoch ms, supplied by the caller from the Clock — the store never reads time itself. */
   acceptedAt: number
+  /**
+   * The normalized text to hand to the agent (provenance header, body, attachment markers),
+   * written once attachment handling finished. Absent on records accepted before this field
+   * existed: those stay dedupable but must not be replayed with a fabricated body.
+   */
+  text?: string | undefined
+  /**
+   * Handoff state. `pending` until a matching `user/message` Session event commits; `delivered`
+   * once it has. Absent on legacy records, which are treated as not pending.
+   */
+  deliveryState?: 'pending' | 'delivered' | undefined
 }
 
 /**
  * Durable local state for one deployment: the current-session pointer, the accepted-input
- * dedup ledger, and the owned-session ledger. Kept outside the session log and the workspace
- * files.
+ * dedup/handoff ledger, and the owned-session ledger. Kept outside the session log and the
+ * workspace files.
  */
 export interface RuntimeState {
   getCurrentSession(): CurrentSession | undefined
@@ -91,6 +103,17 @@ export interface RuntimeState {
   recordSession(sessionId: string): Promise<void>
   /** Every session id this deployment created; the range `context_search` is authorized over. */
   ownedSessions(): string[]
+  /**
+   * Accepted inputs whose text is recorded and whose handoff is not yet confirmed, oldest
+   * first. Records accepted before the text field existed are never returned: they have no
+   * recoverable body and must not be replayed.
+   */
+  pendingInputs(): AcceptedInput[]
+  /**
+   * Mark an accepted input delivered, after its `user/message` committed to the session log.
+   * A confirmation for an unknown key is a no-op (dedup already answers for it).
+   */
+  confirmInput(channel: string, providerMessageId: string): Promise<void>
   /**
    * Record one outbound effect as `pending` before its delivery is attempted; the resolve of this
    * write is the durable barrier a crash mid-send falls back to. Keyed by `effectId`.
@@ -132,6 +155,13 @@ declare module '@deepseek-ai/cordis' {
   interface Events {
     /** One outbound effect reached a terminal delivery status. A future followup/projection subscribes here. */
     'loom/delivery'(effect: DeliveryEffect): void
+    /**
+     * The live agent (re)became ready to receive external input — after the initial boot and
+     * after a rollover successor is published. Consumers drain durable pending input here; a
+     * consumer loaded after the boot also drains on its own mount, since this event is not
+     * replayed.
+     */
+    'loom/agent-ready'(agent: Agent): void
   }
 }
 
@@ -181,6 +211,13 @@ export interface AgentRuntime {
    * carry, external input — in one place.
    */
   deliver(text: string): boolean
+  /**
+   * {@link deliver}, but observable: returns the created user message's id so a caller can
+   * confirm the handoff against the session log (the matching `user/message` event) rather than
+   * treating the call's own success as durable confirmation. Returns `undefined` when there is
+   * no live agent, exactly like `deliver` returning false.
+   */
+  deliverTracked(text: string): MessageId | undefined
 }
 
 export type { SessionId }

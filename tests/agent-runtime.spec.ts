@@ -150,6 +150,7 @@ function trackAgents() {
   const byId = new Map<string, TrackedAgent>()
   const metaById = new Map<string, unknown>()
   const sessions = new Map<SessionId, ReturnType<typeof fakeSession>>()
+  let failCreate = false
   const track = (id: SessionId): AgentHandle => {
     const rec: TrackedAgent = { disposed: false, steered: [], followed: [], order: [] }
     byId.set(id, rec)
@@ -171,8 +172,14 @@ function trackAgents() {
     },
     session: (id: SessionId) => sessions.get(id),
     createdMeta: (id: string): unknown => metaById.get(id),
+    /** Make every later create reject, to exercise a failed rollover successor. */
+    failCreate: (on: boolean) => { failCreate = on },
     agents: {
-      create: (opts: { sessionId: SessionId; meta?: unknown }) => { metaById.set(opts.sessionId, opts.meta); return Promise.resolve(track(opts.sessionId)) },
+      create: (opts: { sessionId: SessionId; meta?: unknown }) => {
+        if (failCreate) return Promise.reject(new Error('successor create failed'))
+        metaById.set(opts.sessionId, opts.meta)
+        return Promise.resolve(track(opts.sessionId))
+      },
       resume: (opts: { resumeSessionId: SessionId }) => Promise.resolve(track(opts.resumeSessionId)),
     } as never,
   }
@@ -225,6 +232,43 @@ describe('LoomAgentRuntime.executeTransition', () => {
       expect(s1.steered).toHaveLength(1)
       expect(textOf(s1.steered[0]!)).toContain('HANDOFF-BODY')
       expect(s1.followed).toEqual([carried])
+    } finally {
+      await dispose()
+    }
+  })
+
+  it('keeps the old generation live and the pointer unchanged when the successor cannot be created', async () => {
+    const { runtimeState, dispose } = await realRuntimeState()
+    try {
+      const reg = trackAgents()
+      const runtime = new LoomAgentRuntime({
+        agents: reg.agents,
+        runtimeState,
+        workspace: '/ws',
+        newSessionId: () => SessionId('s0'),
+      })
+      await runtime.boot()
+      expect(runtime.current()?.id).toBe(SessionId('s0'))
+
+      reg.failCreate(true)
+      await expect(runtime.executeTransition({
+        previousSessionId: SessionId('s0'),
+        newSessionId: SessionId('s1'),
+        handoff: 'HANDOFF-BODY',
+        handoffEventSeq: 3,
+        trigger: 'model',
+        relatedFiles: [],
+        requestId: 'req-1',
+        carriedInput: [],
+      })).rejects.toThrow('successor create failed')
+
+      // The window the swap used to open — old released, successor unborn — is gone: the old
+      // handle was never disposed and the pointer still names its session, so input keeps arriving.
+      expect(reg.agent('s0').disposed).toBe(false)
+      expect(runtime.current()?.id).toBe(SessionId('s0'))
+      expect(runtimeState.getCurrentSession()).toEqual({ sessionId: 's0' })
+      expect(runtime.deliver('still here')).toBe(true)
+      expect(reg.agent('s0').order).toEqual(['steer'])
     } finally {
       await dispose()
     }

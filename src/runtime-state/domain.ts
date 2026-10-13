@@ -5,8 +5,8 @@ import type { AcceptedInput, DeliveryEffect } from '../contracts/index.ts'
 /**
  * The runtime-state domain. v1 holds the facts that must survive a restart:
  * - currentSession pointer (global singleton), updated at rollover commit, read at boot.
- * - acceptedInput ledger (table), keyed by (channel, providerMessageId), so a redelivery is
- *   not processed twice.
+ * - acceptedInput ledger (table), keyed by (channel, providerMessageId), retaining normalized
+ *   pending input until its Session user/message handoff is confirmed; normal redelivery is deduped.
  * - owned-session ledger (table), keyed by session id: the search-authorization set, every
  *   generation the subject created including archived off-lineage branches.
  */
@@ -25,6 +25,12 @@ const acceptedInputSchema = z.object({
   visibility: z.string(),
   route: z.string(),
   acceptedAt: z.number(),
+  // Added after v1 shipped. Optional so a medium written by an older deployment still opens
+  // (open validates every stored record; a required field would make it unopenable), and so the
+  // domain version must not move. A legacy record has neither field: it stays dedupable and is
+  // never replayed.
+  text: z.string().optional(),
+  deliveryState: z.enum(['pending', 'delivered']).optional(),
 })
 
 // One owned session. The key is the session id; the value restates it so a dumped record is
