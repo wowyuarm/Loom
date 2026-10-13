@@ -170,7 +170,7 @@ description: How to move the model route you are running on — the control file
 
 # Moving your own model route
 
-You run as a route: a provider and a model, sometimes with a reasoning effort. A deployment-side control file decides which one. It is re-read before every step assembles, so what you write there takes effect on your next message — no restart.
+You run as a route: a provider and a model, sometimes with a reasoning effort. A deployment-side control file decides which one. It is re-read before every step assembles, so a write lands on the next step that assembles — the step already on the wire keeps the route it started with. No restart.
 
 ## The control file
 
@@ -183,25 +183,29 @@ You run as a route: a provider and a model, sometimes with a reasoning effort. A
 - \`provider\` and \`model\` — both required, always as a pair, spelled exactly as the deployment declares them.
 - \`reasoningEffort\` — optional, and only when that exact route offers the one you name.
 
-The file is one whole decision or nothing at all. An unknown key, a missing field, a route that does not resolve, an effort that route does not offer — any one of these and the entire file is ignored. No part of it is applied, your current route keeps running, and a single warning reaches the journal. A move therefore happens completely or not at all, and you are never left half-moved.
+The file is one whole decision or nothing at all. An unknown key, a missing field, a route that does not resolve, an effort that route does not offer — any one of these and the entire file is ignored. No part of it is applied, your current route keeps running, and one warning is written to the deployment's log. A move therefore happens completely or not at all, and you are never left half-moved.
 
 Leaving the file in place is normal: it records what you are asking for, not what is currently live. Deleting it changes nothing while you are running.
 
 ## Which routes you may name
 
-Only routes this deployment already declares. Declaring a new one lives in the deployment's own configuration, which is read when the process starts — it needs a restart, and it is not yours to add. Naming an undeclared route is the usual way this fails, and it fails safe: the warning names the missing route and you stay where you were.
+Only routes this deployment already declares. Declaring a new one lives in the deployment's own configuration — it is not yours to add, and how a new declaration reaches the running process is the operator's business, not something to assume. Naming an undeclared route is the usual way this fails, and it fails safe: the route is refused while you stay where you were.
+
+Two halves make up that set, and neither is yours. A provider the platform already ships a catalog for serves that catalog whole when the deployment names no models for it; a provider it has never heard of must be spelled out model by model. And a listing of models replaces the catalog rather than adding to it — declaring a few names beside one narrows the route to those few. So a model some gateway answers for is no evidence that your route will resolve it.
 
 If you want a model the deployment does not declare, ask for it to be declared. Do not switch to the name and hope.
 
 ## Confirm the move
 
-\`journalctl --user -u loom.service | grep model-switch\`
+What reaches you is the platform's own notice inside your conversation — a persistent line naming what answered before and what answers now. It arrives on the step that runs the new route, and only when the provider or the model changed. Changing the effort alone is silent.
 
-A move that took logs \`model switch: <from> -> <to>\`. A refused file logs \`ignoring …\` with the reason. The platform also tells you inside your own conversation that the route moved — but only when the provider or the model changed. Changing the effort alone is silent.
+Silence is therefore ambiguous: no notice means either an effort-only move or a refused one, and your current route keeps answering either way. A refusal never reaches you as a notice; its reason is written to this deployment's log, and where that log lives depends on how the deployment is run. Ask whoever operates it — do not guess a command, because reading a log that is not there fails quietly and reads exactly like nothing having happened.
+
+A refusal is reported once for as long as the file keeps saying the same thing, never again on later steps. Nothing will remind you.
 
 ## Getting back
 
-Write the route you want; nothing else is needed, and the next message follows it. To return to the deployment's own default, either write that default into the file or delete the file and restart — the default is applied at boot and only at boot.
+Write the route you want; nothing else is needed, and the next step follows it. To return to the deployment's own default, either write that default into the file or delete the file and restart — the default is applied at boot and only at boot.
 
 ## Before you move
 
